@@ -43,8 +43,27 @@ func (s *SQLite) migrate() error {
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
 	}
-	_, err = s.db.Exec(string(schema))
-	return err
+	if _, err := s.db.Exec(string(schema)); err != nil {
+		return fmt.Errorf("exec schema: %w", err)
+	}
+
+	// Add missing columns for upgrades from older schema versions
+	return s.migrateColumns()
+}
+
+// migrateColumns adds columns that may not exist in older databases.
+func (s *SQLite) migrateColumns() error {
+addColumn := func(table, column, colType, defaultValue string) {
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s DEFAULT %s", table, column, colType, defaultValue)
+		s.db.Exec(stmt) // ignore error (column already exists)
+	}
+
+addColumn("runs", "kind", "TEXT NOT NULL", "'formal'")
+addColumn("runs", "gpu_index", "INTEGER NOT NULL", "-1")
+addColumn("runs", "program", "TEXT", "''")
+addColumn("runs", "args_json", "TEXT", "'[]'")
+
+	return nil
 }
 
 func (s *SQLite) Close() error {

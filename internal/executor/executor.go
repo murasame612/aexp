@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -64,12 +65,14 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		}
 	}
 
-	// Command allowlist check
-	if err := validateCommand(req.Command); err != nil {
-		return nil, fmt.Errorf("command rejected: %w", err)
+	// Command allowlist check (only for free-form commands)
+	if req.Program == "" && req.Command != "" {
+		if err := validateCommand(req.Command); err != nil {
+			return nil, fmt.Errorf("command rejected: %w", err)
+		}
 	}
 
-	// GPU slot lock: check if the requested GPU is available
+	// GPU slot lock
 	activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
 		ResourceID: req.ResourceID,
 		Status:     store.RunStatusRunning,
@@ -85,11 +88,9 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 
 	for _, active := range activeRuns {
 		if gpuIndex == -1 {
-			// Requesting all GPUs - conflict with any active run
 			return nil, fmt.Errorf("resource %s already has an active run (%s) using GPU %d", resource.Name, active.ID, active.GPUIndex)
 		}
 		if active.GPUIndex == -1 {
-			// An active run is using all GPUs
 			return nil, fmt.Errorf("resource %s has run %s using all GPUs", resource.Name, active.ID)
 		}
 		if active.GPUIndex == gpuIndex {
@@ -108,41 +109,25 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		condaEnv = resource.CondaEnv
 	}
 
-	// Build the full command
-	fullCmd := req.Command
-	if req.Program != "" {
-		// Structured mode: build command from program + args
-		fullCmd = buildStructuredCommand(req.Program, req.Args, req.EnvVars)
+	// Build env vars (GPU env must be injected before command)
+	envVars := copyMap(req.EnvVars)
+	if gpuIndex >= 0 {
+		envVars["CUDA_VISIBLE_DEVICES"] = fmt.Sprintf("%d", gpuIndex)
 	}
-	fullCmd = buildCondaCommand(fullCmd, condaEnv, req.Cwd, resource.RootDir)
 
-	// Create tmux command via wrapper
-	tmuxCmd := fmt.Sprintf(
-		`tmux new-session -d -s '%s' 'bash ~/.aexp/wrapper.sh %s %s'`,
-		tmuxSession,
-		remoteRunDir,
-		shellEscape(fullCmd),
-	)
+	// Build command.sh content
+	commandScript := buildCommandScript(req, condaEnv, resource.RootDir, envVars)
 
-	// Serialize paths and env
+	// Serialize for DB
 	logPathsJSON, _ := json.Marshal(req.LogPaths)
 	artifactPathsJSON, _ := json.Marshal(req.ArtifactPaths)
 	metricPathsJSON, _ := json.Marshal(req.MetricPaths)
-	envJSON, _ := json.Marshal(req.EnvVars)
+	envJSON, _ := json.Marshal(envVars)
 	argsJSON, _ := json.Marshal(req.Args)
 
 	kind := req.Kind
 	if kind == "" {
 		kind = store.RunKindFormal
-	}
-
-	// Set CUDA_VISIBLE_DEVICES if specific GPU requested
-	envVars := req.EnvVars
-	if gpuIndex >= 0 {
-		if envVars == nil {
-			envVars = make(map[string]string)
-		}
-		envVars["CUDA_VISIBLE_DEVICES"] = fmt.Sprintf("%d", gpuIndex)
 	}
 
 	// Create run record
@@ -154,7 +139,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		Kind:              kind,
 		GPUIndex:          gpuIndex,
 		Cwd:               req.Cwd,
-		Command:           fullCmd,
+		Command:           commandForDB(req),
 		Program:           req.Program,
 		ArgsJSON:          string(argsJSON),
 		CondaEnv:          condaEnv,
@@ -171,17 +156,42 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 
+	// Write agent event immediately (before attempting SSH)
+	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "starting"})
+
 	// Ensure wrapper script is deployed
 	if err := e.ensureWrapper(ctx, resource); err != nil {
 		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error()})
 		return nil, fmt.Errorf("deploy wrapper: %w", err)
 	}
 
-	// Execute tmux command via SSH
-	_, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, tmuxCmd)
-	if err != nil {
+	// Create remote run dir and write command.sh
+	setupCmd := fmt.Sprintf("mkdir -p %s/logs", remoteRunDir)
+	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, setupCmd); err != nil {
 		e.updateRunStatus(ctx, run, store.RunStatusFailed)
-		return nil, fmt.Errorf("exec tmux: %w (stderr: %s)", err, stderr)
+		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
+		return nil, fmt.Errorf("create run dir: %w", err)
+	}
+
+	// Write command.sh to remote (base64 to avoid all quoting issues)
+	encoded := base64Encode([]byte(commandScript))
+	writeCmd := fmt.Sprintf("echo %s | base64 -d > %s/command.sh && chmod +x %s/command.sh",
+		encoded, remoteRunDir, remoteRunDir)
+	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, writeCmd); err != nil {
+		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
+		return nil, fmt.Errorf("write command.sh: %w", err)
+	}
+
+	// Launch tmux session — no quoting issues, just pass run_dir
+	tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s 'bash ~/.aexp/wrapper.sh %s'",
+		tmuxSession, remoteRunDir)
+
+	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, tmuxCmd); err != nil {
+		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
+		return nil, fmt.Errorf("launch tmux: %w (stderr: %s)", err, stderr)
 	}
 
 	// Update run to running
@@ -196,16 +206,8 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	resource.Status = store.ResourceStatusBusy
 	e.store.UpdateResource(ctx, resource)
 
-	// Log agent event
-	inputJSON, _ := json.Marshal(req)
-	outputJSON, _ := json.Marshal(map[string]string{"run_id": run.ID, "status": run.Status})
-	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
-		RunID:      run.ID,
-		Actor:      req.CreatedBy,
-		ToolName:   "create_run",
-		InputJSON:  string(inputJSON),
-		OutputJSON: string(outputJSON),
-	})
+	// Update agent event with success
+	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "running"})
 
 	return run, nil
 }
@@ -529,52 +531,107 @@ func cleanPath(p string) string {
 	return "/" + strings.Join(cleaned, "/")
 }
 
-// buildStructuredCommand builds a command from program + args + env vars.
-func buildStructuredCommand(program string, args []string, envVars map[string]string) string {
-	var parts []string
+// buildCommandScript generates the content of command.sh for a run.
+func buildCommandScript(req SubmitRequest, condaEnv, rootDir string, envVars map[string]string) string {
+	var lines []string
 
-	// Set environment variables
+	lines = append(lines, "#!/usr/bin/env bash")
+	lines = append(lines, "set -e")
+
+	// Export environment variables
 	for k, v := range envVars {
-		parts = append(parts, fmt.Sprintf("export %s=%s", k, shellEscape(v)))
+		lines = append(lines, fmt.Sprintf("export %s=%s", k, shellQuote(v)))
 	}
 
-	// Build command: program arg1 arg2 ...
-	cmdParts := []string{program}
-	cmdParts = append(cmdParts, args...)
-	parts = append(parts, strings.Join(cmdParts, " "))
-
-	return strings.Join(parts, " && ")
-}
-
-// buildCondaCommand wraps a command with conda activation and cd.
-func buildCondaCommand(command, condaEnv, cwd, rootDir string) string {
-	var parts []string
-
 	// Source conda
-	parts = append(parts, `source /opt/conda/etc/profile.d/conda.sh 2>/dev/null || true`)
+	lines = append(lines, `source /opt/conda/etc/profile.d/conda.sh 2>/dev/null || true`)
 
 	// Activate env
 	if condaEnv != "" {
-		parts = append(parts, fmt.Sprintf("conda activate %s 2>/dev/null || true", shellEscape(condaEnv)))
+		lines = append(lines, fmt.Sprintf("conda activate %s 2>/dev/null || true", shellQuote(condaEnv)))
 	}
 
 	// cd to working directory
-	if cwd != "" {
-		resolved := cwd
-		if !strings.HasPrefix(cwd, "/") {
-			resolved = rootDir + "/" + cwd
+	if req.Cwd != "" {
+		resolved := req.Cwd
+		if !strings.HasPrefix(req.Cwd, "/") {
+			resolved = rootDir + "/" + req.Cwd
 		}
-		parts = append(parts, fmt.Sprintf("cd %s", shellEscape(resolved)))
+		lines = append(lines, fmt.Sprintf("cd %s", shellQuote(resolved)))
 	}
 
 	// The actual command
-	parts = append(parts, command)
+	if req.Program != "" {
+		// Structured mode: properly escape each arg
+		parts := []string{req.Program}
+		for _, arg := range req.Args {
+			parts = append(parts, shellQuote(arg))
+		}
+		lines = append(lines, strings.Join(parts, " "))
+	} else {
+		// Free-form command: pass through as-is
+		lines = append(lines, req.Command)
+	}
 
-	return strings.Join(parts, " && ")
+	return strings.Join(lines, "\n") + "\n"
 }
 
+// commandForDB returns a human-readable command string for the DB record.
+func commandForDB(req SubmitRequest) string {
+	if req.Program != "" {
+		parts := []string{req.Program}
+		parts = append(parts, req.Args...)
+		return strings.Join(parts, " ")
+	}
+	return req.Command
+}
+
+// shellQuote safely quotes a string for bash using single quotes.
+// Unlike shellEscape, this is for use inside a script file, not nested tmux commands.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// shellEscape is kept for backward compatibility with tmux session names etc.
 func shellEscape(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func copyMap(m map[string]string) map[string]string {
+	if m == nil {
+		return make(map[string]string)
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+func (e *Executor) saveAgentEvent(ctx context.Context, runID, actor, toolName string, input interface{}, output interface{}) {
+	inputJSON := "{}"
+	outputJSON := "{}"
+	if input != nil {
+		if b, err := json.Marshal(input); err == nil {
+			inputJSON = string(b)
+		}
+	}
+	if output != nil {
+		if b, err := json.Marshal(output); err == nil {
+			outputJSON = string(b)
+		}
+	}
+	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
+		RunID:      runID,
+		Actor:      actor,
+		ToolName:   toolName,
+		InputJSON:  inputJSON,
+		OutputJSON: outputJSON,
+	})
 }
 
 // LogLine is a helper type for streaming.

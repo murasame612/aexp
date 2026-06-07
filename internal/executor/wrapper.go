@@ -1,12 +1,12 @@
 package executor
 
 // WrapperScript is deployed to remote resources at ~/.aexp/wrapper.sh.
-// It captures exit codes, timestamps, and separates stdout/stderr.
+// Usage: wrapper.sh <run_dir>
+// It executes <run_dir>/command.sh and captures exit codes, timestamps, stdout/stderr.
 const WrapperScript = `#!/usr/bin/env bash
 set -o pipefail
 
 RUN_DIR="$1"
-shift
 
 mkdir -p "$RUN_DIR/logs"
 
@@ -17,12 +17,12 @@ echo "running" > "$RUN_DIR/status"
 {
   echo "[aexp] ========================================"
   echo "[aexp] Run started at $(date)"
-  echo "[aexp] Command: $*"
+  echo "[aexp] Script: $RUN_DIR/command.sh"
   echo "[aexp] PID: $$"
   echo "[aexp] ========================================"
   echo ""
 
-  "$@"
+  bash "$RUN_DIR/command.sh"
 
   EXIT_CODE=$?
   echo ""
