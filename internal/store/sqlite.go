@@ -62,6 +62,8 @@ addColumn("runs", "kind", "TEXT NOT NULL", "'formal'")
 addColumn("runs", "gpu_index", "INTEGER NOT NULL", "-1")
 addColumn("runs", "program", "TEXT", "''")
 addColumn("runs", "args_json", "TEXT", "'[]'")
+addColumn("resources", "socks_proxy", "TEXT", "''")
+addColumn("resources", "proxy_command", "TEXT", "''")
 
 	return nil
 }
@@ -76,17 +78,17 @@ func (s *SQLite) CreateResource(ctx context.Context, r *Resource) error {
 	r.CreatedAt = time.Now()
 	r.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO resources (id, name, type, host, port, user, auth_ref, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.RootDir, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO resources (id, name, type, host, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	return err
 }
 
 func (s *SQLite) GetResource(ctx context.Context, id string) (*Resource, error) {
 	r := &Resource{}
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources WHERE id = ?`, id).
-		Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources WHERE id = ?`, id).
+		Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -95,8 +97,8 @@ func (s *SQLite) GetResource(ctx context.Context, id string) (*Resource, error) 
 
 func (s *SQLite) GetResourceByName(ctx context.Context, name string) (*Resource, error) {
 	r := &Resource{}
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources WHERE name = ?`, name).
-		Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources WHERE name = ?`, name).
+		Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -104,7 +106,7 @@ func (s *SQLite) GetResourceByName(ctx context.Context, name string) (*Resource,
 }
 
 func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, host, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_env, gpu_indices, tags, status, created_at, updated_at FROM resources ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +115,7 @@ func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
 	resources := make([]Resource, 0)
 	for rows.Next() {
 		var r Resource
-		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		resources = append(resources, r)
@@ -124,8 +126,8 @@ func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
 func (s *SQLite) UpdateResource(ctx context.Context, r *Resource) error {
 	r.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE resources SET name=?, type=?, host=?, port=?, user=?, auth_ref=?, root_dir=?, conda_env=?, gpu_indices=?, tags=?, status=?, updated_at=? WHERE id=?`,
-		r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.RootDir, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.UpdatedAt, r.ID,
+		`UPDATE resources SET name=?, type=?, host=?, port=?, user=?, auth_ref=?, socks_proxy=?, proxy_command=?, root_dir=?, conda_env=?, gpu_indices=?, tags=?, status=?, updated_at=? WHERE id=?`,
+		r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.UpdatedAt, r.ID,
 	)
 	return err
 }

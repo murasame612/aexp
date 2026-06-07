@@ -205,7 +205,7 @@ func resourceListCmd() *cobra.Command {
 }
 
 func resourceAddCmd() *cobra.Command {
-	var name, host, user, rootDir, condaEnv, gpuIndices, tags, authRef string
+	var name, host, user, rootDir, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
 	var port int
 	var resType string
 
@@ -221,18 +221,20 @@ func resourceAddCmd() *cobra.Command {
 			defer db.Close()
 
 			r := &store.Resource{
-				ID:         genID("rsrc_"),
-				Name:       name,
-				Type:       resType,
-				Host:       host,
-				Port:       port,
-				User:       user,
-				AuthRef:    authRef,
-				RootDir:    rootDir,
-				CondaEnv:   condaEnv,
-				GPUIndices: gpuIndices,
-				Tags:       tags,
-				Status:     store.ResourceStatusUnknown,
+				ID:           genID("rsrc_"),
+				Name:         name,
+				Type:         resType,
+				Host:         host,
+				Port:         port,
+				User:         user,
+				AuthRef:      authRef,
+				RootDir:      rootDir,
+				CondaEnv:     condaEnv,
+				GPUIndices:   gpuIndices,
+				Tags:         tags,
+				SocksProxy:   socksProxy,
+				ProxyCommand: proxyCommand,
+				Status:       store.ResourceStatusUnknown,
 			}
 
 			if err := db.CreateResource(cmd.Context(), r); err != nil {
@@ -254,6 +256,8 @@ func resourceAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gpuIndices, "gpu-indices", "", "Visible GPU indices (e.g. 0,1)")
 	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
 	cmd.Flags().StringVar(&authRef, "auth-ref", "", "SSH key path (default: ~/.aexp/id_ed25519)")
+	cmd.Flags().StringVar(&socksProxy, "socks-proxy", "", "SOCKS5 proxy (host:port)")
+	cmd.Flags().StringVar(&proxyCommand, "proxy-command", "", "SSH ProxyCommand (e.g. 'nc -X 5 -x host:port %h %p')")
 
 	return cmd
 }
@@ -285,6 +289,8 @@ func resourceExploreCmd() *cobra.Command {
 	var user string
 	var port int
 	var keyPath string
+	var socksProxy string
+	var proxyCommand string
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -302,7 +308,7 @@ func resourceExploreCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "Exploring %s@%s:%d ...\n", user, host, port)
 
-			d, err := explore.Explore(cmd.Context(), sshPool, host, port, user, keyPath)
+			d, err := explore.Explore(cmd.Context(), sshPool, host, port, user, keyPath, socksProxy, proxyCommand)
 			if err != nil {
 				return err
 			}
@@ -319,6 +325,8 @@ func resourceExploreCmd() *cobra.Command {
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
 	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
 	cmd.Flags().StringVar(&keyPath, "key", "~/.aexp/id_ed25519", "SSH key path")
+	cmd.Flags().StringVar(&socksProxy, "socks-proxy", "", "SOCKS5 proxy (host:port)")
+	cmd.Flags().StringVar(&proxyCommand, "proxy-command", "", "SSH ProxyCommand (e.g. 'nc -X 5 -x host:port %h %p')")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd

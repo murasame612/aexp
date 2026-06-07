@@ -309,7 +309,7 @@ func (s *Server) handleTestResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pool := s.executor.Pool()
-	_, _, err := pool.Exec(r.Context(), res.Host, res.Port, res.User, res.AuthRef, "echo ok")
+	_, _, err := pool.Exec(r.Context(), res.Host, res.Port, res.User, res.AuthRef, "echo ok", res.SocksProxy, res.ProxyCommand)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": err.Error()})
 		return

@@ -1,18 +1,20 @@
 CREATE TABLE IF NOT EXISTS resources (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    type        TEXT NOT NULL DEFAULT 'ssh',
-    host        TEXT NOT NULL,
-    port        INTEGER NOT NULL DEFAULT 22,
-    user        TEXT NOT NULL DEFAULT 'root',
-    auth_ref    TEXT DEFAULT '',
-    root_dir    TEXT NOT NULL,
-    conda_env   TEXT DEFAULT '',
-    gpu_indices TEXT DEFAULT '',
-    tags        TEXT DEFAULT '',
-    status      TEXT NOT NULL DEFAULT 'unknown',
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    type          TEXT NOT NULL DEFAULT 'ssh',
+    host          TEXT NOT NULL,
+    port          INTEGER NOT NULL DEFAULT 22,
+    user          TEXT NOT NULL DEFAULT 'root',
+    auth_ref      TEXT DEFAULT '',
+    socks_proxy   TEXT DEFAULT '',
+    proxy_command TEXT DEFAULT '',
+    root_dir      TEXT NOT NULL,
+    conda_env     TEXT DEFAULT '',
+    gpu_indices   TEXT DEFAULT '',
+    tags          TEXT DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'unknown',
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS runs (

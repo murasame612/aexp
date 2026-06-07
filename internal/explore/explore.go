@@ -45,13 +45,13 @@ type Workspace struct {
 }
 
 // Explore runs discovery probes on a remote host and returns the results.
-func Explore(ctx context.Context, pool *executor.SSHPool, host string, port int, user string, keyPath string) (*Discovery, error) {
+func Explore(ctx context.Context, pool *executor.SSHPool, host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*Discovery, error) {
 	d := &Discovery{Host: host}
 
 	// Single big probe script to minimize SSH roundtrips
 	script := buildProbeScript()
 
-	stdout, stderr, err := pool.Exec(ctx, host, port, user, keyPath, script)
+	stdout, stderr, err := pool.Exec(ctx, host, port, user, keyPath, script, socksProxy, proxyCommand)
 	if err != nil {
 		return nil, fmt.Errorf("ssh exec failed: %w (stderr: %s)", err, stderr)
 	}
@@ -128,7 +128,13 @@ echo "$count"
 func parseProbeOutput(output string, d *Discovery) {
 	sections := strings.Split(output, "---")
 
-	for i := 0; i < len(sections)-1; i += 2 {
+	// Skip leading empty element from split (before first ---)
+	start := 0
+	if len(sections) > 0 && strings.TrimSpace(sections[0]) == "" {
+		start = 1
+	}
+
+	for i := start; i < len(sections)-1; i += 2 {
 		tag := strings.TrimSpace(sections[i])
 		content := ""
 		if i+1 < len(sections) {

@@ -1,6 +1,9 @@
 package executor
 
-import "crypto/sha256"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+)
 
 // WrapperScript is deployed to remote resources at ~/.aexp/wrapper.sh.
 // Usage: wrapper.sh <run_dir>
@@ -52,5 +55,5 @@ var WrapperHash string
 
 func init() {
 	h := sha256.Sum256([]byte(WrapperScript))
-	WrapperHash = string(h[:8]) // first 8 bytes as version tag
+	WrapperHash = hex.EncodeToString(h[:8])
 }

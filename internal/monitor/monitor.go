@@ -142,7 +142,7 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) {
 // PollResource executes the probe script and parses the result.
 func (m *Manager) PollResource(ctx context.Context, r *store.Resource) (*store.Snapshot, error) {
 	probeScript := buildProbeScript(r.RootDir)
-	stdout, stderr, err := m.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, probeScript)
+	stdout, stderr, err := m.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, probeScript, r.SocksProxy, r.ProxyCommand)
 	if err != nil {
 		return nil, fmt.Errorf("exec probe: %w (stderr: %s)", err, stderr)
 	}
@@ -177,7 +177,13 @@ df -BM %s 2>/dev/null | tail -1`, rootDir)
 func parseProbeOutput(output string, snap *store.Snapshot) {
 	sections := strings.Split(output, "---")
 
-	for i := 0; i < len(sections)-1; i += 2 {
+	// Skip leading empty element from split (before first ---)
+	start := 0
+	if len(sections) > 0 && strings.TrimSpace(sections[0]) == "" {
+		start = 1
+	}
+
+	for i := start; i < len(sections)-1; i += 2 {
 		tag := strings.TrimSpace(sections[i])
 		content := ""
 		if i+1 < len(sections) {

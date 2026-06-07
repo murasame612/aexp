@@ -94,6 +94,26 @@ aexp runs:  0 active
 | `--gpu-indices` | (空) | 可见 GPU 索引，如 0,1 |
 | `--tags` | (空) | 逗号分隔标签 |
 | `--auth-ref` | ~/.aexp/id_ed25519 | SSH 密钥路径 |
+| `--socks-proxy` | (空) | SOCKS5 代理 (host:port) |
+| `--proxy-command` | (空) | SSH ProxyCommand (如 `'nc -X 5 -x host:port %h %p'`) |
+
+#### 通过代理连接资源
+
+```bash
+# SOCKS5 代理
+./aexp resource add \
+  --name gpu-server \
+  --host 10.0.0.5 \
+  --root-dir /workspace \
+  --socks-proxy proxy.example.com:1080
+
+# SSH ProxyCommand (如通过跳板机)
+./aexp resource add \
+  --name gpu-server \
+  --host 10.0.0.5 \
+  --root-dir /workspace \
+  --proxy-command "nc -X 5 -x member.aicloud.szu.edu.cn:30027 %h %p"
+```
 
 #### 列出资源
 

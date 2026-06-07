@@ -48,6 +48,16 @@ func (e *Executor) Pool() *SSHPool {
 	return e.pool
 }
 
+// exec is a helper that runs a command on a resource, using its proxy settings if configured.
+func (e *Executor) exec(ctx context.Context, r *store.Resource, cmd string) (string, string, error) {
+	return e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, cmd, r.SocksProxy, r.ProxyCommand)
+}
+
+// execStream is a helper that streams a command's stdout from a resource.
+func (e *Executor) execStream(ctx context.Context, r *store.Resource, cmd string) (<-chan string, error) {
+	return e.pool.ExecStream(ctx, r.Host, r.Port, r.User, r.AuthRef, cmd, r.SocksProxy, r.ProxyCommand)
+}
+
 // Submit creates and starts a new run on a resource.
 func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, error) {
 	resource, err := e.store.GetResource(ctx, req.ResourceID)
@@ -168,7 +178,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 
 	// Create remote run dir and write command.sh
 	setupCmd := fmt.Sprintf("mkdir -p %s/logs", remoteRunDir)
-	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, setupCmd); err != nil {
+	if _, stderr, err := e.exec(ctx, resource, setupCmd); err != nil {
 		e.updateRunStatus(ctx, run, store.RunStatusFailed)
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("create run dir: %w", err)
@@ -178,7 +188,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	encoded := base64Encode([]byte(commandScript))
 	writeCmd := fmt.Sprintf("echo %s | base64 -d > %s/command.sh && chmod +x %s/command.sh",
 		encoded, remoteRunDir, remoteRunDir)
-	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, writeCmd); err != nil {
+	if _, stderr, err := e.exec(ctx, resource, writeCmd); err != nil {
 		e.updateRunStatus(ctx, run, store.RunStatusFailed)
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("write command.sh: %w", err)
@@ -188,7 +198,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s 'bash ~/.aexp/wrapper.sh %s'",
 		tmuxSession, remoteRunDir)
 
-	if _, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, tmuxCmd); err != nil {
+	if _, stderr, err := e.exec(ctx, resource, tmuxCmd); err != nil {
 		e.updateRunStatus(ctx, run, store.RunStatusFailed)
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("launch tmux: %w (stderr: %s)", err, stderr)
@@ -234,7 +244,7 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 
 	// Check if exit_code file exists
 	exitCodeFile := run.RemoteRunDir + "/exit_code"
-	out, _, _ := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+	out, _, _ := e.exec(ctx, resource,
 		fmt.Sprintf("cat %s 2>/dev/null", exitCodeFile))
 
 	if strings.TrimSpace(out) != "" {
@@ -256,7 +266,7 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	}
 
 	// Check if tmux session still exists
-	tmuxOut, _, tmuxErr := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+	tmuxOut, _, tmuxErr := e.exec(ctx, resource,
 		fmt.Sprintf("tmux has-session -t %s 2>&1; echo $?", run.TmuxSession))
 
 	if strings.TrimSpace(tmuxOut) != "0" {
@@ -297,7 +307,7 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 	}
 
 	cmd := fmt.Sprintf("tail -f -n %d %s", lastN, logFile)
-	ch, err := e.pool.ExecStream(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, cmd)
+	ch, err := e.execStream(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +354,7 @@ func (e *Executor) GetLogSnapshot(ctx context.Context, runID string, source stri
 	logFile := fmt.Sprintf("%s/logs/%s.log", run.RemoteRunDir, source)
 	cmd := fmt.Sprintf("tail -n %d %s 2>/dev/null", lastN, logFile)
 
-	out, _, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, cmd)
+	out, _, err := e.exec(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -383,11 +393,11 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	}
 
 	// Send Ctrl+C to tmux session
-	_, _, err = e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+	_, _, err = e.exec(ctx, resource,
 		fmt.Sprintf("tmux send-keys -t %s C-c", run.TmuxSession))
 	if err != nil {
 		// Try to kill the session directly
-		e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+		e.exec(ctx, resource,
 			fmt.Sprintf("tmux kill-session -t %s 2>/dev/null", run.TmuxSession))
 	}
 
@@ -395,12 +405,12 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	time.Sleep(2 * time.Second)
 
 	// Check if session is gone
-	out, _, _ := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+	out, _, _ := e.exec(ctx, resource,
 		fmt.Sprintf("tmux has-session -t %s 2>&1; echo $?", run.TmuxSession))
 
 	if strings.TrimSpace(out) == "0" {
 		// Still running, force kill
-		e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+		e.exec(ctx, resource,
 			fmt.Sprintf("tmux kill-session -t %s 2>/dev/null", run.TmuxSession))
 	}
 
@@ -411,7 +421,7 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	e.store.UpdateRun(ctx, run)
 
 	// Write status to remote
-	e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef,
+	e.exec(ctx, resource,
 		fmt.Sprintf("echo 'cancelled' > %s/status", run.RemoteRunDir))
 
 	e.checkResourceIdle(ctx, resource)
@@ -432,27 +442,27 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {
 	// Check if wrapper exists AND has the correct version
 	checkCmd := "cat ~/.aexp/wrapper.version 2>/dev/null || echo none"
-	out, _, _ := e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, checkCmd)
+	out, _, _ := e.exec(ctx, r, checkCmd)
 	if strings.TrimSpace(out) == WrapperHash {
 		return nil // up to date
 	}
 
 	// Deploy wrapper
 	mkdirCmd := "mkdir -p ~/.aexp"
-	if _, _, err := e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, mkdirCmd); err != nil {
+	if _, _, err := e.exec(ctx, r, mkdirCmd); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
 	// Write wrapper script via base64 (avoids heredoc quoting issues)
 	encoded := base64Encode([]byte(WrapperScript))
 	writeCmd := fmt.Sprintf("echo %s | base64 -d > ~/.aexp/wrapper.sh && chmod +x ~/.aexp/wrapper.sh", encoded)
-	if _, stderr, err := e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, writeCmd); err != nil {
+	if _, stderr, err := e.exec(ctx, r, writeCmd); err != nil {
 		return fmt.Errorf("write wrapper: %w (stderr: %s)", err, stderr)
 	}
 
 	// Write version tag
-	versionCmd := fmt.Sprintf("echo %s > ~/.aexp/wrapper.version", WrapperHash)
-	e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, versionCmd)
+	versionCmd := fmt.Sprintf("printf %%s %s > ~/.aexp/wrapper.version", shellQuote(WrapperHash))
+	e.exec(ctx, r, versionCmd)
 
 	return nil
 }

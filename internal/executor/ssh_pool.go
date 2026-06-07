@@ -6,11 +6,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/proxy"
 )
 
 // SSHPool manages persistent SSH connections keyed by host:port.
@@ -47,7 +51,10 @@ func (p *SSHPool) AddKey(keyPath string) error {
 }
 
 // Get returns an existing or new SSH connection for the given host.
-func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, keyPath string) (*ssh.Client, error) {
+// socksProxy is optional, e.g. "member.aicloud.szu.edu.cn:30027" for SOCKS5.
+// proxyCommand is optional, e.g. "nc -X 5 -x host:port %h %p" for SSH ProxyCommand.
+// If both are set, proxyCommand takes precedence.
+func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*ssh.Client, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 
 	p.mu.RLock()
@@ -80,14 +87,94 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 		Timeout:         p.timeout,
 	}
 
-	client, err = ssh.Dial("tcp", addr, config)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+	// Dial order: proxyCommand > socksProxy > direct
+	if proxyCommand != "" {
+		conn, dialErr := p.dialViaProxyCommand(proxyCommand, host, port)
+		if dialErr != nil {
+			return nil, fmt.Errorf("proxy command dial: %w", dialErr)
+		}
+		sshConn, chans, reqs, handshakeErr := ssh.NewClientConn(conn, addr, config)
+		if handshakeErr != nil {
+			conn.Close()
+			return nil, fmt.Errorf("ssh handshake via proxy command: %w", handshakeErr)
+		}
+		client = ssh.NewClient(sshConn, chans, reqs)
+	} else if socksProxy != "" {
+		dialer, dialErr := proxy.SOCKS5("tcp", socksProxy, nil, proxy.Direct)
+		if dialErr != nil {
+			return nil, fmt.Errorf("socks5 proxy %s: %w", socksProxy, dialErr)
+		}
+		conn, dialErr := dialer.Dial("tcp", addr)
+		if dialErr != nil {
+			return nil, fmt.Errorf("socks5 dial %s via %s: %w", addr, socksProxy, dialErr)
+		}
+		sshConn, chans, reqs, handshakeErr := ssh.NewClientConn(conn, addr, config)
+		if handshakeErr != nil {
+			conn.Close()
+			return nil, fmt.Errorf("ssh handshake %s via %s: %w", addr, socksProxy, handshakeErr)
+		}
+		client = ssh.NewClient(sshConn, chans, reqs)
+	} else {
+		client, err = ssh.Dial("tcp", addr, config)
+		if err != nil {
+			return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+		}
 	}
 
 	p.conns[addr] = client
 	return client, nil
 }
+
+// dialViaProxyCommand runs an SSH ProxyCommand and returns the connection.
+// Replaces %h with host and %p with port in the command template.
+func (p *SSHPool) dialViaProxyCommand(tmpl string, host string, port int) (net.Conn, error) {
+	cmdStr := strings.ReplaceAll(tmpl, "%h", host)
+	cmdStr = strings.ReplaceAll(cmdStr, "%p", fmt.Sprintf("%d", port))
+
+	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("proxy cmd stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("proxy cmd stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("proxy cmd start: %w", err)
+	}
+
+	// Wrap as net.Conn
+	conn := &cmdConn{
+		stdin:  stdin,
+		stdout: stdout,
+		cmd:    cmd,
+	}
+	return conn, nil
+}
+
+// cmdConn wraps a command's stdin/stdout as a net.Conn.
+type cmdConn struct {
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	cmd    *exec.Cmd
+}
+
+func (c *cmdConn) Read(b []byte) (int, error)  { return c.stdout.Read(b) }
+func (c *cmdConn) Write(b []byte) (int, error)  { return c.stdin.Write(b) }
+func (c *cmdConn) Close() error {
+	c.stdin.Close()
+	c.stdout.Close()
+	return c.cmd.Process.Kill()
+}
+func (c *cmdConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *cmdConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *cmdConn) SetDeadline(t time.Time) error      { return nil }
+func (c *cmdConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *cmdConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (p *SSHPool) findSigner(keyPath string) (ssh.Signer, error) {
 	if keyPath != "" {
@@ -153,8 +240,8 @@ func isAlive(client *ssh.Client) bool {
 }
 
 // Exec runs a command and returns stdout+stderr as strings.
-func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, keyPath string, cmd string) (string, string, error) {
-	session, err := p.newSession(host, port, user, keyPath)
+func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (string, string, error) {
+	session, err := p.newSession(host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return "", "", err
 	}
@@ -186,8 +273,8 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 }
 
 // ExecStream runs a command and streams stdout lines to a channel.
-func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user string, keyPath string, cmd string) (<-chan string, error) {
-	session, err := p.newSession(host, port, user, keyPath)
+func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (<-chan string, error) {
+	session, err := p.newSession(host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +309,9 @@ func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user st
 	return ch, nil
 }
 
-func (p *SSHPool) newSession(host string, port int, user string, keyPath string) (*ssh.Session, error) {
+func (p *SSHPool) newSession(host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*ssh.Session, error) {
 	ctx := context.Background()
-	client, err := p.Get(ctx, host, port, user, keyPath)
+	client, err := p.Get(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +320,7 @@ func (p *SSHPool) newSession(host string, port int, user string, keyPath string)
 	if err != nil {
 		// Stale connection, retry once
 		p.RemoveByHost(host, port)
-		client, err = p.Get(ctx, host, port, user, keyPath)
+		client, err = p.Get(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
 		if err != nil {
 			return nil, err
 		}

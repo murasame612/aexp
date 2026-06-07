@@ -7,20 +7,22 @@ import (
 
 // Resource represents a compute resource (SSH server, container, etc.)
 type Resource struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Type       string    `json:"type"` // ssh, docker, local, slurm, k8s
-	Host       string    `json:"host"`
-	Port       int       `json:"port"`
-	User       string    `json:"user"`
-	AuthRef    string    `json:"auth_ref"`
-	RootDir    string    `json:"root_dir"`
-	CondaEnv   string    `json:"conda_env"`
-	GPUIndices string    `json:"gpu_indices"`
-	Tags       string    `json:"tags"`
-	Status     string    `json:"status"` // idle, busy, error, unreachable
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"` // ssh, docker, local, slurm, k8s
+	Host         string    `json:"host"`
+	Port         int       `json:"port"`
+	User         string    `json:"user"`
+	AuthRef      string    `json:"auth_ref"`
+	SocksProxy   string    `json:"socks_proxy"`  // host:port for SOCKS5 proxy
+	ProxyCommand string    `json:"proxy_command"` // raw ProxyCommand (future)
+	RootDir      string    `json:"root_dir"`
+	CondaEnv     string    `json:"conda_env"`
+	GPUIndices   string    `json:"gpu_indices"`
+	Tags         string    `json:"tags"`
+	Status       string    `json:"status"` // idle, busy, error, unreachable
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Run represents a single experiment execution.
