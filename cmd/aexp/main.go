@@ -13,6 +13,7 @@ import (
 
 	"github.com/ziwu/aexp/internal/api"
 	"github.com/ziwu/aexp/internal/executor"
+	"github.com/ziwu/aexp/internal/explore"
 	"github.com/ziwu/aexp/internal/monitor"
 	"github.com/ziwu/aexp/internal/store"
 )
@@ -155,6 +156,7 @@ func resourceCmd() *cobra.Command {
 	cmd.AddCommand(resourceListCmd())
 	cmd.AddCommand(resourceAddCmd())
 	cmd.AddCommand(resourceRemoveCmd())
+	cmd.AddCommand(resourceExploreCmd())
 
 	return cmd
 }
@@ -271,6 +273,49 @@ func resourceRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func resourceExploreCmd() *cobra.Command {
+	var user string
+	var port int
+	var keyPath string
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "explore [host]",
+		Short: "Discover environment on a remote host (GPU, conda, workspace, etc.)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			host := args[0]
+
+			sshPool := executor.NewSSHPool(10 * time.Second)
+			keyPath = expandPath(keyPath)
+			if _, err := os.Stat(keyPath); err == nil {
+				sshPool.AddKey(keyPath)
+			}
+
+			fmt.Fprintf(os.Stderr, "Exploring %s@%s:%d ...\n", user, host, port)
+
+			d, err := explore.Explore(cmd.Context(), sshPool, host, port, user, keyPath)
+			if err != nil {
+				return err
+			}
+
+			if asJSON {
+				return printJSON(d)
+			}
+
+			fmt.Print(explore.FormatDiscovery(d))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
+	cmd.Flags().StringVar(&keyPath, "key", "~/.aexp/id_ed25519", "SSH key path")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+
+	return cmd
 }
 
 // --- run ---
