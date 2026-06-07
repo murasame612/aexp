@@ -117,28 +117,50 @@ aexp runs:  0 active
 
 #### 提交实验
 
+两种模式：
+
+**结构化模式（默认，推荐）** — argv 精确保留：
+
 ```bash
 ./aexp run submit \
   --resource mu-tslib \
   --name "ECL-iTransformer-run1" \
   --cwd /workspace/Time-Series-Library \
   --conda-env tslib \
-  -- python train.py --data ECL --model iTransformer
+  -- python train.py --data ECL --model iTransformer --lr 0.001
 ```
 
-注意：`--` 之后的所有内容都是要执行的命令。
+**Shell 模式（`--shell`）** — 需要 shell 语法时：
+
+```bash
+./aexp run submit \
+  --resource mu-tslib \
+  --shell \
+  -- 'echo start; python train.py --data ECL | tee output.log'
+```
+
+**指定 GPU：**
+
+```bash
+./aexp run submit --resource mu-tslib --gpu-index 0 -- python train.py
+```
+
+注意：`--` 之后的所有内容是要执行的命令（默认 argv 模式）。
 
 必填参数：`--resource`, 命令部分
 
 可选参数：
-| 参数 | 说明 |
-|---|---|
-| `--name` | 运行名称（方便记忆） |
-| `--cwd` | 工作目录（相对于 root-dir 或绝对路径） |
-| `--conda-env` | 覆盖资源默认的 conda 环境 |
-| `--log-paths` | 日志文件 glob，如 `logs/*.log` |
-| `--artifact-paths` | 产物文件 glob |
-| `--metric-paths` | 指标文件 glob |
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--name` | (空) | 运行名称（方便记忆） |
+| `--kind` | formal | 类型: smoke/pilot/formal/ablation |
+| `--gpu-index` | -1 | GPU 索引（-1 为全部） |
+| `--shell` | false | Shell 模式：用 bash -lc 解释命令 |
+| `--cwd` | (空) | 工作目录（相对于 root-dir 或绝对路径） |
+| `--conda-env` | (空) | 覆盖资源默认的 conda 环境 |
+| `--log-paths` | (空) | 日志文件 glob，如 `logs/*.log` |
+| `--artifact-paths` | (空) | 产物文件 glob |
+| `--metric-paths` | (空) | 指标文件 glob |
 
 #### 列出运行
 
