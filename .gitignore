@@ -1,0 +1,46 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/aexp
+/vendor/
+
+# Build
+/dist/
+/build/
+/bin/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (local)
+.aexp/
+config.yaml
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+
+# Code graph
+.codegraph/
