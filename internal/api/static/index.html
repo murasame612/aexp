@@ -33,9 +33,16 @@
         <!-- Header -->
         <div class="flex items-center justify-between mb-8">
             <h1 class="text-2xl font-bold">aexp</h1>
-            <div class="flex gap-4">
+            <div class="flex items-center gap-3">
                 <button onclick="loadData()" class="px-3 py-1 bg-slate-700 rounded hover:bg-slate-600">Refresh</button>
                 <span id="status-indicator" class="text-sm text-slate-400">Loading...</span>
+                <div id="token-bar" class="flex items-center gap-2">
+                    <input id="token-input" type="password" placeholder="API Token"
+                        class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm w-48 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        onkeydown="if(event.key==='Enter')saveToken()">
+                    <button onclick="saveToken()" class="px-2 py-1 bg-blue-600 rounded text-sm hover:bg-blue-500">Set</button>
+                    <button id="token-clear" onclick="clearToken()" class="px-2 py-1 bg-slate-700 rounded text-sm hover:bg-slate-600 hidden">Clear</button>
+                </div>
             </div>
         </div>
 
@@ -110,31 +117,97 @@
         const API = '/api/v1';
         let ws = null;
 
+        // --- Token management ---
+        function getToken() {
+            return localStorage.getItem('aexp_token') || '';
+        }
+
+        function saveToken() {
+            const input = document.getElementById('token-input');
+            const token = input.value.trim();
+            if (!token) return;
+            localStorage.setItem('aexp_token', token);
+            input.value = '';
+            updateTokenUI();
+            loadData();
+        }
+
+        function clearToken() {
+            localStorage.removeItem('aexp_token');
+            updateTokenUI();
+            loadData();
+        }
+
+        function updateTokenUI() {
+            const has = !!getToken();
+            document.getElementById('token-clear').classList.toggle('hidden', !has);
+            document.getElementById('token-input').classList.toggle('border-red-500', false);
+        }
+
+        function authHeaders() {
+            const token = getToken();
+            return token ? { 'Authorization': 'Bearer ' + token } : {};
+        }
+
         async function fetchJSON(url) {
-            const res = await fetch(API + url);
-            return res.json();
+            try {
+                const res = await fetch(API + url, { headers: authHeaders() });
+                if (res.status === 401) {
+                    document.getElementById('token-input').classList.add('border-red-500');
+                    document.getElementById('token-input').focus();
+                    return null;
+                }
+                if (!res.ok) return null;
+                const data = await res.json();
+                return data;
+            } catch {
+                return null;
+            }
+        }
+
+        function asArray(v) {
+            return Array.isArray(v) ? v : [];
+        }
+
+        function asObject(v) {
+            return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+        }
+
+        function asText(v) {
+            return v === null || v === undefined ? '' : String(v);
+        }
+
+        function logLines(logs) {
+            return asArray(asObject(logs).lines);
         }
 
         async function loadData() {
-            try {
-                const [stats, resources, runs] = await Promise.all([
-                    fetchJSON('/stats'),
-                    fetchJSON('/resources'),
-                    fetchJSON('/runs?limit=20')
-                ]);
+            const [stats, resources, runs] = await Promise.all([
+                fetchJSON('/stats'),
+                fetchJSON('/resources'),
+                fetchJSON('/runs?limit=20')
+            ]);
 
-                document.getElementById('stat-resources').textContent = stats.total_resources || 0;
-                document.getElementById('stat-active-runs').textContent = stats.active_runs || 0;
-                document.getElementById('stat-total-runs').textContent = stats.total_runs || 0;
+            const s = asObject(stats);
+            document.getElementById('stat-resources').textContent = s.total_resources || 0;
+            document.getElementById('stat-active-runs').textContent = s.active_runs || 0;
+            document.getElementById('stat-total-runs').textContent = s.total_runs || 0;
 
-                renderResourceCards(resources || []);
-                renderActiveRuns((runs || []).filter(r => r.status === 'running'));
-                renderResourcesTable(resources || []);
-                renderRunsTable(runs || []);
+            const resArr = asArray(resources);
+            const runArr = asArray(runs);
+            renderResourceCards(resArr);
+            renderActiveRuns(runArr.filter(r => asObject(r).status === 'running'));
+            renderResourcesTable(resArr);
+            renderRunsTable(runArr);
 
+            const hasToken = !!getToken();
+            const got401 = (stats === null && resources === null && runs === null);
+            if (got401 && !hasToken) {
+                document.getElementById('status-indicator').textContent = 'Set API token above';
+            } else if (got401) {
+                document.getElementById('status-indicator').textContent = 'Invalid token';
+            } else {
                 document.getElementById('status-indicator').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-            } catch (e) {
-                document.getElementById('status-indicator').textContent = 'Error: ' + e.message;
             }
         }
 
@@ -145,6 +218,7 @@
                 return;
             }
             container.innerHTML = resources.map(r => {
+                r = asObject(r);
                 const snap = r.latest_snapshot || {};
                 const gpus = tryParseJSON(snap.gpu_json, []);
                 return `
@@ -165,13 +239,15 @@
                                 ${progressBar(snap.mem_total_mb ? (snap.mem_used_mb/snap.mem_total_mb*100) : 0)}
                                 <span class="w-20 text-right">${formatMB(snap.mem_used_mb)} / ${formatMB(snap.mem_total_mb)}</span>
                             </div>
-                            ${gpus.map(g => `
+                            ${asArray(gpus).map(g => {
+                                g = asObject(g);
+                                return `
                                 <div class="flex items-center gap-2 text-xs">
                                     <span class="w-10">GPU${g.index}</span>
                                     ${progressBar(g.util)}
                                     <span class="w-20 text-right">${formatMB(g.mem_used)} / ${formatMB(g.mem_total)}</span>
-                                </div>
-                            `).join('')}
+                                </div>`;
+                            }).join('')}
                         </div>
                     </div>`;
             }).join('');
@@ -183,15 +259,18 @@
                 container.innerHTML = '<div class="text-slate-400">No active runs</div>';
                 return;
             }
-            container.innerHTML = runs.map(r => `
-                <div class="card cursor-pointer hover:border-slate-500" onclick="showRunDetail('${r.id}')">
-                    <div class="flex justify-between items-start mb-1">
-                        <span class="font-medium text-sm">${r.name || r.id}</span>
-                        <span class="text-xs status-${r.status}">${r.status}</span>
-                    </div>
-                    <div class="text-xs text-slate-400">${r.resource_id} | ${r.command.substring(0, 60)}${r.command.length > 60 ? '...' : ''}</div>
-                </div>
-            `).join('');
+            container.innerHTML = runs.map(r => {
+                r = asObject(r);
+                const command = asText(r.command);
+                return `
+                    <div class="card cursor-pointer hover:border-slate-500" onclick="showRunDetail('${r.id}')">
+                        <div class="flex justify-between items-start mb-1">
+                            <span class="font-medium text-sm">${r.name || r.id}</span>
+                            <span class="text-xs status-${r.status}">${r.status}</span>
+                        </div>
+                        <div class="text-xs text-slate-400">${r.resource_id || '-'} | ${command.substring(0, 60)}${command.length > 60 ? '...' : ''}</div>
+                    </div>`;
+            }).join('');
         }
 
         function renderResourcesTable(resources) {
@@ -206,7 +285,8 @@
                         <th class="py-2">Name</th><th>Type</th><th>Host</th><th>GPU</th><th>Status</th><th>CPU</th><th>MEM</th>
                     </tr></thead>
                     <tbody>${resources.map(r => {
-                        const snap = r.latest_snapshot || {};
+                        r = asObject(r);
+                        const snap = asObject(r.latest_snapshot);
                         return `<tr class="border-b border-slate-800 hover:bg-slate-800">
                             <td class="py-2"><a href="#" onclick="showRunDetail; return false;">${r.name}</a></td>
                             <td>${r.type}</td><td>${r.host}</td><td>${r.gpu_indices || '-'}</td>
@@ -229,22 +309,27 @@
                     <thead><tr class="text-left text-slate-400 border-b border-slate-700">
                         <th class="py-2">ID</th><th>Name</th><th>Resource</th><th>Status</th><th>Command</th>
                     </tr></thead>
-                    <tbody>${runs.map(r => `
-                        <tr class="border-b border-slate-800 hover:bg-slate-800 cursor-pointer" onclick="showRunDetail('${r.id}')">
-                            <td class="py-2 font-mono text-xs">${r.id}</td>
-                            <td>${r.name || '-'}</td>
-                            <td>${r.resource_id}</td>
-                            <td class="status-${r.status}">${r.status}</td>
-                            <td class="truncate max-w-xs">${r.command.substring(0, 80)}</td>
-                        </tr>
-                    `).join('')}</tbody>
+                    <tbody>${runs.map(r => {
+                        r = asObject(r);
+                        return `
+                            <tr class="border-b border-slate-800 hover:bg-slate-800 cursor-pointer" onclick="showRunDetail('${r.id}')">
+                                <td class="py-2 font-mono text-xs">${r.id || '-'}</td>
+                                <td>${r.name || '-'}</td>
+                                <td>${r.resource_id || '-'}</td>
+                                <td class="status-${r.status}">${r.status || '-'}</td>
+                                <td class="truncate max-w-xs">${asText(r.command).substring(0, 80)}</td>
+                            </tr>`;
+                    }).join('')}</tbody>
                 </table>`;
         }
 
         async function showRunDetail(id) {
             const run = await fetchJSON(`/runs/${id}`);
-            const logs = await fetchJSON(`/runs/${id}/logs?source=stdout&limit=100`);
-            const errLogs = await fetchJSON(`/runs/${id}/logs?source=stderr&limit=50`);
+            if (!run) return;
+            const logs = asObject(await fetchJSON(`/runs/${id}/logs?source=stdout&limit=100`));
+            const errLogs = asObject(await fetchJSON(`/runs/${id}/logs?source=stderr&limit=50`));
+            const stdoutLines = logLines(logs);
+            const stderrLines = logLines(errLogs);
 
             document.getElementById('detail-title').textContent = `Run: ${run.name || run.id}`;
             document.getElementById('detail-content').innerHTML = `
@@ -259,12 +344,12 @@
                 </div>
                 <div class="mb-4">
                     <h3 class="text-sm font-medium mb-2">stdout (${logs.total_lines || 0} lines)</h3>
-                    <div class="log-pane" id="log-pane">${(logs.lines||[]).map(l => l.content).join('\n')}</div>
+                    <div class="log-pane" id="log-pane">${stdoutLines.map(l => asText(asObject(l).content)).join('\n')}</div>
                 </div>
-                ${(errLogs.lines||[]).length > 0 ? `
+                ${stderrLines.length > 0 ? `
                 <div class="mb-4">
                     <h3 class="text-sm font-medium mb-2">stderr</h3>
-                    <div class="log-pane text-red-400">${errLogs.lines.map(l => l.content).join('\n')}</div>
+                    <div class="log-pane text-red-400">${stderrLines.map(l => asText(asObject(l).content)).join('\n')}</div>
                 </div>` : ''}
                 ${run.status === 'running' ? `<button onclick="cancelRun('${run.id}')" class="px-4 py-2 bg-red-600 rounded hover:bg-red-500">Cancel Run</button>` : ''}
             `;
@@ -303,7 +388,7 @@
 
         async function cancelRun(id) {
             if (!confirm('Cancel this run?')) return;
-            await fetch(`${API}/runs/${id}/cancel`, { method: 'POST' });
+            await fetch(`${API}/runs/${id}/cancel`, { method: 'POST', headers: authHeaders() });
             loadData();
             closeDetail();
         }
@@ -334,10 +419,11 @@
         async function loadRuns() {
             const status = document.getElementById('run-filter-status').value;
             const runs = await fetchJSON(`/runs?limit=50&status=${status}`);
-            renderRunsTable(runs || []);
+            renderRunsTable(asArray(runs));
         }
 
         // Initial load
+        updateTokenUI();
         loadData();
         setInterval(loadData, 5000);
     </script>
