@@ -34,6 +34,40 @@ ssh-copy-id -i ~/.aexp/id_ed25519.pub root@192.168.1.100
 
 ### 资源管理
 
+#### 探查远程环境
+
+在注册资源前，先看看远程机器有什么：
+
+```bash
+./aexp resource explore 192.168.1.100 --user root
+```
+
+输出示例：
+```
+Host:       192.168.1.100
+OS:         Ubuntu 22.04.3 LTS
+GPU:        1 device(s)
+  [0] NVIDIA GeForce RTX 4090 (24564 MB)
+Conda envs:
+  - base                 /opt/conda
+  - tslib                /opt/conda/envs/tslib
+  - llm4ts               /opt/conda/envs/llm4ts
+Python:
+  - /opt/conda/envs/tslib/bin/python           Python 3.10.12 (env:tslib)
+  - /opt/conda/envs/llm4ts/bin/python          Python 3.11.4 (env:llm4ts)
+Workspaces:
+  - /workspace                     (15 subdirs)
+tmux:       0 session(s)
+aexp runs:  0 active
+```
+
+这样就知道该用什么 `--root-dir` 和 `--conda-env` 了。
+
+```bash
+# JSON 输出（给 Agent 用）
+./aexp resource explore 192.168.1.100 --json
+```
+
 #### 添加资源
 
 ```bash
@@ -175,22 +209,32 @@ WebSocket 自动连接，日志实时更新。
 ### 人手动跑实验
 
 ```bash
-# 注册服务器
+# 1. 先探查远程机器有什么
+./aexp resource explore 192.168.1.100
+
+# 2. 根据探查结果注册资源
 ./aexp resource add --name mu-tslib --host 192.168.1.100 --root-dir /workspace --conda-env tslib
 
-# 提交
+# 3. 提交实验
 ./aexp run submit --resource mu-tslib --name "test-run" -- python train.py --epochs 10
 
-# 看日志
+# 4. 看日志
 ./aexp run logs run_xxx
 
-# 跑完了看结果
+# 5. 跑完了看结果
 ./aexp run status run_xxx
 ```
 
 ### Agent 自动化（JSON 模式）
 
 ```bash
+# Agent 先探查环境
+./aexp resource explore 192.168.1.100 --json
+# → {"host":"...","gpus":[{"index":0,"name":"RTX 4090",...}],"conda_envs":[...],...}
+
+# Agent 注册资源
+./aexp resource add --name mu-tslib --host 192.168.1.100 --root-dir /workspace --conda-env tslib
+
 # Agent 查询可用资源
 ./aexp resource list --json
 # → [{"id":"rsrc_xxx","name":"mu-tslib","status":"idle",...}]
