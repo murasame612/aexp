@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -89,13 +90,29 @@ func (s *Server) Handler() http.Handler {
 	// Static files (embedded web UI)
 	staticContent, _ := fs.Sub(staticFS, "static")
 	fileServer := http.FileServer(http.FS(staticContent))
-	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-		// Serve index.html for root, or actual file
-		if r.URL.Path == "/" || r.URL.Path == "" {
-			http.ServeFile(w, r, "static/index.html")
+
+	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		data, err := staticFS.ReadFile("static/index.html")
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		fileServer.ServeHTTP(w, r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
+	}
+
+	// Use NotFound as fallback: serves index.html for SPA routes,
+	// real static files for anything that matches.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		// Try to serve as static file first
+		f, err := staticContent.Open(strings.TrimPrefix(req.URL.Path, "/"))
+		if err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, req)
+			return
+		}
+		// Fallback to index.html (SPA)
+		serveIndex(w, req)
 	})
 
 	return r
@@ -140,7 +157,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		LatestSnapshot *store.Snapshot `json:"latest_snapshot,omitempty"`
 	}
 
-	var result []resourceWithSnapshot
+	result := make([]resourceWithSnapshot, 0, len(resources))
 	for _, res := range resources {
 		rws := resourceWithSnapshot{Resource: res}
 		snap, _ := s.store.GetLatestSnapshot(r.Context(), res.ID)

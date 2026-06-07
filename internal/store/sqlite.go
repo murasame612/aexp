@@ -91,7 +91,7 @@ func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
 	}
 	defer rows.Close()
 
-	var resources []Resource
+	resources := make([]Resource, 0)
 	for rows.Next() {
 		var r Resource
 		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.RootDir, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
@@ -169,7 +169,7 @@ func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) 
 	}
 	defer rows.Close()
 
-	var runs []Run
+	runs := make([]Run, 0)
 	for rows.Next() {
 		var r Run
 		if err := rows.Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Cwd, &r.Command, &r.CondaEnv, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
