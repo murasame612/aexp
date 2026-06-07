@@ -201,7 +201,7 @@ type Server struct {
     hub      *WSHub
 }
 
-func NewServer(store store.Store, exec *executor.Executor, mon *monitor.Manager) *Server
+func NewServer(store store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger, apiToken string, allowLoopbackNoAuth bool) *Server
 func (s *Server) Start(addr string) error
 ```
 

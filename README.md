@@ -9,6 +9,8 @@ Agent 跑科研实验的现状：SSH 进容器，手动 `nohup`，tmux 里乱跑
 
 aexp 解决这个问题：**给 Agent 和人一个结构化的实验操作系统，而不是裸 shell。**
 
+`aexp` 运行在本地控制端，通过 SSH 调度到已注册的 resource；远程机器不需要安装 `aexp`。
+
 ```
 Agent (MCP)  /  人 (CLI / Web UI)
             │
@@ -58,8 +60,11 @@ aexp run submit \
 # 查看日志
 aexp run logs r_Yn7pL2wE
 
-# 启动 Web 仪表盘
+# 启动 Web 仪表盘（默认只监听本机，localhost 免 token）
 aexp serve --port 8080
+
+# 后台运行
+aexp serve --daemon
 ```
 
 ## 文档
