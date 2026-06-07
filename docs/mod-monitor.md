@@ -1,44 +1,35 @@
-# mod-monitor — Resource Monitoring
+# mod-monitor — 资源监控
 
-## What We Monitor
+## 监控对象
 
-Per container, polled every 10 seconds:
+每个 resource 每 10 秒轮询一次：
 
-| Metric | Source | Notes |
+| 指标 | 来源 | 说明 |
 |---|---|---|
-| CPU % | `/proc/stat` or `top -bn1` | overall usage |
-| Memory used/total | `/proc/meminfo` | in MB |
-| GPU utilization | `nvidia-smi` | per GPU index |
-| GPU memory | `nvidia-smi` | used/total per GPU |
-| Load average | `/proc/loadavg` | 1m, 5m, 15m |
-| Disk usage (workspace) | `df <workspace>` | optional, Phase 2 |
+| CPU % | `top -bn1` | 整体使用率 |
+| 内存 used/total | `/proc/meminfo` | MB |
+| GPU 利用率 | `nvidia-smi` | 每块 GPU |
+| GPU 显存 | `nvidia-smi` | used/total per GPU |
+| 负载 | `/proc/loadavg` | 1m, 5m, 15m |
 
-## Polling Architecture
+## 轮询架构
 
 ```
-Monitor (goroutine per container)
-  |
-  ticker 10s
-  |
-  SSH exec: quick probe script
-  |
-  parse output
-  |
-  save to DB (resource_snapshots table)
-  |
-  push to WebSocket subscribers (if any)
+Monitor Manager
+  │
+  ├── goroutine: mu-tslib  ──► ticker 10s ──► SSH probe ──► save snapshot
+  ├── goroutine: szu-exp   ──► ticker 10s ──► SSH probe ──► save snapshot
+  └── goroutine: ...       ──► ...
 ```
 
-## Probe Script
+## 探测脚本
 
-Execute via SSH, single script for all metrics:
+单次 SSH 执行，收集所有指标：
 
 ```bash
 #!/bin/bash
-# aexp collects all metrics in one shot
-
 echo "---CPU---"
-grep 'cpu ' /proc/stat
+top -bn1 | grep '%Cpu' | head -1
 
 echo "---MEM---"
 grep -E 'MemTotal|MemAvailable' /proc/meminfo
@@ -51,24 +42,26 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total \
   --format=csv,noheader,nounits 2>/dev/null || echo "no-gpu"
 
 echo "---DISK---"
-df -BM <workspace> 2>/dev/null | tail -1
+df -BM ROOT_DIR_PLACEHOLDER 2>/dev/null | tail -1
 ```
 
-Single SSH roundtrip. Parse the tagged sections in Go.
+单次 SSH 往返，Go 端按 `---TAG---` 分段解析。
 
-## ResourceSnapshot Model
+## Snapshot 模型
 
 ```go
-type ResourceSnapshot struct {
-    ContainerID string    `json:"container_id"`
-    Timestamp   time.Time `json:"timestamp"`
-    CPUPercent  float64   `json:"cpu_percent"`
-    MemUsedMB   float64   `json:"mem_used_mb"`
-    MemTotalMB  float64   `json:"mem_total_mb"`
-    Load1m      float64   `json:"load_1m"`
-    Load5m      float64   `json:"load_5m"`
-    Load15m     float64   `json:"load_15m"`
-    GPUs        []GPUInfo `json:"gpus"`
+type Snapshot struct {
+    ResourceID string    `json:"resource_id"`
+    RunID      string    `json:"run_id,omitempty"`
+    Timestamp  time.Time `json:"timestamp"`
+    CPUPercent float64   `json:"cpu_percent"`
+    MemUsedMB  float64   `json:"mem_used_mb"`
+    MemTotalMB float64   `json:"mem_total_mb"`
+    Load1m     float64   `json:"load_1m"`
+    Load5m     float64   `json:"load_5m"`
+    Load15m    float64   `json:"load_15m"`
+    GPUs       []GPUInfo `json:"gpus"`
+    DiskJSON   string    `json:"disk_json,omitempty"`
 }
 
 type GPUInfo struct {
@@ -80,98 +73,77 @@ type GPUInfo struct {
 }
 ```
 
-## CPU Calculation
+## GPU 解析
 
-`/proc/stat` gives cumulative jiffies. Need two samples to calculate %:
-
-```
-cpu  user nice system idle iowait irq softirq steal
-```
-
-```
-idle_delta = idle2 - idle1
-total_delta = total2 - total1
-cpu_percent = (1 - idle_delta / total_delta) * 100
-```
-
-For MVP: just use `top -bn1 | head -5` and parse the `%Cpu(s)` line.
-Simpler, one-shot, good enough.
-
-## GPU Parsing
-
-nvidia-smi output:
+nvidia-smi 输出：
 ```
 0, NVIDIA GeForce RTX 4090, 45, 8192, 24564
 1, NVIDIA GeForce RTX 4090, 0, 128, 24564
 ```
 
-Parse into `GPUInfo` slice. If nvidia-smi not available (no GPU), return empty slice.
+解析为 `[]GPUInfo`。nvidia-smi 不可用时返回空 slice。
 
-## Monitoring Manager
+## Monitor Manager
 
 ```go
-// monitor/monitor.go
 type Manager struct {
-    store      store.Store
-    pool       *executor.SSHPool
-    interval   time.Duration  // default 10s
-    ctx        context.Context
-    cancel     context.CancelFunc
+    store    store.Store
+    pool     *executor.SSHPool
+    interval time.Duration
+    ctx      context.Context
+    cancel   context.CancelFunc
 }
 
 func NewManager(store store.Store, pool *executor.SSHPool, interval time.Duration) *Manager
-
-func (m *Manager) Start()                                    // start all goroutines
-func (m *Manager) Stop()                                     // graceful shutdown
-func (m *Manager) PollContainer(ctx context.Context, c *store.Container) (*store.ResourceSnapshot, error)
+func (m *Manager) Start()                                               // 启动所有 goroutine
+func (m *Manager) Stop()                                                // 优雅关闭
+func (m *Manager) PollResource(ctx context.Context, r *store.Resource) (*store.Snapshot, error)
 ```
 
-On `Start()`:
-1. Load all containers from DB
-2. Start one goroutine per container
-3. Each goroutine: poll on ticker, save snapshot, retry on error
+`Start()`：
+1. 从 DB 加载所有 resource
+2. 每个 resource 启动一个 goroutine
+3. 每个 goroutine：ticker 轮询，保存快照，出错重试
 
-When a new container is added, start its goroutine.
-When a container is removed, cancel its goroutine.
+新增 resource 时启动其 goroutine；删除时取消。
 
-## WebSocket Push
+## WebSocket 推送
 
-When a new snapshot is saved, broadcast to all WebSocket subscribers watching that container:
+新快照保存后，广播给关注该 resource 的 WebSocket 订阅者：
 
-```
-ws://localhost:8080/ws/resources?container=dams-tlib-0
-
+```json
 {
-  "type": "resource_update",
-  "container_id": "c_Ab3xK9mQ",
+  "type": "resource.snapshot",
+  "resource_id": "rsrc_muTslib",
   "timestamp": "2026-06-07T14:30:10Z",
   "cpu_percent": 67.3,
   "mem_used_mb": 12800,
   "mem_total_mb": 64000,
-  "gpus": [
-    {"index": 0, "util": 45, "mem_used": 8192, "mem_total": 24564}
-  ]
+  "gpus": [{"index": 0, "util": 45, "mem_used": 8192, "mem_total": 24564}]
 }
 ```
 
-## Error Handling
+## 错误处理
 
-If SSH fails during polling:
-- Log the error
-- Set container status to `error`
-- Retry after interval (don't backoff — 10s is already slow)
-- On next successful poll, set status back to `idle` or `busy` (based on GPU util > 5%)
+SSH 失败时：
+- 记录错误日志
+- 设置 resource status 为 `unreachable`
+- 不退避（10s 已经够慢）
+- 下次轮询成功时恢复 status
 
-## Container Status Derivation
+## Resource Status 推导
+
+**注意：resource status 只反映资源健康度，不反映 run 状态。**
 
 ```
-if any GPU util > 5%:
+if SSH 不可达:
+    status = "unreachable"
+elif 任何 GPU util > 5%:
     status = "busy"
-else if runs with status=running exist:
+elif 有 running 状态的 run:
     status = "busy"
 else:
     status = "idle"
-
-if SSH unreachable:
-    status = "error"
 ```
+
+run 的真实状态（succeeded/failed/lost）由 executor 的状态机决定，monitor 不干预。

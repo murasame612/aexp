@@ -1,32 +1,35 @@
 # aexp — Agent Experiment Control Plane
 
-## What is this?
+## 这是什么？
 
-A lightweight middleware between AI research agents and GPU compute containers.
-Agent no longer SSHes into containers and runs commands blindly. Instead it goes through `aexp`:
+Agent 和人共享的科研实验运行中间层。
+Agent 不再直接 SSH 进机器乱跑命令，而是通过 `aexp` 结构化接口提交、监控、记录实验。
 
 ```
-Agent (MCP/CLI)
-  -> aexp Control Plane (Go)
-    -> SSH into container
-      -> tmux session / nohup
-        -> experiment runs
-      -> log tail + resource monitor
-    -> Web Dashboard (real-time)
+Agent (MCP/CLI) / 人 (CLI/Web)
+            │
+   ┌────────▼────────┐
+   │   aexp server    │   ← 统一控制平面
+   └────────┬─────────┘
+            │ SSH
+   ┌────────▼─────────┐
+   │ 异构计算资源       │   ← 自己服务器、导师服务器、容器、云算力、Slurm
+   │ run via tmux      │
+   └──────────────────┘
 ```
 
-## Why not just SSH?
+## 为什么不用纯 SSH？
 
-| Problem | SSH alone | aexp |
+| 问题 | 纯 SSH | aexp |
 |---|---|---|
-| Agent loses track of which container is doing what | Yes | No — all runs registered |
-| No structured log access | tail manually | auto-tail, websocket stream |
-| Can't see GPU/memory from outside | nvidia-smi inside only | centralized resource view |
-| Run history lost | yes | SQLite persisted |
-| Agent can't resume after context window | yes | run_id is the handle |
-| No reproducibility | command buried in shell history | command + env + cwd recorded |
+| Agent 不知道哪个资源在跑什么 | 是 | 否 — 所有 run 注册在册 |
+| 日志要手动 tail | 是 | 否 — 自动 tail，WebSocket 流 |
+| 无法从外部看 GPU/内存 | 是 | 否 — 集中资源视图 |
+| Run 历史丢失 | 是 | 否 — SQLite 持久化 |
+| Agent 换会话就忘 | 是 | 否 — run_id 是唯一句柄 |
+| 不可复现 | 是 | 否 — 命令 + 环境 + 目录全记录 |
 
-## Architecture Overview
+## 架构
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -44,145 +47,81 @@ Agent (MCP/CLI)
 │               │                                      │
 │  ┌────────────┴──────────────┐  ┌────────────────┐  │
 │  │     SSH Executor          │  │  Resource       │  │
-│  │  connect / exec / tmux    │  │  Poller         │  │
+│  │  connect / exec / tmux    │  │  Monitor        │  │
 │  └────────────┬──────────────┘  │  cpu/gpu/mem    │  │
 │               │                 └────────────────┘  │
 │  ┌────────────┴──────────────┐                      │
 │  │     Store (SQLite)        │                      │
-│  │  containers / runs / logs │                      │
+│  │  resources / runs / logs  │                      │
 │  └───────────────────────────┘                      │
 └──────────────────────┬──────────────────────────────┘
                        │ SSH
           ┌────────────┼────────────┐
           ▼            ▼            ▼
     ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │Container1│ │Container2│ │Container3│
-    │ mu:dam-  │ │ szu:a200-│ │ mu:llm-  │
-    │ tslib-0  │ │ exp-0    │ │ 4ts-0    │
+    │ Resource1│ │ Resource2│ │ Resource3│
+    │ mu:tslib │ │ szu:a200 │ │ mu:llm4ts│
     └──────────┘ └──────────┘ └──────────┘
 ```
 
-## Core Concepts
+## 核心概念
 
-### Container
-A registered compute environment. Not necessarily a Docker container — can be any SSH-accessible host with a workspace.
-```
-id, name, host, port, user, workspace_dir,
-conda_env, tags, gpu_indices, status
-```
+| 概念 | 说明 |
+|---|---|
+| **Resource** | 一台可用的计算资源（SSH 服务器、Docker 容器、Slurm 节点等） |
+| **Run** | 一次实验执行，绑定到某个 resource，有完整生命周期状态机 |
+| **Snapshot** | 某个 resource 在某时刻的 CPU/GPU/内存状态 |
+| **Agent Event** | Agent 每一步操作的审计日志（谁、为什么、做了什么） |
 
-### Run
-A single experiment execution inside a container.
-```
-id, container_id, command, cwd, conda_env,
-log_paths, status, pid, tmux_session,
-started_at, ended_at, exit_code, notes
-```
+详细定义见 [concepts.md](concepts.md)。
 
-### Resource Snapshot
-Periodic CPU/GPU/memory stats for each container.
-```
-container_id, timestamp,
-cpu_percent, mem_used_mb, mem_total_mb,
-gpu_util_percent, gpu_mem_used_mb, gpu_mem_total_mb
-```
+## MVP 范围
 
-## MVP Scope (Phase 1)
+- [ ] `aexp resource add` — 注册计算资源
+- [ ] `aexp resource list` — 显示所有资源 + 实时状态
+- [ ] `aexp resource status <name>` — 详细资源视图
+- [ ] `aexp run submit <resource> -- <command>` — 通过 tmux 执行实验
+- [ ] `aexp run list` — 显示所有 run
+- [ ] `aexp run logs <run_id>` — 实时日志
+- [ ] `aexp run cancel <run_id>` — 终止 run
+- [ ] Web 仪表盘 — run 列表、详情、实时日志、资源条
+- [ ] 资源轮询 — CPU/GPU/内存每 10s
 
-Only what's needed to replace "SSH in and run things manually":
+**不包括**：MCP server、自动创建容器、MLflow 集成、调度、多用户认证。
 
-- [ ] `aexp container add` — register a container
-- [ ] `aexp container list` — show all containers + resource status
-- [ ] `aexp container status <name>` — detailed resource view
-- [ ] `aexp run submit <container> -- <command>` — run experiment via tmux
-- [ ] `aexp run list` — show all runs across containers
-- [ ] `aexp run logs <run_id>` — tail logs in terminal
-- [ ] `aexp run cancel <run_id>` — kill run
-- [ ] Web dashboard — runs list, single run detail, live log tail, resource gauges
-- [ ] Resource polling — CPU/GPU/memory every 10s
+## 技术栈
 
-**NOT in MVP**: MCP server, auto container creation, MLflow integration, scheduling, multi-user auth.
-
-## CLI Design
-
-```bash
-# Container management
-aexp container add \
-  --name dam-tslib-0 \
-  --host mu \
-  --port 22 \
-  --user root \
-  --workspace /workspace \
-  --conda-env tslib \
-  --tags "dam,timeseries,4090"
-
-aexp container list
-aexp container status dam-tslib-0
-aexp container remove dam-tslib-0
-
-# Run experiments
-aexp run submit \
-  --container dam-tslib-0 \
-  --cwd /workspace/Time-Series-Library \
-  --log-paths "logs/*.log,results/*.json" \
-  --name "ECL-iTransformer-run1" \
-  -- python train.py --data ECL --model iTransformer
-
-aexp run list
-aexp run list --container dam-tslib-0
-aexp run status <run_id>
-aexp run logs <run_id>             # tail -f style
-aexp run logs <run_id> --last 200  # last N lines
-aexp run cancel <run_id>
-
-# Server
-aexp serve --port 8080 --db ./data/aexp.db
-```
-
-## Tech Stack
-
-| Component | Choice | Why |
+| 组件 | 选择 | 原因 |
 |---|---|---|
-| Language | Go 1.22+ | SSH client, concurrency, single binary |
-| HTTP | chi or net/http | lightweight, stdlib-first |
-| WebSocket | gorilla/websocket | mature, log streaming |
-| Database | SQLite (modernc.org/sqlite) | zero-deploy, single file |
-| SSH | golang.org/x/crypto/ssh | standard Go SSH client |
-| CLI | cobra | standard Go CLI framework |
-| Web UI | vanilla HTML/JS + Tailwind | no build step, embed in binary |
-| TUI (optional) | bubbletea | fancy terminal UI for `aexp tui` |
+| 语言 | Go 1.22+ | SSH 客户端、并发、单二进制 |
+| HTTP | chi | 轻量 router |
+| WebSocket | gorilla/websocket | 成熟、日志流 |
+| 数据库 | SQLite (modernc.org/sqlite) | 零部署，纯 Go |
+| SSH | golang.org/x/crypto/ssh | 标准 Go SSH |
+| CLI | cobra | 标准 CLI 框架 |
+| Web UI | 嵌入式 HTML/JS + Tailwind CDN | 无构建步骤 |
 
-## File Structure
+## 文件结构
 
 ```
 aexp/
-├── docs/                    # this directory
-│   ├── blueprint.md
-│   ├── mod-*.md
-│   └── ...
-├── cmd/
-│   └── aexp/
-│       └── main.go
+├── docs/
+├── cmd/aexp/           # CLI 入口
 ├── internal/
-│   ├── api/                 # HTTP handlers
-│   ├── container/           # container management
-│   ├── executor/            # SSH + tmux execution
-│   ├── monitor/             # resource polling
-│   ├── run/                 # run lifecycle
-│   └── store/               # SQLite persistence
-├── web/                     # embedded web UI
-│   └── index.html
+│   ├── api/            # HTTP + WebSocket
+│   ├── executor/       # SSH 连接池 + tmux 执行
+│   ├── monitor/        # 资源轮询
+│   └── store/          # SQLite 持久化
+├── web/                # 嵌入式 HTML 仪表盘
 ├── go.mod
 └── go.sum
 ```
 
-## Next Steps
+## 实现顺序
 
-1. Read all `mod-*.md` docs for detailed design of each module
-2. Start with `store` (data layer)
-3. Then `container` (register + SSH connect)
-4. Then `executor` (tmux run)
-5. Then `api` (HTTP + WebSocket)
-6. Then `web` (dashboard)
-7. Then `monitor` (resource polling)
-8. Finally wire `cmd/aexp/main.go`
+1. `store` — 数据层
+2. `executor` — SSH 连接池 + tmux 执行
+3. `api` — HTTP + WebSocket
+4. `web` — 仪表盘
+5. `monitor` — 资源监控
+6. `cmd/aexp/` — CLI 入口

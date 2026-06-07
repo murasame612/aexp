@@ -1,129 +1,129 @@
-# mod-cli — CLI Interface
+# mod-cli — CLI 接口
 
-## Tool Name
-
-`aexp` — Agent Experiment
-
-## Command Structure
+## 命令结构
 
 ```
 aexp <resource> <action> [flags] [args]
 ```
 
-## Commands
+## 命令
 
-### Server
+### 服务
 
 ```bash
 aexp serve [--port 8080] [--db ~/.aexp/aexp.db]
 ```
 
-Start the control plane server.
-
-### Init
+### 初始化
 
 ```bash
 aexp init
 ```
 
-First-time setup:
-- Create `~/.aexp/` directory
-- Generate SSH keypair at `~/.aexp/id_ed25519` (if not exists)
-- Create empty SQLite database
-- Print the public key for user to deploy
+首次运行：
+- 创建 `~/.aexp/` 目录
+- 生成 SSH 密钥对 `~/.aexp/id_ed25519`（如不存在）
+- 创建空 SQLite 数据库
+- 打印公钥，用户手动部署到目标机器
 
-### Container
+### 资源管理
 
 ```bash
-# Add
-aexp container add \
-  --name dam-tslib-0 \
+# 添加
+aexp resource add \
+  --name mu-tslib \
+  --type ssh \
   --host 192.168.1.100 \
   --port 22 \
   --user root \
-  --workspace /workspace \
+  --root-dir /workspace \
   --conda-env tslib \
   --gpu-indices 0 \
-  --tags "dam,timeseries,4090"
+  --tags "4090,timeseries,dam"
 
-# List
-aexp container list
-# Output:
-#   NAME            HOST              GPU   STATUS   CPU    MEM      GPU_MEM
-#   dam-tslib-0     192.168.1.100     0     idle     23%    45%      2.1/24G
-#   szu-exp-0       192.168.1.200     0     busy     78%    67%      18/24G
+# 列表
+aexp resource list
+# NAME         TYPE   HOST              GPU   STATUS   CPU    MEM       GPU_MEM
+# mu-tslib     ssh    192.168.1.100     0     idle     23%    45%       2.1/24G
+# szu-exp      ssh    192.168.1.200     0     busy     78%    67%       18/24G
 
-# Status (detailed)
-aexp container status dam-tslib-0
+# 详情
+aexp resource status mu-tslib
 
-# Test SSH connection
-aexp container test dam-tslib-0
+# 测试连接
+aexp resource test mu-tslib
 
-# Update
-aexp container update dam-tslib-0 --conda-env llm4ts
+# 更新
+aexp resource update mu-tslib --conda-env llm4ts
 
-# Remove
-aexp container remove dam-tslib-0
+# 删除
+aexp resource remove mu-tslib
 ```
 
-### Run
+### Run 操作
 
 ```bash
-# Submit
+# 提交
 aexp run submit \
-  --container dam-tslib-0 \
+  --resource mu-tslib \
   --name "ECL-iTransformer-run1" \
   --cwd /workspace/Time-Series-Library \
   --conda-env tslib \
   --log-paths "logs/*.log,results/*.json" \
   -- python train.py --data ECL --model iTransformer --features M
-# Output: Submitted run r_Yn7pL2wE on dam-tslib-0
+# Submitted run run_Yn7pL2wE on mu-tslib
 
-# List
-aexp run list [--status running] [--container dam-tslib-0]
-# Output:
-#   RUN_ID       NAME                 CONTAINER      STATUS     DURATION
-#   r_Yn7pL2wE   ECL-iTransformer..   dam-tslib-0    running    12:34
-#   r_Km3qPx2w   Weather-Transformer  szu-exp-0      running    05:21
-#   r_Px2wN7mk   ILI-36dim-iTrans..   dam-tslib-0    succeeded  45:12
+# 列表
+aexp run list [--status running] [--resource mu-tslib]
+# RUN_ID        NAME                 RESOURCE   STATUS      DURATION
+# run_Yn7pL2wE  ECL-iTransformer..   mu-tslib   running     12:34
+# run_Km3qPx2w  Weather-Transformer  szu-exp    running     05:21
+# run_Px2wN7mk  ILI-36dim-iTrans..   mu-tslib   succeeded   45:12
 
-# Status
-aexp run status r_Yn7pL2wE
+# 状态
+aexp run status run_Yn7pL2wE
 
-# Logs (tail -f style)
-aexp run logs r_Yn7pL2wE
-# Ctrl+C to stop following
+# 日志（tail -f）
+aexp run logs run_Yn7pL2wE
+# Ctrl+C 停止
 
-# Logs (last N lines, then exit)
-aexp run logs r_Yn7pL2wE --last 100
+# 日志（最后 N 行）
+aexp run logs run_Yn7pL2wE --last 100
 
-# Cancel
-aexp run cancel r_Yn7pL2wE
+# 取消
+aexp run cancel run_Yn7pL2wE
 ```
 
-### Quick Submit (shorthand)
+### 快捷方式
 
 ```bash
-# Skip run submit, directly execute on container
-aexp exec dam-tslib-0 -- python train.py --data ECL
-# This is submit + auto-tail logs in one step
+# 提交 + 自动 tail 日志
+aexp exec mu-tslib -- python train.py --data ECL
 ```
 
-## Output Formats
+## 输出格式
 
-Default: human-readable table.
-
-JSON output for scripting/agents:
+默认：人可读表格。
+`--json`：机器可读 JSON。
 
 ```bash
-aexp container list --json
+aexp resource list --json
 aexp run list --json
-aexp run status r_Yn7pL2wE --json
+aexp run status run_Yn7pL2wE --json
 ```
 
-## Configuration
+**表格给人看，JSON 给 Agent 看。**
 
-`~/.aexp/config.yaml`:
+## 退出码
+
+- 0: 成功
+- 1: 通用错误
+- 2: 未找到
+- 3: 连接错误
+
+## 配置文件
+
+`~/.aexp/config.yaml`：
 
 ```yaml
 server:
@@ -143,20 +143,3 @@ monitor:
 defaults:
   conda_init: "source /opt/conda/etc/profile.d/conda.sh"
 ```
-
-## Dependencies
-
-- `github.com/spf13/cobra` — CLI framework
-- `github.com/spf13/viper` — config management
-- Table output: simple `fmt.Printf` with padding (no external lib)
-
-## Agent-Friendly Design
-
-Every command's `--json` output is parseable.
-Status codes are consistent:
-- 0: success
-- 1: general error
-- 2: not found
-- 3: connection error
-
-Exit codes + JSON = agent can script any workflow.

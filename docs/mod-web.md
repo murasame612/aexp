@@ -1,59 +1,57 @@
-# mod-web — Web Dashboard
+# mod-web — Web 仪表盘
 
-## Design Philosophy
+## 设计原则
 
-- Single HTML file, no build step
-- Tailwind CSS via CDN
-- Vanilla JavaScript (no framework)
-- Embedded in Go binary via `embed.FS`
-- Dark theme (developer/researcher friendly)
+- 单 HTML 文件，无构建步骤
+- Tailwind CSS CDN
+- 原生 JavaScript
+- 编译进 Go 二进制（embed.FS）
+- 暗色主题
 
-## Pages
+## 页面
 
-### 1. Dashboard (/)
-
-Overview of all containers and active runs.
+### 1. 仪表盘（/）
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  aexp                                            [dark/light] │
+│  aexp                                              [?]     │
 ├────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Containers                    Active Runs                  │
+│  Resources                      Active Runs                 │
 │  ┌─────────────────────┐      ┌─────────────────────────┐  │
-│  │ dam-tslib-0    [idle]│      │ r_Yn7p  ECL-iTrans...  │  │
-│  │ GPU0: 12%  2.1/24GB │      │ dam-tslib-0  running    │  │
-│  │ CPU: 23%  Mem: 45%  │      │ 12:34 elapsed           │  │
-│  │                     │      │ [logs] [cancel]          │  │
-│  │ szu-exp-0    [busy] │      ├─────────────────────────┤  │
-│  │ GPU0: 89%  18/24GB  │      │ r_Km3q  Weather-Trans.. │  │
-│  │ CPU: 78%  Mem: 67%  │      │ szu-exp-0  running      │  │
-│  │                     │      │ 05:21 elapsed            │  │
+│  │ mu-tslib       [idle]│      │ run_Yn7p  ECL-iTrans... │  │
+│  │ GPU0: 12%  2.1/24GB │      │ mu-tslib  running       │  │
+│  │ CPU: 23%  Mem: 45%  │      │ 12:34 elapsed            │  │
+│  │                     │      │ [logs] [cancel]           │  │
+│  │ szu-exp       [busy]│      ├─────────────────────────┤  │
+│  │ GPU0: 89%  18/24GB  │      │ run_Km3q  Weather-Trans..│  │
+│  │ CPU: 78%  Mem: 67%  │      │ szu-exp  running         │  │
+│  │                     │      │ 05:21 elapsed             │  │
 │  └─────────────────────┘      └─────────────────────────┘  │
 │                                                             │
-│  Recent Runs (table)                                        │
+│  Recent Runs                                                │
 │  ┌──────────┬──────────┬─────────┬──────────┬──────────┐   │
-│  │ Run ID   │ Name     │Container│ Status   │ Duration │   │
+│  │ Run ID   │ Name     │Resource │ Status   │ Duration │   │
 │  ├──────────┼──────────┼─────────┼──────────┼──────────┤   │
-│  │ r_Yn7p   │ ECL-iTr..│ tslib-0 │ ●running │ 12:34    │   │
-│  │ r_Km3q   │ Weather..│ szu-exp │ ●running │ 05:21    │   │
-│  │ r_Px2w   │ ILI-36..│ tslib-0 │ ✓done    │ 45:12    │   │
+│  │ run_Yn7p │ ECL-iTr..│ mu-tslib│ ●running │ 12:34    │   │
+│  │ run_Km3q │ Weather..│ szu-exp │ ●running │ 05:21    │   │
+│  │ run_Px2w │ ILI-36.. │ mu-tslib│ ✓done    │ 45:12    │   │
 │  └──────────┴──────────┴─────────┴──────────┴──────────┘   │
 └────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Run Detail (/runs/{id})
+### 2. Run 详情（/runs/{id}）
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  ← Back    Run r_Yn7pL2wE                                  │
+│  ← Back    Run run_Yn7pL2wE                                │
 ├────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ECL-iTransformer-run1                                      │
-│  Container: dam-tslib-0  |  Status: ●running               │
+│  Resource: mu-tslib  |  Status: ●running                   │
 │  Command: python train.py --data ECL --model iTransformer   │
 │  Started: 2026-06-07 14:30:00  |  Elapsed: 12:34           │
-│  PID: 12345  |  tmux: aexp_r_Yn7pL2wE                      │
+│  tmux: aexp_run_Yn7pL2wE                                   │
 │                                                             │
 │  ┌─ Resource ─────────────────────────────────────────────┐ │
 │  │  GPU0: ████████░░░░░░░░░░░░  45%  8.0/24.0 GB        │ │
@@ -75,26 +73,26 @@ Overview of all containers and active runs.
 └────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Container Detail (/containers/{id})
+### 3. 资源详情（/resources/{id}）
 
-Resource history charts + run history for that container.
+资源历史图表 + 该资源的 run 历史。
 
-## WebSocket Integration
+## WebSocket 集成
 
-On the run detail page:
-1. Open WebSocket to `/ws/runs/{id}/logs`
-2. Append new lines to log pane
-3. Auto-scroll to bottom (user can scroll up to pause)
-4. Show "LIVE" indicator, click to jump to bottom
+Run 详情页：
+1. 打开 WebSocket `/ws/runs/{id}/logs`
+2. 实时追加日志行
+3. 自动滚到底部（用户上滚暂停）
+4. LIVE 指示灯，点击跳回底部
 
-On the dashboard:
-1. Open WebSocket to `/ws/resources`
-2. Update resource gauges in real-time
-3. Update container status badges
+仪表盘：
+1. 打开 WebSocket `/ws/resources/{id}/metrics`
+2. 实时更新资源条
+3. 更新资源状态标签
 
-## Resource Visualization
+## 资源可视化
 
-Simple CSS bars (no chart library for MVP):
+纯 CSS 进度条（MVP 不引入图表库）：
 
 ```html
 <div class="resource-bar">
@@ -102,30 +100,25 @@ Simple CSS bars (no chart library for MVP):
 </div>
 ```
 
-Color coding:
-- Green: 0-60%
-- Yellow: 60-80%
-- Red: 80-100%
+颜色：绿（0-60%）→ 黄（60-80%）→ 红（80-100%）
 
-For GPU memory: absolute values shown alongside percentage.
-
-## Status Badges
+## 状态标签
 
 ```css
-.status-running   { color: #22c55e; }  /* green dot */
-.status-succeeded { color: #3b82f6; }  /* blue check */
-.status-failed    { color: #ef4444; }  /* red x */
-.status-cancelled { color: #6b7280; }  /* gray minus */
-.status-pending   { color: #eab308; }  /* yellow clock */
+.status-running   { color: #22c55e; }  /* 绿点 */
+.status-succeeded { color: #3b82f6; }  /* 蓝勾 */
+.status-failed    { color: #ef4444; }  /* 红叉 */
+.status-cancelled { color: #6b7280; }  /* 灰横线 */
 .status-idle      { color: #22c55e; }
 .status-busy      { color: #f59e0b; }
 .status-error     { color: #ef4444; }
+.status-unreachable { color: #ef4444; }
 ```
 
-## Tech Details
+## 技术细节
 
-- All API calls via `fetch()`
-- WebSocket via native `WebSocket` API
-- CSS: Tailwind CDN + minimal custom CSS
-- No router library — simple hash routing or just separate HTML sections shown/hidden
-- Auto-refresh: WebSocket handles real-time; fallback polling every 5s if WS fails
+- API 调用：`fetch()`
+- WebSocket：原生 `WebSocket` API
+- CSS：Tailwind CDN + 少量自定义
+- 无路由库：简单 hash 路由或 show/hide
+- 自动刷新：WebSocket 为主，失败时 5s 轮询降级
