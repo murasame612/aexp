@@ -99,6 +99,47 @@
         .meter-fill.mid    { background: #b08520; }
         .meter-fill.high   { background: #a84a3a; }
 
+        .resource-metric {
+            display: grid;
+            grid-template-columns: 64px minmax(120px, 1fr) 82px;
+            align-items: center;
+            gap: 10px;
+            min-height: 18px;
+            min-width: 0;
+            font-size: 12px;
+        }
+        .resource-metric-label,
+        .resource-metric-value,
+        .resource-metric-extra {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .resource-metric-value,
+        .resource-metric-meta {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        .resource-metric-meta {
+            display: flex;
+            justify-content: flex-end;
+            align-items: baseline;
+            gap: 8px;
+            min-width: 0;
+            white-space: nowrap;
+        }
+        .resource-metric-extra {
+            flex: 0 0 auto;
+        }
+        .resource-meter {
+            min-width: 0;
+            background: #d8d3c8;
+            border-radius: 3px;
+            height: 4px;
+            overflow: hidden;
+        }
+
         /* Log pane */
         .log-pane {
             background: #191817;
@@ -179,17 +220,17 @@
                 </div>
             </div>
 
-            <!-- Two columns -->
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <section>
-                    <h2 class="section-title">Resources</h2>
-                    <div id="resource-cards" class="space-y-4"></div>
-                </section>
-                <section>
-                    <h2 class="section-title">Active Runs</h2>
-                    <div id="active-run-cards" class="space-y-4"></div>
-                </section>
-            </div>
+            <!-- Resources -->
+            <section class="mb-10">
+                <h2 class="section-title">Resources</h2>
+                <div id="resource-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+            </section>
+
+            <!-- Active Runs -->
+            <section>
+                <h2 class="section-title">Active Runs</h2>
+                <div id="active-run-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+            </section>
         </div>
 
         <!-- Resources Tab -->
@@ -200,7 +241,17 @@
             </div>
             <div id="add-form-container" class="hidden mb-8">
                 <div class="card">
+                    <!-- SSH command quick-parse -->
+                    <div class="mb-5">
+                        <label class="form-label">Paste SSH command to auto-fill</label>
+                        <div class="flex gap-2">
+                            <input id="ssh-parse-input" class="form-input flex-1" placeholder="ssh -i key -o ProxyCommand='...' user@host"
+                                onkeydown="if(event.key==='Enter'){parseSSHCommand();return false}">
+                            <button type="button" onclick="parseSSHCommand()" class="btn-secondary text-sm whitespace-nowrap">Parse</button>
+                        </div>
+                    </div>
                     <form id="add-resource-form" onsubmit="submitResource(event)" class="grid grid-cols-2 gap-4">
+                        <input type="hidden" name="id" value="">
                         <div>
                             <label class="form-label">Name *</label>
                             <input name="name" required class="form-input" placeholder="gpu-server-1">
@@ -222,6 +273,22 @@
                             <input name="root_dir" required class="form-input" placeholder="/workspace">
                         </div>
                         <div>
+                            <label class="form-label">Conda Base</label>
+                            <input name="conda_base" class="form-input" placeholder="/home/user/miniforge3">
+                        </div>
+                        <div>
+                            <label class="form-label">Conda Init</label>
+                            <input name="conda_init" class="form-input" placeholder="/home/user/miniforge3/etc/profile.d/conda.sh">
+                        </div>
+                        <div>
+                            <label class="form-label">Type</label>
+                            <input name="type" value="ssh" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">GPU Indices</label>
+                            <input name="gpu_indices" class="form-input" placeholder="0,1">
+                        </div>
+                        <div>
                             <label class="form-label">Conda Env</label>
                             <input name="conda_env" class="form-input" placeholder="base">
                         </div>
@@ -237,9 +304,13 @@
                             <label class="form-label">Proxy Command</label>
                             <input name="proxy_command" class="form-input" placeholder="nc -X 5 -x ... %h %p">
                         </div>
+                        <div class="col-span-2">
+                            <label class="form-label">Tags</label>
+                            <input name="tags" class="form-input" placeholder="timeseries,gpu">
+                        </div>
                         <div class="col-span-2 flex gap-3 justify-end pt-2">
                             <button type="button" onclick="toggleAddForm()" class="btn-secondary text-sm">Cancel</button>
-                            <button type="submit" class="btn-accent text-sm">Register Resource</button>
+                            <button type="submit" class="btn-accent text-sm" id="form-submit-btn">Register Resource</button>
                         </div>
                     </form>
                     <div id="add-form-msg" class="text-sm mt-3 hidden"></div>
@@ -248,16 +319,107 @@
             <div id="resources-table-container"></div>
         </div>
 
+        <!-- Edit Resource Modal -->
+        <div id="edit-resource-modal" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-50" onclick="if(event.target===this)closeEditModal()">
+            <div class="bg-surface rounded-card w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-soft border border-border">
+                <div class="sticky top-0 bg-surface flex justify-between items-center px-8 py-5 border-b border-border">
+                    <h2 class="text-lg font-semibold font-heading" id="edit-modal-title">Edit Resource</h2>
+                    <button onclick="closeEditModal()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
+                </div>
+                <div class="px-8 py-6">
+                    <form id="edit-resource-form" onsubmit="submitEditResource(event)" class="grid grid-cols-2 gap-4">
+                        <input type="hidden" name="id" value="">
+                        <div>
+                            <label class="form-label">Name *</label>
+                            <input name="name" required class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Host *</label>
+                            <input name="host" required class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">SSH User</label>
+                            <input name="user" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">SSH Port</label>
+                            <input name="port" type="number" class="form-input">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="form-label">Root Directory *</label>
+                            <input name="root_dir" required class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Conda Base</label>
+                            <input name="conda_base" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Conda Init</label>
+                            <input name="conda_init" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Type</label>
+                            <input name="type" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">GPU Indices</label>
+                            <input name="gpu_indices" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Conda Env</label>
+                            <input name="conda_env" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">SSH Key Path</label>
+                            <input name="auth_ref" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">SOCKS5 Proxy</label>
+                            <input name="socks_proxy" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label">Proxy Command</label>
+                            <input name="proxy_command" class="form-input">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="form-label">Tags</label>
+                            <input name="tags" class="form-input">
+                        </div>
+                        <div class="col-span-2 flex gap-3 justify-end pt-2">
+                            <button type="button" onclick="closeEditModal()" class="btn-secondary text-sm">Cancel</button>
+                            <button type="submit" class="btn-accent text-sm">Save Changes</button>
+                        </div>
+                    </form>
+                    <div id="edit-form-msg" class="text-sm mt-3 hidden"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Runs Tab -->
         <div id="tab-runs" class="hidden">
-            <div class="flex items-center gap-3 mb-5">
-                <select id="run-filter-status" onchange="loadRuns()" class="input-select">
-                    <option value="">All statuses</option>
-                    <option value="running">Running</option>
-                    <option value="succeeded">Succeeded</option>
-                    <option value="failed">Failed</option>
-                    <option value="cancelled">Cancelled</option>
-                </select>
+            <div class="runs-toolbar">
+                <div class="custom-select" id="run-filter-status">
+                    <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('status')">
+                        <span id="run-filter-status-label">All statuses</span>
+                    </button>
+                    <div class="custom-select-menu hidden" id="run-filter-status-menu">
+                        <button type="button" data-value="" onclick="selectRunStatus('', 'All statuses')">All statuses</button>
+                        <button type="button" data-value="running" onclick="selectRunStatus('running', 'Running')">Running</button>
+                        <button type="button" data-value="succeeded" onclick="selectRunStatus('succeeded', 'Succeeded')">Succeeded</button>
+                        <button type="button" data-value="failed" onclick="selectRunStatus('failed', 'Failed')">Failed</button>
+                        <button type="button" data-value="cancelled" onclick="selectRunStatus('cancelled', 'Cancelled')">Cancelled</button>
+                    </div>
+                </div>
+                <div class="custom-select" id="run-filter-resource">
+                    <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('resource')">
+                        <span id="run-filter-resource-label">All resources</span>
+                    </button>
+                    <div class="custom-select-menu hidden" id="run-filter-resource-menu">
+                        <button type="button" data-value="" onclick="selectRunResource('')">All resources</button>
+                    </div>
+                </div>
+                <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
+                    placeholder="Search name or command">
             </div>
             <div id="runs-table-container"></div>
         </div>
@@ -270,6 +432,20 @@
                     <button onclick="closeDetail()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
                 </div>
                 <div id="detail-content" class="px-8 py-6"></div>
+            </div>
+        </div>
+
+        <!-- Confirm Modal -->
+        <div id="confirm-modal" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-[60]" onclick="if(event.target===this)closeConfirmModal()">
+            <div class="bg-surface rounded-card w-full max-w-md shadow-soft border border-border">
+                <div class="px-7 pt-6 pb-4">
+                    <h2 class="text-lg font-semibold font-heading" id="confirm-title">Confirm</h2>
+                    <p class="text-sm text-ink-secondary mt-3 leading-relaxed" id="confirm-message"></p>
+                </div>
+                <div class="px-7 py-5 border-t border-border flex justify-end gap-3">
+                    <button type="button" onclick="closeConfirmModal()" class="btn-secondary text-sm">Cancel</button>
+                    <button type="button" onclick="confirmModalAction()" class="btn-danger text-sm" id="confirm-action">Confirm</button>
+                </div>
             </div>
         </div>
     </div>
@@ -313,6 +489,8 @@
             border-radius: 1rem;
             padding: 20px 24px;
             transition: border-color 180ms ease-out;
+            overflow: hidden;
+            min-width: 0;
         }
         .card-clickable:hover { border-color: #c9c2b6; }
 
@@ -347,13 +525,89 @@
             font-family: 'Poppins', sans-serif;
         }
 
-        .input-select {
-            padding: 7px 12px;
+        .custom-select {
+            position: relative;
+            min-width: 170px;
+        }
+        .custom-select-btn {
+            width: 100%;
+            min-width: 0;
+            padding: 9px 34px 9px 12px;
             background: #fffdf8;
             border: 1px solid #d8d3c8;
             border-radius: 0.625rem;
             font-size: 13px;
             color: #191817;
+            text-align: left;
+            line-height: 20px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .custom-select-btn:hover {
+            border-color: #c9c2b6;
+        }
+        .custom-select-btn:focus {
+            outline: none;
+            border-color: #c96545;
+            box-shadow: 0 0 0 3px rgba(201, 101, 69, 0.12);
+        }
+        .custom-select::after {
+            content: "";
+            position: absolute;
+            right: 12px;
+            top: 17px;
+            width: 8px;
+            height: 8px;
+            border-right: 1.5px solid #5f5b53;
+            border-bottom: 1.5px solid #5f5b53;
+            transform: rotate(45deg);
+            pointer-events: none;
+        }
+        .custom-select-menu {
+            position: absolute;
+            z-index: 40;
+            top: calc(100% + 6px);
+            left: 0;
+            min-width: 100%;
+            max-height: 260px;
+            overflow-y: auto;
+            background: #fffdf8;
+            border: 1px solid #d8d3c8;
+            border-radius: 0.75rem;
+            box-shadow: 0 14px 34px rgba(40, 35, 28, 0.14);
+            padding: 6px;
+        }
+        .custom-select-menu button {
+            display: block;
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 0.5rem;
+            text-align: left;
+            font-size: 13px;
+            color: #191817;
+            white-space: nowrap;
+        }
+        .custom-select-menu button:hover,
+        .custom-select-menu button.active {
+            background: #f0ede5;
+            color: #c96545;
+        }
+        .filter-input {
+            width: min(360px, 100%);
+            padding: 9px 12px;
+            background: #fffdf8;
+            border: 1px solid #d8d3c8;
+            border-radius: 0.625rem;
+            font-size: 13px;
+            color: #191817;
+        }
+        .runs-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
         }
 
         /* Table */
@@ -384,6 +638,10 @@
         .data-table tr:last-child td { border-bottom: none; }
         .data-table tr:hover td { background: #faf9f5; }
         .data-table .mono { font-family: 'Menlo', monospace; font-size: 12px; }
+        .table-scroll { overflow-x: auto; border-radius: 0.75rem; }
+        .resource-actions { display: flex; justify-content: flex-end; gap: 10px; white-space: nowrap; }
+        .link-btn { font-size: 12px; color: #5f5b53; }
+        .link-btn:hover { color: #c96545; }
 
         /* Detail grid */
         .detail-grid {
@@ -425,6 +683,12 @@
     <script>
         const API = '/api/v1';
         let ws = null;
+        let resourcesById = new Map();
+        let allRuns = [];
+        let runResourceFilterSignature = '';
+        let runFilterStatus = '';
+        let runFilterResource = '';
+        let pendingConfirmAction = null;
 
         // --- Token ---
         function getToken() { return localStorage.getItem('aexp_token') || ''; }
@@ -451,6 +715,10 @@
             const t = getToken();
             return t ? { 'Authorization': 'Bearer ' + t } : {};
         }
+        function authQuery() {
+            const t = getToken();
+            return t ? '?token=' + encodeURIComponent(t) : '';
+        }
 
         // --- Fetch helpers ---
         async function fetchJSON(url) {
@@ -471,7 +739,7 @@
         function logLines(logs) { return asArray(asObject(logs).lines); }
         function tryParseJSON(str, fb) { try { return JSON.parse(str || 'null') || fb; } catch { return fb; } }
 
-        // --- Data loading (polls every 3s) ---
+        // --- Data loading (polls every 2s) ---
         let pollTimer = null;
 
         async function loadData() {
@@ -488,10 +756,13 @@
 
             const resArr = asArray(resources);
             const runArr = asArray(runs);
+            resourcesById = new Map(resArr.map(r => [asObject(r).id, asObject(r)]));
+            allRuns = runArr.map(asObject);
+            renderRunResourceFilter(resArr);
             renderResourceCards(resArr);
             renderActiveRuns(runArr.filter(r => asObject(r).status === 'running'));
             renderResourcesTable(resArr);
-            renderRunsTable(runArr);
+            applyRunFilters();
 
             // Status indicator
             const got401 = (stats === null && resources === null && runs === null);
@@ -513,41 +784,46 @@
                 r = asObject(r);
                 const snap = asObject(r.latest_snapshot);
                 const gpus = tryParseJSON(snap.gpu_json, []);
+                const unreachable = r.status === 'unreachable';
                 const memPct = snap.mem_total_mb ? (snap.mem_used_mb / snap.mem_total_mb * 100) : 0;
+                const condaLabel = r.conda_env ? 'env:' + r.conda_env : (r.conda_base ? 'conda' : '');
+                const sub = [r.host, condaLabel].filter(Boolean).join(' · ') || r.type || '-';
+
+                function metricRow(label, pct, valueText, extraText) {
+                    return `<div class="resource-metric">
+                        <span class="resource-metric-label text-ink-secondary">${escHTML(label)}</span>
+                        ${meterSm(pct)}
+                        <span class="resource-metric-meta">
+                            <span class="resource-metric-value text-ink-secondary">${escHTML(valueText)}</span>
+                            ${extraText ? '<span class="resource-metric-extra text-ink-muted" style="font-size:11px">' + escHTML(extraText) + '</span>' : ''}
+                        </span>
+                    </div>`;
+                }
+
+                let rows = '<div class="text-xs text-ink-muted py-1">resource unreachable</div>';
+                if (!unreachable) {
+                    rows = '';
+                    rows += metricRow('CPU', snap.cpu_percent || 0, (snap.cpu_percent || 0).toFixed(0) + '%');
+                    rows += metricRow('RAM', memPct, fmtMB(snap.mem_used_mb) + '/' + fmtMB(snap.mem_total_mb));
+                    asArray(gpus).forEach(g => {
+                        g = asObject(g);
+                        const gpuMemPct = g.mem_total ? (g.mem_used / g.mem_total * 100) : 0;
+                        const gpuUtil = g.util || 0;
+                        rows += metricRow('G' + g.index + ' VRAM', gpuMemPct,
+                            fmtMB(g.mem_used) + '/' + fmtMB(g.mem_total));
+                        rows += metricRow('G' + g.index + ' UTIL', gpuUtil,
+                            gpuUtil.toFixed(0) + '%');
+                    });
+                }
+
                 return `
-                <div class="card">
-                    <div class="flex justify-between items-start mb-1.5">
-                        <span class="font-medium font-heading text-[15px]">${r.name || '-'}</span>
-                        <span class="pill pill-${r.status || 'unknown'}">${r.status || 'unknown'}</span>
+                <div class="card" style="padding:14px 18px">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="font-medium font-heading text-sm truncate mr-2">${escHTML(r.name || '-')}</span>
+                        ${resourceStatusPill(r.status, 'flex-shrink-0')}
                     </div>
-                    <div class="text-xs text-ink-secondary mb-4">${r.host || '-'}  &middot;  ${r.conda_env || 'no conda'}</div>
-                    <div class="space-y-2">
-                        <div class="flex items-center gap-3 text-xs">
-                            <span class="w-8 text-ink-secondary">CPU</span>
-                            ${meter(snap.cpu_percent || 0)}
-                            <span class="w-12 text-right tabular-nums">${(snap.cpu_percent || 0).toFixed(1)}%</span>
-                        </div>
-                        <div class="flex items-center gap-3 text-xs">
-                            <span class="w-8 text-ink-secondary">RAM</span>
-                            ${meter(memPct)}
-                            <span class="w-16 text-right tabular-nums">${fmtMB(snap.mem_used_mb)} / ${fmtMB(snap.mem_total_mb)}</span>
-                        </div>
-                        ${asArray(gpus).map(g => {
-                            g = asObject(g);
-                            const gpuMemPct = g.mem_total ? (g.mem_used / g.mem_total * 100) : 0;
-                            return `
-                            <div class="flex items-center gap-3 text-xs">
-                                <span class="w-8 text-ink-secondary">G${g.index}</span>
-                                ${meter(g.util || 0)}
-                                <span class="w-16 text-right tabular-nums">${(g.util || 0).toFixed(0)}% util</span>
-                            </div>
-                            <div class="flex items-center gap-3 text-xs pl-0">
-                                <span class="w-8 text-ink-secondary" style="font-size:11px">VRAM</span>
-                                ${meter(gpuMemPct)}
-                                <span class="w-16 text-right tabular-nums">${fmtMB(g.mem_used)} / ${fmtMB(g.mem_total)}</span>
-                            </div>`;
-                        }).join('')}
-                    </div>
+                    <div class="text-xs text-ink-muted mb-3 truncate">${escHTML(sub)}</div>
+                    <div class="space-y-1">${rows}</div>
                 </div>`;
             }).join('');
         }
@@ -573,33 +849,41 @@
             const c = document.getElementById('resources-table-container');
             if (!resources.length) { c.innerHTML = '<div class="empty-state">No resources</div>'; return; }
             c.innerHTML = `
+            <div class="table-scroll">
             <table class="data-table">
                 <thead><tr>
-                    <th>Name</th><th>Host</th><th>Status</th><th>CPU</th><th>RAM</th><th>GPU util</th><th>VRAM</th><th></th>
+                    <th>Name</th><th>Host</th><th>Status</th><th>CPU</th><th>RAM</th><th>GPU</th><th style="width:140px"></th>
                 </tr></thead>
                 <tbody>${resources.map(r => {
                     r = asObject(r);
                     const snap = asObject(r.latest_snapshot);
                     const gpus = asArray(tryParseJSON(snap.gpu_json, []));
+                    const unreachable = r.status === 'unreachable';
                     const gpuUtil = gpus.length ? gpus.map(g => (asObject(g).util || 0).toFixed(0) + '%').join(', ') : '-';
                     const gpuMem = gpus.length ? gpus.map(g => fmtMB(asObject(g).mem_used) + '/' + fmtMB(asObject(g).mem_total)).join(', ') : '-';
                     return `<tr>
-                        <td class="font-medium">${r.name || '-'}</td>
-                        <td class="font-mono text-xs">${r.host || '-'}</td>
-                        <td><span class="pill pill-${r.status || 'unknown'}">${r.status || '-'}</span></td>
-                        <td class="tabular-nums">${(snap.cpu_percent||0).toFixed(1)}%</td>
-                        <td class="tabular-nums">${fmtMB(snap.mem_used_mb)} / ${fmtMB(snap.mem_total_mb)}</td>
-                        <td class="tabular-nums">${gpuUtil}</td>
-                        <td class="tabular-nums text-xs">${gpuMem}</td>
-                        <td><button onclick="deleteResource('${r.id}','${r.name}')" class="text-xs text-ink-muted hover:text-state-red" title="Remove">&times;</button></td>
+                        <td class="font-medium">${escHTML(r.name || '-')}</td>
+                        <td class="font-mono text-xs">${escHTML(r.host || '-')}</td>
+                        <td>${resourceStatusPill(r.status)}</td>
+                        <td class="tabular-nums">${unreachable ? '' : (snap.cpu_percent||0).toFixed(0) + '%'}</td>
+                        <td class="tabular-nums">${unreachable ? '' : fmtMB(snap.mem_used_mb) + '/' + fmtMB(snap.mem_total_mb)}</td>
+                        <td class="tabular-nums text-xs">${unreachable ? '' : escHTML(gpuUtil + ' ' + gpuMem)}</td>
+                        <td>
+                            <div class="resource-actions">
+                                <button onclick="editResourceById('${escAttr(r.id)}')" class="link-btn" title="Edit">Edit</button>
+                                <button onclick="copyResourceById('${escAttr(r.id)}')" class="link-btn" title="Copy">Copy</button>
+                                <button onclick="deleteResourceById('${escAttr(r.id)}')" class="link-btn hover:text-state-red" title="Remove">&times;</button>
+                            </div>
+                        </td>
                     </tr>`;
                 }).join('')}</tbody>
-            </table>`;
+            </table>
+            </div>`;
         }
 
         function renderRunsTable(runs) {
             const c = document.getElementById('runs-table-container');
-            if (!runs.length) { c.innerHTML = '<div class="empty-state">No runs</div>'; return; }
+            if (!runs.length) { c.innerHTML = '<div class="empty-state">No matching runs</div>'; return; }
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
@@ -607,15 +891,101 @@
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
+                    const resLabel = resourceLabel(r.resource_id);
                     return `<tr class="cursor-pointer" onclick="showRunDetail('${r.id}')">
-                        <td class="mono">${r.id || '-'}</td>
-                        <td>${r.name || '-'}</td>
-                        <td>${r.resource_id || '-'}</td>
-                        <td><span class="pill pill-${r.status || 'unknown'}">${r.status || '-'}</span></td>
-                        <td class="truncate max-w-xs text-ink-secondary">${asText(r.command).substring(0, 80)}</td>
+                        <td class="mono">${escHTML(r.id || '-')}</td>
+                        <td>${escHTML(r.name || '-')}</td>
+                        <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
+                        <td><span class="pill pill-${r.status || 'unknown'}">${escHTML(r.status || '-')}</span></td>
+                        <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
                     </tr>`;
                 }).join('')}</tbody>
             </table>`;
+        }
+
+        function resourceLabel(resourceId) {
+            const r = resourcesById.get(resourceId);
+            if (!r) return resourceId || '-';
+            return r.name || r.host || resourceId || '-';
+        }
+
+        function resourceStatusPill(status, extraClass) {
+            status = status || 'unknown';
+            const cls = extraClass ? ' ' + extraClass : '';
+            return `<span class="pill pill-${escAttr(status)}${cls}" style="font-size:11px;padding:1px 8px">${escHTML(status)}</span>`;
+        }
+
+        function toggleFilterMenu(kind) {
+            const id = kind === 'resource' ? 'run-filter-resource-menu' : 'run-filter-status-menu';
+            const menu = document.getElementById(id);
+            const shouldOpen = menu?.classList.contains('hidden');
+            closeFilterMenus();
+            if (shouldOpen) menu.classList.remove('hidden');
+        }
+
+        function closeFilterMenus() {
+            document.querySelectorAll('.custom-select-menu').forEach(e => e.classList.add('hidden'));
+        }
+
+        function selectRunStatus(value, label) {
+            runFilterStatus = value;
+            document.getElementById('run-filter-status-label').textContent = label;
+            updateFilterMenuActive('run-filter-status-menu', value);
+            closeFilterMenus();
+            applyRunFilters();
+        }
+
+        function selectRunResource(value) {
+            runFilterResource = value;
+            const label = value ? resourceLabel(value) : 'All resources';
+            document.getElementById('run-filter-resource-label').textContent = label;
+            updateFilterMenuActive('run-filter-resource-menu', value);
+            closeFilterMenus();
+            applyRunFilters();
+        }
+
+        function updateFilterMenuActive(menuId, value) {
+            document.querySelectorAll('#' + menuId + ' button').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.value === value);
+            });
+        }
+
+        function renderRunResourceFilter(resources) {
+            const el = document.getElementById('run-filter-resource-menu');
+            if (!el) return;
+            const normalized = asArray(resources).map(asObject).filter(r => r.id);
+            const signature = normalized.map(r => [r.id, r.name || r.host || ''].join(':')).join('|');
+            if (signature === runResourceFilterSignature) return;
+            runResourceFilterSignature = signature;
+            const options = normalized
+                .map(r => {
+                    const label = r.name || r.host || r.id;
+                    return `<button type="button" data-value="${escAttr(r.id)}" onclick="selectRunResource('${escAttr(r.id)}')">${escHTML(label)}</button>`;
+                })
+                .join('');
+            el.innerHTML = '<button type="button" data-value="" onclick="selectRunResource(\'\')">All resources</button>' + options;
+            if (runFilterResource && !normalized.some(r => r.id === runFilterResource)) {
+                runFilterResource = '';
+                document.getElementById('run-filter-resource-label').textContent = 'All resources';
+            } else if (runFilterResource) {
+                document.getElementById('run-filter-resource-label').textContent = resourceLabel(runFilterResource);
+            }
+            updateFilterMenuActive('run-filter-resource-menu', runFilterResource);
+        }
+
+        function applyRunFilters() {
+            const query = (document.getElementById('run-filter-query')?.value || '').trim().toLowerCase();
+            const filtered = allRuns.filter(r => {
+                r = asObject(r);
+                if (runFilterStatus && r.status !== runFilterStatus) return false;
+                if (runFilterResource && r.resource_id !== runFilterResource) return false;
+                if (query) {
+                    const haystack = [r.name, r.command].map(asText).join('\n').toLowerCase();
+                    if (!haystack.includes(query)) return false;
+                }
+                return true;
+            });
+            renderRunsTable(filtered);
         }
 
         // --- Run Detail ---
@@ -626,17 +996,18 @@
             const errLogs = asObject(await fetchJSON('/runs/' + id + '/logs?source=stderr&limit=50'));
             const outLines = logLines(logs);
             const errLines = logLines(errLogs);
+            const resLabel = resourceLabel(run.resource_id);
 
             document.getElementById('detail-title').textContent = run.name || run.id;
             document.getElementById('detail-content').innerHTML = `
                 <div class="detail-grid">
-                    <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${run.id}</div></div>
-                    <div><div class="detail-label">Status</div><div class="detail-value"><span class="pill pill-${run.status}">${run.status}</span></div></div>
-                    <div><div class="detail-label">Resource</div><div class="detail-value">${run.resource_id}</div></div>
-                    <div><div class="detail-label">Conda</div><div class="detail-value">${run.conda_env || '—'}</div></div>
-                    <div class="detail-code">${asText(run.command)}</div>
-                    <div><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${run.cwd || '—'}</div></div>
-                    <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${run.tmux_session || '—'}</div></div>
+                    <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${escHTML(run.id)}</div></div>
+                    <div><div class="detail-label">Status</div><div class="detail-value"><span class="pill pill-${run.status}">${escHTML(run.status)}</span></div></div>
+                    <div><div class="detail-label">Resource</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
+                    <div><div class="detail-label">Conda</div><div class="detail-value">${escHTML(run.conda_env || '—')}</div></div>
+                    <div class="detail-code">${escHTML(asText(run.command))}</div>
+                    <div><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${escHTML(run.cwd || '—')}</div></div>
+                    <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
                 </div>
                 <div class="mb-5">
                     <h3 class="text-sm font-medium font-heading mb-2">stdout <span class="text-ink-muted font-normal">(${logs.total_lines || 0} lines)</span></h3>
@@ -663,7 +1034,7 @@
         function connectWS(runId) {
             if (ws) ws.close();
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs');
+            ws = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + authQuery());
             ws.onmessage = (e) => {
                 const msg = JSON.parse(e.data);
                 if (msg.type === 'log.line') {
@@ -674,10 +1045,16 @@
         }
 
         async function cancelRun(id) {
-            if (!confirm('Cancel this run?')) return;
-            await fetch(API + '/runs/' + id + '/cancel', { method: 'POST', headers: authHeaders() });
-            loadData();
-            closeDetail();
+            openConfirmModal({
+                title: 'Cancel run',
+                message: 'Cancel this run? The running process will be stopped and the run will be marked as cancelled.',
+                actionLabel: 'Cancel Run',
+                action: async () => {
+                    await fetch(API + '/runs/' + id + '/cancel', { method: 'POST', headers: authHeaders() });
+                    loadData();
+                    closeDetail();
+                }
+            });
         }
 
         // --- Tabs ---
@@ -694,20 +1071,286 @@
             const cls = pct < 60 ? 'low' : pct < 80 ? 'mid' : 'high';
             return '<div class="meter-track"><div class="meter-fill ' + cls + '" style="width:' + pct + '%"></div></div>';
         }
+        function meterSm(pct) {
+            pct = Math.min(100, Math.max(0, pct || 0));
+            const cls = pct < 60 ? 'low' : pct < 80 ? 'mid' : 'high';
+            return '<div class="resource-meter"><div class="meter-fill ' + cls + '" style="width:' + pct + '%;height:100%;border-radius:3px"></div></div>';
+        }
 
         function fmtMB(mb) {
             if (!mb) return '–';
-            return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : Math.round(mb) + 'M';
+            if (mb >= 999 * 1024) return trimUnit(mb / 1024 / 1024, 'T');
+            if (mb >= 1024) return trimUnit(mb / 1024, 'G');
+            return Math.round(mb) + 'M';
+        }
+
+        function trimUnit(value, unit) {
+            const rounded = value >= 10 ? value.toFixed(0) : value.toFixed(1);
+            return rounded.replace(/\.0$/, '') + unit;
         }
 
         function escHTML(s) {
-            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            return asText(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        function escAttr(s) {
+            return escHTML(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function openConfirmModal({ title, message, actionLabel, action }) {
+            pendingConfirmAction = action;
+            document.getElementById('confirm-title').textContent = title || 'Confirm';
+            document.getElementById('confirm-message').textContent = message || '';
+            document.getElementById('confirm-action').textContent = actionLabel || 'Confirm';
+            document.getElementById('confirm-modal').classList.remove('hidden');
+        }
+
+        function closeConfirmModal() {
+            pendingConfirmAction = null;
+            document.getElementById('confirm-modal').classList.add('hidden');
+        }
+
+        async function confirmModalAction() {
+            const action = pendingConfirmAction;
+            closeConfirmModal();
+            if (action) await action();
         }
 
         async function deleteResource(id, name) {
-            if (!confirm('Remove resource "' + name + '"? This cannot be undone.')) return;
-            await fetch(API + '/resources/' + id, { method: 'DELETE', headers: authHeaders() });
-            loadData();
+            openConfirmModal({
+                title: 'Remove resource',
+                message: 'Remove resource "' + name + '"? Existing runs stay in history, but this resource will no longer be available.',
+                actionLabel: 'Remove',
+                action: async () => {
+                    await fetch(API + '/resources/' + id, { method: 'DELETE', headers: authHeaders() });
+                    loadData();
+                }
+            });
+        }
+        function deleteResourceById(id) {
+            const r = resourcesById.get(id);
+            if (r) deleteResource(r.id, r.name || r.id);
+        }
+
+        // --- SSH Command Parser ---
+        function parseSSHCommand() {
+            const raw = document.getElementById('ssh-parse-input').value.trim();
+            if (!raw) return;
+            const form = document.getElementById('add-resource-form');
+
+            let user = 'root', host = '', port = '22', keyPath = '', proxyCmd = '', socksProxy = '';
+            let name = '';
+
+            const tokens = shellSplit(raw);
+            if (!tokens.length) return;
+
+            let i = tokens[0] === 'ssh' ? 1 : 0;
+            for (; i < tokens.length; i++) {
+                const t = tokens[i];
+                const takeNext = () => i + 1 < tokens.length ? tokens[++i] : '';
+                if (t === '-i') keyPath = takeNext();
+                else if (t.startsWith('-i') && t.length > 2) keyPath = t.slice(2);
+                else if (t === '-p' || t === '-P') port = takeNext();
+                else if ((t.startsWith('-p') || t.startsWith('-P')) && t.length > 2) port = t.slice(2);
+                else if (t === '-l') user = takeNext() || user;
+                else if (t.startsWith('-l') && t.length > 2) user = t.slice(2);
+                else if (t === '-J') proxyCmd = proxyJumpCommand(takeNext());
+                else if (t.startsWith('-J') && t.length > 2) proxyCmd = proxyJumpCommand(t.slice(2));
+                else if (t === '-o') {
+                    const opt = takeNext();
+                    applySSHOption(opt);
+                }
+                else if (t.startsWith('-o')) {
+                    applySSHOption(t.slice(2));
+                }
+                else if (!t.startsWith('-') && !host) parseTarget(t);
+            }
+
+            const socksMatch = proxyCmd.match(/-x\s+(\S+)/);
+            if (socksMatch) socksProxy = socksMatch[1];
+            if (host) name = host.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+
+            if (host) form.querySelector('[name="host"]').value = host;
+            if (user) form.querySelector('[name="user"]').value = user;
+            if (port) form.querySelector('[name="port"]').value = port;
+            if (keyPath) form.querySelector('[name="auth_ref"]').value = keyPath;
+            if (proxyCmd) form.querySelector('[name="proxy_command"]').value = proxyCmd;
+            if (socksProxy) form.querySelector('[name="socks_proxy"]').value = socksProxy;
+            if (name) form.querySelector('[name="name"]').value = name;
+
+            function applySSHOption(opt) {
+                const eq = opt.indexOf('=');
+                const key = (eq >= 0 ? opt.slice(0, eq) : opt).toLowerCase();
+                const value = eq >= 0 ? opt.slice(eq + 1) : '';
+                if (key === 'proxycommand') proxyCmd = value;
+                if (key === 'proxyjump') proxyCmd = proxyJumpCommand(value);
+                if (key === 'port' && value) port = value;
+                if (key === 'user' && value) user = value;
+                if ((key === 'identityfile' || key === 'identityfile=') && value) keyPath = value;
+            }
+            function parseTarget(target) {
+                const at = target.lastIndexOf('@');
+                let h = target;
+                if (at >= 0) {
+                    user = target.slice(0, at) || user;
+                    h = target.slice(at + 1);
+                }
+                const hp = h.match(/^\[([^\]]+)\](?::(\d+))?$/) || h.match(/^([^:]+):(\d+)$/);
+                if (hp) {
+                    host = hp[1];
+                    if (hp[2]) port = hp[2];
+                } else {
+                    host = h;
+                }
+            }
+            function proxyJumpCommand(jump) {
+                return jump ? 'ssh -W %h:%p ' + jump : '';
+            }
+        }
+
+        function shellSplit(input) {
+            const out = [];
+            let cur = '', quote = '', esc = false;
+            for (const ch of input.trim()) {
+                if (esc) { cur += ch; esc = false; continue; }
+                if (ch === '\\') { esc = true; continue; }
+                if (quote) {
+                    if (ch === quote) quote = '';
+                    else cur += ch;
+                    continue;
+                }
+                if (ch === '"' || ch === "'") { quote = ch; continue; }
+                if (/\s/.test(ch)) {
+                    if (cur) { out.push(cur); cur = ''; }
+                    continue;
+                }
+                cur += ch;
+            }
+            if (cur) out.push(cur);
+            return out;
+        }
+
+        // --- Edit Resource ---
+        function editResource(r) {
+            const form = document.getElementById('edit-resource-form');
+            form.querySelector('[name="id"]').value = r.id;
+            form.querySelector('[name="name"]').value = r.name || '';
+            form.querySelector('[name="type"]').value = r.type || 'ssh';
+            form.querySelector('[name="host"]').value = r.host || '';
+            form.querySelector('[name="user"]').value = r.user || 'root';
+            form.querySelector('[name="port"]').value = r.port || 22;
+            form.querySelector('[name="root_dir"]').value = r.root_dir || '';
+            form.querySelector('[name="conda_base"]').value = r.conda_base || '';
+            form.querySelector('[name="conda_init"]').value = r.conda_init || '';
+            form.querySelector('[name="gpu_indices"]').value = r.gpu_indices || '';
+            form.querySelector('[name="conda_env"]').value = r.conda_env || '';
+            form.querySelector('[name="auth_ref"]').value = r.auth_ref || '';
+            form.querySelector('[name="socks_proxy"]').value = r.socks_proxy || '';
+            form.querySelector('[name="proxy_command"]').value = r.proxy_command || '';
+            form.querySelector('[name="tags"]').value = r.tags || '';
+            document.getElementById('edit-modal-title').textContent = 'Edit: ' + r.name;
+            document.getElementById('edit-form-msg').classList.add('hidden');
+            document.getElementById('edit-resource-modal').classList.remove('hidden');
+        }
+        function editResourceById(id) {
+            const r = resourcesById.get(id);
+            if (r) editResource(r);
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-resource-modal').classList.add('hidden');
+        }
+
+        async function submitEditResource(e) {
+            e.preventDefault();
+            const form = e.target;
+            const fd = new FormData(form);
+            const id = fd.get('id');
+            const body = resourceBodyFromForm(form);
+            const existing = resourcesById.get(id);
+            if (existing && existing.status) body.status = existing.status;
+            const msg = document.getElementById('edit-form-msg');
+            try {
+                const res = await fetch(API + '/resources/' + id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify(body)
+                });
+                if (res.ok) {
+                    closeEditModal();
+                    loadData();
+                } else {
+                    const data = await res.json();
+                    msg.className = 'text-sm mt-3'; msg.style.color = '#a84a3a';
+                    msg.textContent = data.details || 'Update failed';
+                    msg.classList.remove('hidden');
+                }
+            } catch (err) {
+                msg.className = 'text-sm mt-3'; msg.style.color = '#a84a3a';
+                msg.textContent = err.message; msg.classList.remove('hidden');
+            }
+        }
+
+        // --- Copy Resource ---
+        function copyResourceById(id) {
+            const r = resourcesById.get(id);
+            if (r) copyResource(r);
+        }
+
+        async function copyResource(r) {
+            const body = resourceBodyFromResource(r, r.name + '-copy');
+            const res = await fetch(API + '/resources', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify(body)
+            });
+            if (res.ok) {
+                loadData();
+                // Open edit form so user can rename
+                const created = await res.json();
+                editResource(created);
+            }
+        }
+
+        function resourceBodyFromResource(r, nameOverride) {
+            r = asObject(r);
+            return {
+                name: nameOverride || r.name || '',
+                type: r.type || 'ssh',
+                host: r.host || '',
+                user: r.user || 'root',
+                port: parseInt(r.port || 22, 10),
+                root_dir: r.root_dir || '',
+                conda_base: r.conda_base || '',
+                conda_init: r.conda_init || '',
+                conda_env: r.conda_env || '',
+                auth_ref: r.auth_ref || '',
+                socks_proxy: r.socks_proxy || '',
+                proxy_command: r.proxy_command || '',
+                gpu_indices: r.gpu_indices || '',
+                tags: r.tags || '',
+                status: r.status || 'unknown',
+            };
+        }
+
+        function resourceBodyFromForm(form) {
+            const fd = new FormData(form);
+            return {
+                name: fd.get('name'),
+                type: fd.get('type') || 'ssh',
+                host: fd.get('host'),
+                user: fd.get('user') || 'root',
+                port: parseInt(fd.get('port') || '22', 10),
+                root_dir: fd.get('root_dir'),
+                conda_base: fd.get('conda_base') || '',
+                conda_init: fd.get('conda_init') || '',
+                conda_env: fd.get('conda_env') || '',
+                auth_ref: fd.get('auth_ref') || '',
+                socks_proxy: fd.get('socks_proxy') || '',
+                proxy_command: fd.get('proxy_command') || '',
+                gpu_indices: fd.get('gpu_indices') || '',
+                tags: fd.get('tags') || '',
+                status: 'unknown',
+            };
         }
 
         // --- Add Resource ---
@@ -724,18 +1367,7 @@
         async function submitResource(e) {
             e.preventDefault();
             const form = e.target;
-            const fd = new FormData(form);
-            const body = {
-                name: fd.get('name'),
-                host: fd.get('host'),
-                user: fd.get('user') || 'root',
-                port: parseInt(fd.get('port') || '22', 10),
-                root_dir: fd.get('root_dir'),
-                conda_env: fd.get('conda_env') || '',
-                auth_ref: fd.get('auth_ref') || '',
-                socks_proxy: fd.get('socks_proxy') || '',
-                proxy_command: fd.get('proxy_command') || '',
-            };
+            const body = resourceBodyFromForm(form);
             const msg = document.getElementById('add-form-msg');
             try {
                 const res = await fetch(API + '/resources', {
@@ -749,6 +1381,7 @@
                     msg.style.color = '#788c5d';
                     msg.textContent = 'Registered ' + body.name;
                     form.reset();
+                    form.querySelector('[name="type"]').value = 'ssh';
                     form.querySelector('[name="user"]').value = 'root';
                     form.querySelector('[name="port"]').value = '22';
                     loadData();
@@ -767,15 +1400,16 @@
         }
 
         async function loadRuns() {
-            const st = document.getElementById('run-filter-status').value;
-            const runs = await fetchJSON('/runs?limit=50' + (st ? '&status=' + st : ''));
-            renderRunsTable(asArray(runs));
+            applyRunFilters();
         }
 
         // --- Boot ---
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.custom-select')) closeFilterMenus();
+        });
         updateTokenUI();
         loadData();
-        pollTimer = setInterval(loadData, 3000);
+        pollTimer = setInterval(loadData, 2000);
     </script>
 </body>
 </html>
