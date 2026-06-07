@@ -17,7 +17,8 @@ import (
 type SubmitRequest struct {
 	ResourceID    string            `json:"resource_id"`
 	Name          string            `json:"name"`
-	Kind          string            `json:"kind"`    // smoke, pilot, formal, ablation
+	Kind          string            `json:"kind"`     // smoke, pilot, formal, ablation
+	GPUIndex      int               `json:"gpu_index"` // -1 = all, 0+ = specific GPU
 	Command       string            `json:"command"`
 	Program       string            `json:"program"` // structured: python, bash, etc.
 	Args          []string          `json:"args"`    // structured args
@@ -68,7 +69,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		return nil, fmt.Errorf("command rejected: %w", err)
 	}
 
-	// Check for existing active run on this resource
+	// GPU slot lock: check if the requested GPU is available
 	activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
 		ResourceID: req.ResourceID,
 		Status:     store.RunStatusRunning,
@@ -76,8 +77,24 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	if err != nil {
 		return nil, fmt.Errorf("check active runs: %w", err)
 	}
-	if len(activeRuns) > 0 {
-		return nil, fmt.Errorf("resource %s already has an active run (%s)", resource.Name, activeRuns[0].ID)
+
+	gpuIndex := req.GPUIndex
+	if gpuIndex < -1 {
+		gpuIndex = -1
+	}
+
+	for _, active := range activeRuns {
+		if gpuIndex == -1 {
+			// Requesting all GPUs - conflict with any active run
+			return nil, fmt.Errorf("resource %s already has an active run (%s) using GPU %d", resource.Name, active.ID, active.GPUIndex)
+		}
+		if active.GPUIndex == -1 {
+			// An active run is using all GPUs
+			return nil, fmt.Errorf("resource %s has run %s using all GPUs", resource.Name, active.ID)
+		}
+		if active.GPUIndex == gpuIndex {
+			return nil, fmt.Errorf("GPU %d on resource %s is already in use by run %s", gpuIndex, resource.Name, active.ID)
+		}
 	}
 
 	// Generate run ID
@@ -119,6 +136,15 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		kind = store.RunKindFormal
 	}
 
+	// Set CUDA_VISIBLE_DEVICES if specific GPU requested
+	envVars := req.EnvVars
+	if gpuIndex >= 0 {
+		if envVars == nil {
+			envVars = make(map[string]string)
+		}
+		envVars["CUDA_VISIBLE_DEVICES"] = fmt.Sprintf("%d", gpuIndex)
+	}
+
 	// Create run record
 	run := &store.Run{
 		ID:                runID,
@@ -126,6 +152,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		Name:              req.Name,
 		Status:            store.RunStatusStarting,
 		Kind:              kind,
+		GPUIndex:          gpuIndex,
 		Cwd:               req.Cwd,
 		Command:           fullCmd,
 		Program:           req.Program,

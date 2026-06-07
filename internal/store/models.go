@@ -30,6 +30,7 @@ type Run struct {
 	Name              string         `json:"name"`
 	Status            string         `json:"status"` // created,queued,starting,running,succeeded,failed,cancelled,lost
 	Kind              string         `json:"kind"`   // smoke, pilot, formal, ablation
+	GPUIndex          int            `json:"gpu_index"` // -1 = all, 0+ = specific GPU
 	Cwd               string         `json:"cwd"`
 	Command           string         `json:"command"`
 	Program           string         `json:"program"` // structured: python, bash, etc.

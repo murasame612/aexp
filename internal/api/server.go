@@ -29,16 +29,18 @@ type Server struct {
 	monitor  *monitor.Manager
 	logger   *slog.Logger
 	hub      *WSHub
+	apiToken string
 }
 
 // NewServer creates a new API server.
-func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger) *Server {
+func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger, apiToken string) *Server {
 	return &Server{
 		store:    s,
 		executor: exec,
 		monitor:  mon,
 		logger:   logger,
 		hub:      NewWSHub(),
+		apiToken: apiToken,
 	}
 }
 
@@ -51,9 +53,13 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(corsMiddleware)
 
-	// API routes
+	// API routes (with auth)
 	r.Route("/api/v1", func(r chi.Router) {
-		// Health
+		if s.apiToken != "" {
+			r.Use(s.authMiddleware)
+		}
+
+		// Health (no auth required)
 		r.Get("/health", s.handleHealth)
 		r.Get("/stats", s.handleStats)
 
@@ -545,6 +551,31 @@ func writeError(w http.ResponseWriter, status int, code string, details string) 
 	writeJSON(w, status, map[string]string{
 		"error":   code,
 		"details": details,
+	})
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for health check
+		if r.URL.Path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			writeError(w, http.StatusUnauthorized, "NO_AUTH", "Authorization header required")
+			return
+		}
+
+		// Support "Bearer <token>" or just "<token>"
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != s.apiToken {
+			writeError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid API token")
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 

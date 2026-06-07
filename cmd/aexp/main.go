@@ -94,7 +94,12 @@ func serveCmd() *cobra.Command {
 			}
 			defer mon.Stop()
 
-			srv := api.NewServer(db, exec, mon, logger)
+			// Generate API token
+			apiToken, _ := gonanoid.Generate("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 32)
+			fmt.Fprintf(os.Stderr, "\n=== API Token: %s ===\n", apiToken)
+			fmt.Fprintf(os.Stderr, "Use this token in Authorization header: Bearer %s\n\n", apiToken)
+
+			srv := api.NewServer(db, exec, mon, logger, apiToken)
 			handler := srv.Handler()
 
 			addr := fmt.Sprintf(":%d", port)
@@ -338,6 +343,7 @@ func runCmd() *cobra.Command {
 
 func runSubmitCmd() *cobra.Command {
 	var resource, name, cwd, condaEnv, kind string
+	var gpuIndex int
 	var logPaths, artifactPaths, metricPaths []string
 
 	cmd := &cobra.Command{
@@ -368,6 +374,7 @@ func runSubmitCmd() *cobra.Command {
 				ResourceID:    res.ID,
 				Name:          name,
 				Kind:          kind,
+				GPUIndex:      gpuIndex,
 				Command:       command,
 				Cwd:           cwd,
 				CondaEnv:      condaEnv,
@@ -387,6 +394,7 @@ func runSubmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource name (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Run name")
 	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: smoke, pilot, formal, ablation")
+	cmd.Flags().IntVar(&gpuIndex, "gpu-index", -1, "GPU index to use (-1 for all)")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")

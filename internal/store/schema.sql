@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS runs (
     name                TEXT DEFAULT '',
     status              TEXT NOT NULL DEFAULT 'created',
     kind                TEXT NOT NULL DEFAULT 'formal',
+    gpu_index           INTEGER NOT NULL DEFAULT -1,
     cwd                 TEXT DEFAULT '',
     command             TEXT NOT NULL,
     program             TEXT DEFAULT '',
