@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/gorilla/websocket"
+	gonanoid "github.com/matoous/go-nanoid/v2"
 
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/monitor"
@@ -561,12 +562,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func genID(prefix string) string {
-	alphabet := "0123456789abcdefghijklmnopqrstuvwxyz"
-	b := make([]byte, 12)
-	for i := range b {
-		b[i] = alphabet[i%len(alphabet)]
-	}
-	return prefix + string(b)
+	id, _ := gonanoid.Generate("0123456789abcdefghijklmnopqrstuvwxyz", 12)
+	return prefix + id
 }
 
 // WSHub manages WebSocket connections.

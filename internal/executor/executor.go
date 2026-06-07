@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -14,16 +15,19 @@ import (
 
 // SubmitRequest contains the parameters for creating a new run.
 type SubmitRequest struct {
-	ResourceID      string            `json:"resource_id"`
-	Name            string            `json:"name"`
-	Command         string            `json:"command"`
-	Cwd             string            `json:"cwd"`
-	CondaEnv        string            `json:"conda_env"`
-	LogPaths        []string          `json:"log_paths"`
-	ArtifactPaths   []string          `json:"artifact_paths"`
-	MetricPaths     []string          `json:"metric_paths"`
-	EnvVars         map[string]string `json:"env_vars"`
-	CreatedBy       string            `json:"created_by"`
+	ResourceID    string            `json:"resource_id"`
+	Name          string            `json:"name"`
+	Kind          string            `json:"kind"`    // smoke, pilot, formal, ablation
+	Command       string            `json:"command"`
+	Program       string            `json:"program"` // structured: python, bash, etc.
+	Args          []string          `json:"args"`    // structured args
+	Cwd           string            `json:"cwd"`
+	CondaEnv      string            `json:"conda_env"`
+	LogPaths      []string          `json:"log_paths"`
+	ArtifactPaths []string          `json:"artifact_paths"`
+	MetricPaths   []string          `json:"metric_paths"`
+	EnvVars       map[string]string `json:"env_vars"`
+	CreatedBy     string            `json:"created_by"`
 }
 
 // Executor manages experiment runs on remote resources.
@@ -52,6 +56,18 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		return nil, fmt.Errorf("resource %s not found", req.ResourceID)
 	}
 
+	// Path sandbox: cwd must be under root_dir
+	if req.Cwd != "" {
+		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
+			return nil, fmt.Errorf("path sandbox violation: %w", err)
+		}
+	}
+
+	// Command allowlist check
+	if err := validateCommand(req.Command); err != nil {
+		return nil, fmt.Errorf("command rejected: %w", err)
+	}
+
 	// Check for existing active run on this resource
 	activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
 		ResourceID: req.ResourceID,
@@ -76,7 +92,12 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	}
 
 	// Build the full command
-	fullCmd := buildCommand(req.Command, condaEnv, req.Cwd, resource.RootDir)
+	fullCmd := req.Command
+	if req.Program != "" {
+		// Structured mode: build command from program + args
+		fullCmd = buildStructuredCommand(req.Program, req.Args, req.EnvVars)
+	}
+	fullCmd = buildCondaCommand(fullCmd, condaEnv, req.Cwd, resource.RootDir)
 
 	// Create tmux command via wrapper
 	tmuxCmd := fmt.Sprintf(
@@ -86,18 +107,37 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		shellEscape(fullCmd),
 	)
 
+	// Serialize paths and env
+	logPathsJSON, _ := json.Marshal(req.LogPaths)
+	artifactPathsJSON, _ := json.Marshal(req.ArtifactPaths)
+	metricPathsJSON, _ := json.Marshal(req.MetricPaths)
+	envJSON, _ := json.Marshal(req.EnvVars)
+	argsJSON, _ := json.Marshal(req.Args)
+
+	kind := req.Kind
+	if kind == "" {
+		kind = store.RunKindFormal
+	}
+
 	// Create run record
 	run := &store.Run{
-		ID:          runID,
-		ResourceID:  req.ResourceID,
-		Name:        req.Name,
-		Status:      store.RunStatusStarting,
-		Cwd:         req.Cwd,
-		Command:     req.Command,
-		CondaEnv:    condaEnv,
-		TmuxSession: tmuxSession,
-		RemoteRunDir: remoteRunDir,
-		CreatedBy:   req.CreatedBy,
+		ID:                runID,
+		ResourceID:        req.ResourceID,
+		Name:              req.Name,
+		Status:            store.RunStatusStarting,
+		Kind:              kind,
+		Cwd:               req.Cwd,
+		Command:           fullCmd,
+		Program:           req.Program,
+		ArgsJSON:          string(argsJSON),
+		CondaEnv:          condaEnv,
+		EnvJSON:           string(envJSON),
+		LogPathsJSON:      string(logPathsJSON),
+		ArtifactPathsJSON: string(artifactPathsJSON),
+		MetricPathsJSON:   string(metricPathsJSON),
+		TmuxSession:       tmuxSession,
+		RemoteRunDir:      remoteRunDir,
+		CreatedBy:         req.CreatedBy,
 	}
 
 	if err := e.store.CreateRun(ctx, run); err != nil {
@@ -128,6 +168,17 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	// Update resource status
 	resource.Status = store.ResourceStatusBusy
 	e.store.UpdateResource(ctx, resource)
+
+	// Log agent event
+	inputJSON, _ := json.Marshal(req)
+	outputJSON, _ := json.Marshal(map[string]string{"run_id": run.ID, "status": run.Status})
+	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
+		RunID:      run.ID,
+		Actor:      req.CreatedBy,
+		ToolName:   "create_run",
+		InputJSON:  string(inputJSON),
+		OutputJSON: string(outputJSON),
+	})
 
 	return run, nil
 }
@@ -336,6 +387,15 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 
 	e.checkResourceIdle(ctx, resource)
 
+	// Log agent event
+	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
+		RunID:    runID,
+		Actor:    run.CreatedBy,
+		ToolName: "stop_run",
+		InputJSON:  fmt.Sprintf(`{"run_id":"%s"}`, runID),
+		OutputJSON: `{"status":"cancelled"}`,
+	})
+
 	return nil
 }
 
@@ -381,8 +441,86 @@ func (e *Executor) checkResourceIdle(ctx context.Context, r *store.Resource) {
 	}
 }
 
-// buildCommand constructs the full shell command with conda activation.
-func buildCommand(command, condaEnv, cwd, rootDir string) string {
+// validateCwd ensures cwd is within the resource's root_dir.
+func validateCwd(rootDir, cwd string) error {
+	if cwd == "" {
+		return nil
+	}
+
+	// Resolve to absolute path
+	resolved := cwd
+	if !strings.HasPrefix(cwd, "/") {
+		resolved = rootDir + "/" + cwd
+	}
+
+	// Clean both paths to handle ../ etc.
+	cleanRoot := cleanPath(rootDir)
+	cleanResolved := cleanPath(resolved)
+
+	if !strings.HasPrefix(cleanResolved, cleanRoot+"/") && cleanResolved != cleanRoot {
+		return fmt.Errorf("cwd %q escapes root_dir %q", cwd, rootDir)
+	}
+	return nil
+}
+
+// validateCommand blocks obviously dangerous commands.
+func validateCommand(command string) error {
+	blocked := []string{
+		"rm -rf /",
+		"rm -rf /*",
+		"mkfs.",
+		"dd if=/dev/",
+		"> /dev/sd",
+		"shutdown",
+		"reboot",
+		"init 0",
+		"init 6",
+	}
+	cmdLower := strings.ToLower(strings.TrimSpace(command))
+	for _, b := range blocked {
+		if strings.Contains(cmdLower, strings.ToLower(b)) {
+			return fmt.Errorf("command contains blocked pattern: %s", b)
+		}
+	}
+	return nil
+}
+
+func cleanPath(p string) string {
+	// Simple path clean that removes trailing slashes and resolves ..
+	if p == "" {
+		return p
+	}
+	parts := strings.Split(p, "/")
+	var cleaned []string
+	for _, part := range parts {
+		if part == ".." && len(cleaned) > 0 {
+			cleaned = cleaned[:len(cleaned)-1]
+		} else if part != "." && part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	return "/" + strings.Join(cleaned, "/")
+}
+
+// buildStructuredCommand builds a command from program + args + env vars.
+func buildStructuredCommand(program string, args []string, envVars map[string]string) string {
+	var parts []string
+
+	// Set environment variables
+	for k, v := range envVars {
+		parts = append(parts, fmt.Sprintf("export %s=%s", k, shellEscape(v)))
+	}
+
+	// Build command: program arg1 arg2 ...
+	cmdParts := []string{program}
+	cmdParts = append(cmdParts, args...)
+	parts = append(parts, strings.Join(cmdParts, " "))
+
+	return strings.Join(parts, " && ")
+}
+
+// buildCondaCommand wraps a command with conda activation and cd.
+func buildCondaCommand(command, condaEnv, cwd, rootDir string) string {
 	var parts []string
 
 	// Source conda

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	gonanoid "github.com/matoous/go-nanoid/v2"
 
 	"github.com/ziwu/aexp/internal/api"
 	"github.com/ziwu/aexp/internal/executor"
@@ -336,7 +337,7 @@ func runCmd() *cobra.Command {
 }
 
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv string
+	var resource, name, cwd, condaEnv, kind string
 	var logPaths, artifactPaths, metricPaths []string
 
 	cmd := &cobra.Command{
@@ -366,6 +367,7 @@ func runSubmitCmd() *cobra.Command {
 			run, err := exec.Submit(cmd.Context(), executor.SubmitRequest{
 				ResourceID:    res.ID,
 				Name:          name,
+				Kind:          kind,
 				Command:       command,
 				Cwd:           cwd,
 				CondaEnv:      condaEnv,
@@ -384,6 +386,7 @@ func runSubmitCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource name (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Run name")
+	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: smoke, pilot, formal, ablation")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
@@ -605,10 +608,6 @@ func truncStr(s string, max int) string {
 }
 
 func genID(prefix string) string {
-	alphabet := "0123456789abcdefghijklmnopqrstuvwxyz"
-	b := make([]byte, 12)
-	for i := range b {
-		b[i] = alphabet[i%len(alphabet)]
-	}
-	return prefix + string(b)
+	id, _ := gonanoid.Generate("0123456789abcdefghijklmnopqrstuvwxyz", 12)
+	return prefix + id
 }
