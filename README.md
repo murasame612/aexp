@@ -66,6 +66,7 @@ aexp serve --port 8080
 
 | 文档 | 内容 |
 |---|---|
+| [USAGE.md](USAGE.md) | **使用指南 — 所有命令和参数说明** |
 | [blueprint.md](docs/blueprint.md) | 架构总览、MVP 范围、技术栈、文件结构 |
 | [concepts.md](docs/concepts.md) | Resource / Run / Snapshot / Artifact / Agent Event 定义 |
 | [mod-store.md](docs/mod-store.md) | SQLite schema、migration、repository 接口 |
