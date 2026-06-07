@@ -1,13 +1,17 @@
 package api
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -24,23 +28,25 @@ var staticFS embed.FS
 
 // Server is the HTTP API server.
 type Server struct {
-	store    store.Store
-	executor *executor.Executor
-	monitor  *monitor.Manager
-	logger   *slog.Logger
-	hub      *WSHub
-	apiToken string
+	store               store.Store
+	executor            *executor.Executor
+	monitor             *monitor.Manager
+	logger              *slog.Logger
+	hub                 *WSHub
+	apiToken            string
+	allowLoopbackNoAuth bool
 }
 
 // NewServer creates a new API server.
-func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger, apiToken string) *Server {
+func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger, apiToken string, allowLoopbackNoAuth bool) *Server {
 	return &Server{
-		store:    s,
-		executor: exec,
-		monitor:  mon,
-		logger:   logger,
-		hub:      NewWSHub(),
-		apiToken: apiToken,
+		store:               s,
+		executor:            exec,
+		monitor:             mon,
+		logger:              logger,
+		hub:                 NewWSHub(),
+		apiToken:            apiToken,
+		allowLoopbackNoAuth: allowLoopbackNoAuth,
 	}
 }
 
@@ -241,37 +247,81 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_BODY", err.Error())
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	hasField := func(name string) bool {
+		_, ok := fields[name]
+		return ok
+	}
+
 	var update store.Resource
-	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+	if err := json.Unmarshal(body, &update); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
 
 	update.ID = existing.ID
 	update.CreatedAt = existing.CreatedAt
-	if update.Name == "" {
+	if !hasField("name") {
 		update.Name = existing.Name
 	}
-	if update.Type == "" {
+	if !hasField("type") {
 		update.Type = existing.Type
 	}
-	if update.Host == "" {
+	if !hasField("host") {
 		update.Host = existing.Host
 	}
-	if update.Port == 0 {
+	if !hasField("port") {
 		update.Port = existing.Port
 	}
-	if update.User == "" {
+	if !hasField("user") {
 		update.User = existing.User
 	}
-	if update.RootDir == "" {
+	if !hasField("auth_ref") {
+		update.AuthRef = existing.AuthRef
+	}
+	if !hasField("socks_proxy") {
+		update.SocksProxy = existing.SocksProxy
+	}
+	if !hasField("proxy_command") {
+		update.ProxyCommand = existing.ProxyCommand
+	}
+	if !hasField("root_dir") {
 		update.RootDir = existing.RootDir
+	}
+	if !hasField("conda_base") {
+		update.CondaBase = existing.CondaBase
+	}
+	if !hasField("conda_init") {
+		update.CondaInit = existing.CondaInit
+	}
+	if !hasField("conda_env") {
+		update.CondaEnv = existing.CondaEnv
+	}
+	if !hasField("gpu_indices") {
+		update.GPUIndices = existing.GPUIndices
+	}
+	if !hasField("tags") {
+		update.Tags = existing.Tags
+	}
+	if !hasField("status") {
+		update.Status = existing.Status
 	}
 
 	if err := s.store.UpdateResource(r.Context(), &update); err != nil {
 		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
 		return
 	}
+	s.monitor.RemoveResource(id)
+	s.monitor.AddResource(&update)
 	writeJSON(w, http.StatusOK, update)
 }
 
@@ -396,30 +446,63 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		limit = 200
 	}
 
-	lines, err := s.store.GetLogLines(r.Context(), id, source, offset, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
-		return
-	}
-	count, _ := s.store.CountLogLines(r.Context(), id, source)
-
+	lines, total, remote := s.fastLogLines(r.Context(), id, source, offset, limit)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"run_id":      id,
 		"source":      source,
-		"total_lines": count,
+		"total_lines": total,
 		"offset":      offset,
 		"limit":       limit,
 		"lines":       lines,
+		"remote":      remote,
 	})
+}
+
+func (s *Server) fastLogLines(ctx context.Context, runID string, source string, offset, limit int) ([]store.LogLine, int, bool) {
+	lines, err := s.store.GetLogLines(ctx, runID, source, offset, limit)
+	if err != nil {
+		return nil, 0, false
+	}
+	count, _ := s.store.CountLogLines(ctx, runID, source)
+	if count > 0 || offset > 0 {
+		return lines, count, false
+	}
+
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return lines, count, false
+	}
+	if run.Status != store.RunStatusRunning && run.Status != store.RunStatusStarting {
+		return lines, count, false
+	}
+	resource, err := s.store.GetResource(ctx, run.ResourceID)
+	if err != nil || resource == nil || resource.Status == store.ResourceStatusUnreachable {
+		return lines, count, false
+	}
+
+	remoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	remoteLines, err := s.executor.GetLogSnapshot(remoteCtx, runID, source, limit)
+	if err != nil {
+		return lines, count, false
+	}
+	s.cacheRemoteLogLines(ctx, runID, source, remoteLines)
+
+	cached := make([]store.LogLine, 0, len(remoteLines))
+	for _, line := range remoteLines {
+		cached = append(cached, store.LogLine{
+			RunID:   runID,
+			Source:  source,
+			LineNo:  line.LineNo,
+			Content: line.Content,
+		})
+	}
+	return cached, len(cached), true
 }
 
 func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	lines, err := s.executor.GetLogSnapshot(r.Context(), id, "stdout", 50)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "LOG_READ_FAILED", err.Error())
-		return
-	}
+	lines, _, _ := s.fastLogLines(r.Context(), id, "stdout", 0, 50)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"run_id": id,
 		"lines":  lines,
@@ -491,6 +574,10 @@ var upgrader = websocket.Upgrader{
 }
 
 func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(w, r) {
+		return
+	}
+
 	id := chi.URLParam(r, "id")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -532,6 +619,10 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWSMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(w, r) {
+		return
+	}
+
 	id := chi.URLParam(r, "id")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -551,13 +642,13 @@ func (s *Server) handleWSMetrics(w http.ResponseWriter, r *http.Request) {
 		snap, _ := s.store.GetLatestSnapshot(r.Context(), id)
 		if snap != nil {
 			conn.WriteJSON(map[string]interface{}{
-				"type":        "resource.snapshot",
-				"resource_id": snap.ResourceID,
-				"timestamp":   snap.Timestamp,
-				"cpu_percent": snap.CPUPercent,
-				"mem_used_mb": snap.MemUsedMB,
+				"type":         "resource.snapshot",
+				"resource_id":  snap.ResourceID,
+				"timestamp":    snap.Timestamp,
+				"cpu_percent":  snap.CPUPercent,
+				"mem_used_mb":  snap.MemUsedMB,
 				"mem_total_mb": snap.MemTotalMB,
-				"gpu_json":    snap.GPUJSON,
+				"gpu_json":     snap.GPUJSON,
 			})
 		}
 
@@ -591,21 +682,69 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			writeError(w, http.StatusUnauthorized, "NO_AUTH", "Authorization header required")
-			return
-		}
-
-		// Support "Bearer <token>" or just "<token>"
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != s.apiToken {
-			writeError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid API token")
+		if !s.authorizeRequest(w, r) {
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
+	if s.apiToken == "" {
+		return true
+	}
+	if s.allowLoopbackNoAuth && isLoopbackRequest(r) {
+		return true
+	}
+
+	token := requestToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "NO_AUTH", "Authorization header or token query required")
+		return false
+	}
+	if token != s.apiToken {
+		writeError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid API token")
+		return false
+	}
+	return true
+}
+
+func (s *Server) cacheRemoteLogLines(ctx context.Context, runID string, source string, lines []executor.LogLine) {
+	if len(lines) == 0 {
+		return
+	}
+	count, err := s.store.CountLogLines(ctx, runID, source)
+	if err != nil || count > 0 {
+		return
+	}
+
+	cached := make([]store.LogLine, 0, len(lines))
+	for _, line := range lines {
+		cached = append(cached, store.LogLine{
+			RunID:   runID,
+			Source:  source,
+			LineNo:  line.LineNo,
+			Content: line.Content,
+		})
+	}
+	_ = s.store.AppendLogLines(ctx, runID, cached)
+}
+
+func requestToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return r.URL.Query().Get("token")
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

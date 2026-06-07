@@ -25,7 +25,12 @@ type Manager struct {
 	wg     sync.WaitGroup
 
 	mu        sync.Mutex
-	resources map[string]context.CancelFunc // resource_id -> cancel
+	resources map[string]pollState // resource_id -> polling state
+}
+
+type pollState struct {
+	cancel    context.CancelFunc
+	signature string
 }
 
 // NewManager creates a new monitor manager.
@@ -41,11 +46,11 @@ func NewManager(store store.Store, pool *executor.SSHPool, interval time.Duratio
 		logger:    logger,
 		ctx:       ctx,
 		cancel:    cancel,
-		resources: make(map[string]context.CancelFunc),
+		resources: make(map[string]pollState),
 	}
 }
 
-// Start begins polling all registered resources.
+// Start begins polling all registered resources and watches for new ones.
 func (m *Manager) Start() error {
 	resources, err := m.store.ListResources(m.ctx)
 	if err != nil {
@@ -54,6 +59,11 @@ func (m *Manager) Start() error {
 	for i := range resources {
 		m.startPolling(&resources[i])
 	}
+
+	// Background sync: detect resources added/removed via CLI or API
+	m.wg.Add(1)
+	go m.syncLoop()
+
 	return nil
 }
 
@@ -71,8 +81,8 @@ func (m *Manager) AddResource(r *store.Resource) {
 // RemoveResource stops polling a resource.
 func (m *Manager) RemoveResource(resourceID string) {
 	m.mu.Lock()
-	if cancel, ok := m.resources[resourceID]; ok {
-		cancel()
+	if state, ok := m.resources[resourceID]; ok {
+		state.cancel()
 		delete(m.resources, resourceID)
 	}
 	m.mu.Unlock()
@@ -82,19 +92,76 @@ func (m *Manager) startPolling(r *store.Resource) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Don't start if already polling
-	if _, ok := m.resources[r.ID]; ok {
+	signature := resourcePollSignature(r)
+	// Don't start if already polling the same resource config.
+	if state, ok := m.resources[r.ID]; ok && state.signature == signature {
 		return
+	} else if ok {
+		state.cancel()
+		delete(m.resources, r.ID)
 	}
 
 	ctx, cancel := context.WithCancel(m.ctx)
-	m.resources[r.ID] = cancel
+	m.resources[r.ID] = pollState{cancel: cancel, signature: signature}
 
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		m.pollLoop(ctx, r)
 	}()
+}
+
+// syncLoop periodically checks DB for new/removed resources.
+func (m *Manager) syncLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.syncResources()
+		}
+	}
+}
+
+func (m *Manager) syncResources() {
+	resources, err := m.store.ListResources(m.ctx)
+	if err != nil {
+		m.logger.Warn("sync resources: list failed", "error", err)
+		return
+	}
+
+	// Build set of current DB resource IDs
+	current := make(map[string]bool, len(resources))
+	for i := range resources {
+		current[resources[i].ID] = true
+		m.startPolling(&resources[i])
+	}
+
+	// Stop polling resources that no longer exist in DB
+	m.mu.Lock()
+	for id, state := range m.resources {
+		if !current[id] {
+			state.cancel()
+			delete(m.resources, id)
+		}
+	}
+	m.mu.Unlock()
+}
+
+func resourcePollSignature(r *store.Resource) string {
+	return strings.Join([]string{
+		r.Host,
+		strconv.Itoa(r.Port),
+		r.User,
+		r.AuthRef,
+		r.SocksProxy,
+		r.ProxyCommand,
+		r.RootDir,
+	}, "\x00")
 }
 
 func (m *Manager) pollLoop(ctx context.Context, r *store.Resource) {

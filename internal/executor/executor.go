@@ -18,7 +18,7 @@ import (
 type SubmitRequest struct {
 	ResourceID    string            `json:"resource_id"`
 	Name          string            `json:"name"`
-	Kind          string            `json:"kind"`     // smoke, pilot, formal, ablation
+	Kind          string            `json:"kind"`      // smoke, pilot, formal, ablation
 	GPUIndex      int               `json:"gpu_index"` // -1 = all, 0+ = specific GPU
 	Force         bool              `json:"force"`     // skip GPU slot lock
 	Command       string            `json:"command"`
@@ -72,7 +72,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	// Path sandbox: cwd must be under root_dir
 	if req.Cwd != "" {
 		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
-			return nil, fmt.Errorf("path sandbox violation: %w", err)
+			return nil, cwdSandboxError(err, resource.RootDir)
 		}
 	}
 
@@ -130,7 +130,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	}
 
 	// Build command.sh content
-	commandScript := buildCommandScript(req, condaEnv, resource.RootDir, envVars)
+	commandScript := buildCommandScript(req, condaEnv, resource.CondaBase, resource.CondaInit, resource.RootDir, envVars)
 
 	// Serialize for DB
 	logPathsJSON, _ := json.Marshal(req.LogPaths)
@@ -364,14 +364,14 @@ func (e *Executor) GetLogSnapshot(ctx context.Context, runID string, source stri
 	}
 
 	var lines []LogLine
-	for i, content := range strings.Split(out, "\n") {
+	for i, content := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if content == "" {
 			continue
 		}
 		lines = append(lines, LogLine{
 			RunID:   runID,
 			Source:  source,
-			LineNo:  lastN - len(strings.Split(out, "\n")) + i + 1,
+			LineNo:  i + 1,
 			Content: content,
 		})
 	}
@@ -432,9 +432,9 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 
 	// Log agent event
 	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
-		RunID:    runID,
-		Actor:    run.CreatedBy,
-		ToolName: "stop_run",
+		RunID:      runID,
+		Actor:      run.CreatedBy,
+		ToolName:   "stop_run",
 		InputJSON:  fmt.Sprintf(`{"run_id":"%s"}`, runID),
 		OutputJSON: `{"status":"cancelled"}`,
 	})
@@ -484,7 +484,7 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 	// Cwd sandbox
 	if req.Cwd != "" {
 		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
-			return nil, fmt.Errorf("cwd sandbox violation: %w", err)
+			return nil, cwdSandboxError(err, resource.RootDir)
 		}
 	}
 
@@ -646,6 +646,12 @@ func validateCommand(command string) error {
 	return nil
 }
 
+func cwdSandboxError(err error, rootDir string) error {
+	return fmt.Errorf(`cwd sandbox violation: %w
+This resource root_dir is %s.
+Either use a cwd under %s, update the resource root_dir, or put an explicit cd inside the remote command.`, err, rootDir, rootDir)
+}
+
 func cleanPath(p string) string {
 	// Simple path clean that removes trailing slashes and resolves ..
 	if p == "" {
@@ -664,7 +670,7 @@ func cleanPath(p string) string {
 }
 
 // buildCommandScript generates the content of command.sh for a run.
-func buildCommandScript(req SubmitRequest, condaEnv, rootDir string, envVars map[string]string) string {
+func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootDir string, envVars map[string]string) string {
 	var lines []string
 
 	lines = append(lines, "#!/usr/bin/env bash")
@@ -675,12 +681,13 @@ func buildCommandScript(req SubmitRequest, condaEnv, rootDir string, envVars map
 		lines = append(lines, fmt.Sprintf("export %s=%s", k, shellQuote(v)))
 	}
 
-	// Source conda
-	lines = append(lines, `source /opt/conda/etc/profile.d/conda.sh 2>/dev/null || true`)
-
-	// Activate env
+	// Activate conda environment. If an env is requested, activation must succeed.
 	if condaEnv != "" {
-		lines = append(lines, fmt.Sprintf("conda activate %s 2>/dev/null || true", shellQuote(condaEnv)))
+		for _, path := range condaInitCandidates(condaBase, condaInit) {
+			lines = append(lines, fmt.Sprintf("if [ -f %s ]; then source %s; fi", shellPath(path), shellPath(path)))
+		}
+		lines = append(lines, `if ! command -v conda >/dev/null 2>&1; then echo "[aexp] conda not found; set resource conda_base/conda_init" >&2; exit 127; fi`)
+		lines = append(lines, fmt.Sprintf("conda activate %s", shellQuote(condaEnv)))
 	}
 
 	// cd to working directory
@@ -706,6 +713,34 @@ func buildCommandScript(req SubmitRequest, condaEnv, rootDir string, envVars map
 	}
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func condaInitCandidates(condaBase, condaInit string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	add(condaInit)
+	if condaBase != "" {
+		add(strings.TrimRight(condaBase, "/") + "/etc/profile.d/conda.sh")
+	}
+	add("$HOME/miniforge3/etc/profile.d/conda.sh")
+	add("$HOME/miniconda3/etc/profile.d/conda.sh")
+	add("$HOME/anaconda3/etc/profile.d/conda.sh")
+	add("/opt/conda/etc/profile.d/conda.sh")
+	return out
+}
+
+func shellPath(path string) string {
+	if strings.HasPrefix(path, "$HOME/") {
+		return `"` + path + `"`
+	}
+	return shellQuote(path)
 }
 
 // commandForDB returns a human-readable command string for the DB record.
@@ -768,10 +803,10 @@ func (e *Executor) saveAgentEvent(ctx context.Context, runID, actor, toolName st
 
 // LogLine is a helper type for streaming.
 type LogLine struct {
-	RunID   string
-	Source  string
-	LineNo  int
-	Content string
+	RunID   string `json:"run_id"`
+	Source  string `json:"source"`
+	LineNo  int    `json:"line_no"`
+	Content string `json:"content"`
 }
 
 func genID(prefix string) string {

@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/spf13/cobra"
 
 	"github.com/ziwu/aexp/internal/api"
 	"github.com/ziwu/aexp/internal/executor"
@@ -29,10 +31,14 @@ func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	root := &cobra.Command{
-		Use:     "aexp",
-		Short:   "Agent Experiment Control Plane",
-		Long:    "aexp — 面向人-Agent 协作的科研实验运行中间层",
-		Version: version,
+		Use:   "aexp",
+		Short: "Agent Experiment Control Plane",
+		Long: `aexp — 面向人-Agent 协作的科研实验运行中间层
+
+aexp runs locally and dispatches commands to registered resources over SSH.
+It does not need to be installed on the remote host.`,
+		Version:      version,
+		SilenceUsage: true,
 	}
 
 	root.AddCommand(
@@ -52,13 +58,22 @@ func main() {
 
 func serveCmd() *cobra.Command {
 	var port int
+	var host string
 	var dbPath string
+	var daemon bool
+	var logPath string
+	var requireTokenLocal bool
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the aexp server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dbPath = expandPath(dbPath)
+			logPath = expandPath(logPath)
+
+			if daemon && os.Getenv("AEXP_DAEMON_CHILD") == "" {
+				return startServeDaemon(logPath)
+			}
 
 			// Ensure directory exists
 			if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
@@ -72,24 +87,12 @@ func serveCmd() *cobra.Command {
 			defer db.Close()
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-
-			// Load default SSH key
-			keyPath := expandPath("~/.aexp/id_ed25519")
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
-			}
-			// Also try system default
-			homeKey := expandPath("~/.ssh/id_rsa")
-			if _, err := os.Stat(homeKey); err == nil {
-				sshPool.AddKey(homeKey)
-			}
-			homeKeyEd := expandPath("~/.ssh/id_ed25519")
-			if _, err := os.Stat(homeKeyEd); err == nil {
-				sshPool.AddKey(homeKeyEd)
-			}
+			monitorPool := executor.NewSSHPool(3 * time.Second)
+			loadSSHKeys(sshPool)
+			loadSSHKeys(monitorPool)
 
 			exec := executor.NewExecutor(sshPool, db)
-			mon := monitor.NewManager(db, sshPool, 10*time.Second, logger)
+			mon := monitor.NewManager(db, monitorPool, 3*time.Second, logger)
 
 			if err := mon.Start(); err != nil {
 				return fmt.Errorf("start monitor: %w", err)
@@ -100,20 +103,64 @@ func serveCmd() *cobra.Command {
 			apiToken, _ := gonanoid.Generate("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 32)
 			fmt.Fprintf(os.Stderr, "\n=== API Token: %s ===\n", apiToken)
 			fmt.Fprintf(os.Stderr, "Use this token in Authorization header: Bearer %s\n\n", apiToken)
+			if !requireTokenLocal {
+				fmt.Fprintln(os.Stderr, "Loopback requests from localhost/127.0.0.1/::1 do not require the token.")
+				fmt.Fprintln(os.Stderr, "Use --require-token-local to require it for local requests too.")
+				fmt.Fprintln(os.Stderr)
+			}
 
-			srv := api.NewServer(db, exec, mon, logger, apiToken)
+			srv := api.NewServer(db, exec, mon, logger, apiToken, !requireTokenLocal)
 			handler := srv.Handler()
 
-			addr := fmt.Sprintf(":%d", port)
+			addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 			logger.Info("starting aexp server", "addr", addr, "db", dbPath)
 			return http.ListenAndServe(addr, handler)
 		},
 	}
 
 	cmd.Flags().IntVarP(&port, "port", "p", 8080, "Server port")
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "Server host/interface (use 0.0.0.0 to expose on the network)")
 	cmd.Flags().StringVar(&dbPath, "db", "~/.aexp/aexp.db", "Database path")
+	cmd.Flags().BoolVar(&daemon, "daemon", false, "Run server in the background")
+	cmd.Flags().StringVar(&logPath, "log", "~/.aexp/aexp.log", "Daemon log path")
+	cmd.Flags().BoolVar(&requireTokenLocal, "require-token-local", false, "Require API token for loopback/localhost requests")
 
 	return cmd
+}
+
+func startServeDaemon(logPath string) error {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open daemon log: %w", err)
+	}
+	defer logFile.Close()
+
+	childArgs := stripFlag(os.Args[1:], "--daemon")
+	cmd := osexec.Command(os.Args[0], childArgs...)
+	cmd.Env = append(os.Environ(), "AEXP_DAEMON_CHILD=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start daemon: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "aexp server started in background (pid %d)\n", cmd.Process.Pid)
+	fmt.Fprintf(os.Stderr, "logs: %s\n", logPath)
+	return nil
+}
+
+func stripFlag(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // --- init ---
@@ -163,6 +210,7 @@ func resourceCmd() *cobra.Command {
 
 	cmd.AddCommand(resourceListCmd())
 	cmd.AddCommand(resourceAddCmd())
+	cmd.AddCommand(resourceUpdateCmd())
 	cmd.AddCommand(resourceRemoveCmd())
 	cmd.AddCommand(resourceExploreCmd())
 
@@ -171,6 +219,7 @@ func resourceCmd() *cobra.Command {
 
 func resourceListCmd() *cobra.Command {
 	var asJSON bool
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all resources with live status",
@@ -189,6 +238,24 @@ func resourceListCmd() *cobra.Command {
 
 			if len(resources) == 0 {
 				fmt.Println("No resources registered. Use 'aexp resource add' to add one.")
+				return nil
+			}
+
+			if verbose {
+				fmt.Printf("%-16s %-20s %-24s %-24s %-12s %-8s %-8s %-8s %s\n", "NAME", "HOST", "ROOT_DIR", "CONDA_BASE", "CONDA", "GPU", "STATUS", "CPU", "RAM")
+				for _, r := range resources {
+					snap, _ := db.GetLatestSnapshot(cmd.Context(), r.ID)
+					cpuStr := "-"
+					ramStr := "-"
+					if snap != nil {
+						cpuStr = fmt.Sprintf("%.0f%%", snap.CPUPercent)
+						if snap.MemTotalMB > 0 {
+							ramStr = fmt.Sprintf("%.0f%%", snap.MemUsedMB/snap.MemTotalMB*100)
+						}
+					}
+					fmt.Printf("%-16s %-20s %-24s %-24s %-12s %-8s %-8s %-8s %s\n",
+						truncStr(r.Name, 16), truncStr(r.Host, 20), truncStr(r.RootDir, 24), truncStr(r.CondaBase, 24), truncStr(r.CondaEnv, 12), truncStr(r.GPUIndices, 8), r.Status, cpuStr, ramStr)
+				}
 				return nil
 			}
 
@@ -214,6 +281,7 @@ func resourceListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show root_dir, conda env, and configured GPU indices")
 	return cmd
 }
 
@@ -247,7 +315,7 @@ func formatGPUList(gpuJSON string) string {
 }
 
 func resourceAddCmd() *cobra.Command {
-	var name, host, user, rootDir, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
+	var name, host, user, rootDir, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
 	var port int
 	var resType string
 
@@ -271,6 +339,8 @@ func resourceAddCmd() *cobra.Command {
 				User:         user,
 				AuthRef:      authRef,
 				RootDir:      rootDir,
+				CondaBase:    condaBase,
+				CondaInit:    condaInit,
 				CondaEnv:     condaEnv,
 				GPUIndices:   gpuIndices,
 				Tags:         tags,
@@ -294,10 +364,92 @@ func resourceAddCmd() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
 	cmd.Flags().StringVar(&rootDir, "root-dir", "", "Workspace root directory (required)")
+	cmd.Flags().StringVar(&condaBase, "conda-base", "", "Conda/Miniforge base prefix (e.g. /home/user/miniforge3)")
+	cmd.Flags().StringVar(&condaInit, "conda-init", "", "Conda init script path (defaults to <conda-base>/etc/profile.d/conda.sh)")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Default conda environment")
 	cmd.Flags().StringVar(&gpuIndices, "gpu-indices", "", "Visible GPU indices (e.g. 0,1)")
 	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
 	cmd.Flags().StringVar(&authRef, "auth-ref", "", "SSH key path (default: ~/.aexp/id_ed25519)")
+	cmd.Flags().StringVar(&socksProxy, "socks-proxy", "", "SOCKS5 proxy (host:port)")
+	cmd.Flags().StringVar(&proxyCommand, "proxy-command", "", "SSH ProxyCommand (e.g. 'nc -X 5 -x host:port %h %p')")
+
+	return cmd
+}
+
+func resourceUpdateCmd() *cobra.Command {
+	var name, host, user, rootDir, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
+	var port int
+	var resType string
+
+	cmd := &cobra.Command{
+		Use:   "update [name]",
+		Short: "Update an existing resource",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			r, err := db.GetResourceByName(cmd.Context(), args[0])
+			if err != nil || r == nil {
+				return fmt.Errorf("resource %s not found", args[0])
+			}
+
+			setString := func(flag string, dst *string, value string) {
+				if cmd.Flags().Changed(flag) {
+					*dst = value
+				}
+			}
+
+			setString("name", &r.Name, name)
+			setString("type", &r.Type, resType)
+			setString("host", &r.Host, host)
+			setString("user", &r.User, user)
+			setString("auth-ref", &r.AuthRef, authRef)
+			setString("root-dir", &r.RootDir, rootDir)
+			setString("conda-base", &r.CondaBase, condaBase)
+			setString("conda-init", &r.CondaInit, condaInit)
+			setString("conda-env", &r.CondaEnv, condaEnv)
+			setString("gpu-indices", &r.GPUIndices, gpuIndices)
+			setString("tags", &r.Tags, tags)
+			setString("socks-proxy", &r.SocksProxy, socksProxy)
+			setString("proxy-command", &r.ProxyCommand, proxyCommand)
+			if cmd.Flags().Changed("port") {
+				r.Port = port
+			}
+			if r.Name == "" || r.Host == "" || r.RootDir == "" {
+				return fmt.Errorf("name, host, and root_dir cannot be empty")
+			}
+			if r.Port == 0 {
+				r.Port = 22
+			}
+			if r.User == "" {
+				r.User = "root"
+			}
+			if r.Type == "" {
+				r.Type = store.ResourceTypeSSH
+			}
+
+			if err := db.UpdateResource(cmd.Context(), r); err != nil {
+				return err
+			}
+
+			fmt.Printf("Updated resource %s (%s@%s:%d)\n", r.Name, r.User, r.Host, r.Port)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "New resource name")
+	cmd.Flags().StringVar(&resType, "type", "", "Resource type (ssh, docker, local)")
+	cmd.Flags().StringVar(&host, "host", "", "SSH host")
+	cmd.Flags().IntVar(&port, "port", 0, "SSH port")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user")
+	cmd.Flags().StringVar(&rootDir, "root-dir", "", "Workspace root directory")
+	cmd.Flags().StringVar(&condaBase, "conda-base", "", "Conda/Miniforge base prefix (e.g. /home/user/miniforge3)")
+	cmd.Flags().StringVar(&condaInit, "conda-init", "", "Conda init script path (defaults to <conda-base>/etc/profile.d/conda.sh)")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Default conda environment")
+	cmd.Flags().StringVar(&gpuIndices, "gpu-indices", "", "Visible GPU indices (e.g. 0,1)")
+	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
+	cmd.Flags().StringVar(&authRef, "auth-ref", "", "SSH key path")
 	cmd.Flags().StringVar(&socksProxy, "socks-proxy", "", "SOCKS5 proxy (host:port)")
 	cmd.Flags().StringVar(&proxyCommand, "proxy-command", "", "SSH ProxyCommand (e.g. 'nc -X 5 -x host:port %h %p')")
 
@@ -343,9 +495,14 @@ func resourceExploreCmd() *cobra.Command {
 			host := args[0]
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-			keyPath = expandPath(keyPath)
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
+			defaultKeyPath := loadSSHKeys(sshPool)
+			if keyPath != "" {
+				keyPath = expandPath(keyPath)
+				if err := sshPool.AddKey(keyPath); err != nil {
+					return err
+				}
+			} else {
+				keyPath = defaultKeyPath
 			}
 
 			fmt.Fprintf(os.Stderr, "Exploring %s@%s:%d ...\n", user, host, port)
@@ -366,7 +523,8 @@ func resourceExploreCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
 	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
-	cmd.Flags().StringVar(&keyPath, "key", "~/.aexp/id_ed25519", "SSH key path")
+	cmd.Flags().StringVar(&keyPath, "key", "", "SSH private key path (overrides default loaded keys)")
+	cmd.Flags().StringVar(&keyPath, "auth-ref", "", "Alias for --key")
 	cmd.Flags().StringVar(&socksProxy, "socks-proxy", "", "SOCKS5 proxy (host:port)")
 	cmd.Flags().StringVar(&proxyCommand, "proxy-command", "", "SSH ProxyCommand (e.g. 'nc -X 5 -x host:port %h %p')")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
@@ -401,6 +559,10 @@ func runSubmitCmd() *cobra.Command {
 		Use:   "submit [flags] -- <program> [args...]",
 		Short: "Submit a new experiment run",
 		Long: `Submit an experiment run. Two modes:
+
+aexp is a local dispatcher: the remote host only needs SSH, tmux, and your runtime.
+The --cwd flag is constrained to the resource root_dir. If your project lives
+elsewhere, register the resource with that root_dir first.
 
   Structured (default): argv preserved exactly
     aexp run submit --resource mu -- python train.py --lr 0.001
@@ -446,10 +608,7 @@ func runSubmitCmd() *cobra.Command {
 			submitReq.ResourceID = res.ID
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-			keyPath := expandPath("~/.aexp/id_ed25519")
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
-			}
+			loadSSHKeys(sshPool)
 
 			exec := executor.NewExecutor(sshPool, db)
 
@@ -543,10 +702,7 @@ func runStatusCmd() *cobra.Command {
 			// Auto-refresh running/starting runs from remote
 			if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
 				sshPool := executor.NewSSHPool(10 * time.Second)
-				keyPath := expandPath("~/.aexp/id_ed25519")
-				if _, err := os.Stat(keyPath); err == nil {
-					sshPool.AddKey(keyPath)
-				}
+				loadSSHKeys(sshPool)
 				exec := executor.NewExecutor(sshPool, db)
 				refreshed, err := exec.CheckRunStatus(cmd.Context(), run.ID)
 				if err == nil && refreshed != nil {
@@ -601,10 +757,7 @@ func runLogsCmd() *cobra.Command {
 			}
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-			keyPath := expandPath("~/.aexp/id_ed25519")
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
-			}
+			loadSSHKeys(sshPool)
 
 			exec := executor.NewExecutor(sshPool, db)
 
@@ -647,10 +800,7 @@ func runCancelCmd() *cobra.Command {
 			defer db.Close()
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-			keyPath := expandPath("~/.aexp/id_ed25519")
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
-			}
+			loadSSHKeys(sshPool)
 
 			exec := executor.NewExecutor(sshPool, db)
 
@@ -668,7 +818,7 @@ func runCancelCmd() *cobra.Command {
 func execCmd() *cobra.Command {
 	var resourceName, cwd string
 	var timeout int
-	var asJSON bool
+	var asJSON, shellMode bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [flags] -- <command>",
@@ -676,13 +826,24 @@ func execCmd() *cobra.Command {
 		Long: `Execute a command on a registered resource for inspection/ops.
 Does NOT create a Run — use 'run submit' for experiment tasks.
 
+Command parsing:
+  - One argument after -- is treated as a remote shell command string.
+  - Multiple arguments are shell-quoted as argv-like tokens.
+  - Use --shell to join multiple arguments as a raw shell string.
+
+The --cwd flag is an aexp management constraint under resource root_dir. It is
+not a strong remote shell sandbox; an explicit cd inside the command is still
+interpreted by the remote shell.
+
 Examples:
   aexp exec --resource mu -- 'nvidia-smi'
+  aexp exec --resource mu -- bash -lc 'cd /workspace && python script.py'
   aexp exec --resource mu --cwd /workspace -- 'ls outputs/'
+  aexp exec --resource mu --shell -- echo start '&&' nvidia-smi
   aexp exec --resource mu --json -- 'du -sh /workspace/*'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			command := strings.Join(args, " ")
+			command := buildExecCommand(args, shellMode)
 
 			db := openDB()
 			defer db.Close()
@@ -693,14 +854,7 @@ Examples:
 			}
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
-			keyPath := expandPath("~/.aexp/id_ed25519")
-			if _, err := os.Stat(keyPath); err == nil {
-				sshPool.AddKey(keyPath)
-			}
-			homeKeyEd := expandPath("~/.ssh/id_ed25519")
-			if _, err := os.Stat(homeKeyEd); err == nil {
-				sshPool.AddKey(homeKeyEd)
-			}
+			loadSSHKeys(sshPool)
 
 			exec := executor.NewExecutor(sshPool, db)
 
@@ -736,6 +890,7 @@ Examples:
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory on remote")
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds (max 300)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (stdout/stderr/exit_code)")
+	cmd.Flags().BoolVar(&shellMode, "shell", false, "Join command arguments as a raw remote shell string")
 	_ = cmd.MarkFlagRequired("resource")
 
 	return cmd
@@ -761,6 +916,27 @@ func expandPath(path string) string {
 	return path
 }
 
+// loadSSHKeys tries to register all commonly available SSH keys into the pool.
+// Returns the first key path found (for passing to functions that need it).
+func loadSSHKeys(pool *executor.SSHPool) string {
+	candidates := []string{
+		"~/.aexp/id_ed25519",
+		"~/.ssh/id_ed25519",
+		"~/.ssh/id_rsa",
+	}
+	first := ""
+	for _, p := range candidates {
+		full := expandPath(p)
+		if _, err := os.Stat(full); err == nil {
+			pool.AddKey(full)
+			if first == "" {
+				first = full
+			}
+		}
+	}
+	return first
+}
+
 func printJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -776,6 +952,21 @@ func joinArgs(args []string) string {
 		result += a
 	}
 	return result
+}
+
+func buildExecCommand(args []string, shellMode bool) string {
+	if shellMode || len(args) == 1 {
+		return joinArgs(args)
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, cliShellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func cliShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func truncStr(s string, max int) string {

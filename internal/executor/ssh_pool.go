@@ -17,7 +17,7 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// SSHPool manages persistent SSH connections keyed by host:port.
+// SSHPool manages persistent SSH connections keyed by endpoint and auth route.
 type SSHPool struct {
 	conns   map[string]*ssh.Client
 	keys    map[string]ssh.Signer
@@ -56,9 +56,10 @@ func (p *SSHPool) AddKey(keyPath string) error {
 // If both are set, proxyCommand takes precedence.
 func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*ssh.Client, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
+	connKey := sshConnKey(host, port, user, keyPath, socksProxy, proxyCommand)
 
 	p.mu.RLock()
-	client, ok := p.conns[addr]
+	client, ok := p.conns[connKey]
 	p.mu.RUnlock()
 
 	if ok && isAlive(client) {
@@ -69,7 +70,7 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if client, ok = p.conns[addr]; ok && isAlive(client) {
+	if client, ok = p.conns[connKey]; ok && isAlive(client) {
 		return client, nil
 	}
 
@@ -121,8 +122,12 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 		}
 	}
 
-	p.conns[addr] = client
+	p.conns[connKey] = client
 	return client, nil
+}
+
+func sshConnKey(host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) string {
+	return fmt.Sprintf("%s@%s:%d|key=%s|socks=%s|proxy=%s", user, host, port, keyPath, socksProxy, proxyCommand)
 }
 
 // dialViaProxyCommand runs an SSH ProxyCommand and returns the connection.
@@ -164,7 +169,7 @@ type cmdConn struct {
 }
 
 func (c *cmdConn) Read(b []byte) (int, error)  { return c.stdout.Read(b) }
-func (c *cmdConn) Write(b []byte) (int, error)  { return c.stdin.Write(b) }
+func (c *cmdConn) Write(b []byte) (int, error) { return c.stdin.Write(b) }
 func (c *cmdConn) Close() error {
 	c.stdin.Close()
 	c.stdout.Close()
@@ -225,11 +230,13 @@ func (p *SSHPool) CloseAll() error {
 
 // RemoveByHost closes the connection for a specific host:port.
 func (p *SSHPool) RemoveByHost(host string, port int) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	marker := fmt.Sprintf("@%s:%d|", host, port)
 	p.mu.Lock()
-	if c, ok := p.conns[addr]; ok {
-		c.Close()
-		delete(p.conns, addr)
+	for key, c := range p.conns {
+		if strings.Contains(key, marker) {
+			c.Close()
+			delete(p.conns, key)
+		}
 	}
 	p.mu.Unlock()
 }
@@ -266,7 +273,19 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 	go func() { defer wg.Done(); io.Copy(&outBuf, stdout) }()
 	go func() { defer wg.Done(); io.Copy(&errBuf, stderr) }()
 
-	err = session.Wait()
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- session.Wait()
+	}()
+
+	select {
+	case err = <-waitCh:
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGINT)
+		_ = session.Close()
+		wg.Wait()
+		return outBuf.String(), errBuf.String(), ctx.Err()
+	}
 	wg.Wait()
 
 	return outBuf.String(), errBuf.String(), err

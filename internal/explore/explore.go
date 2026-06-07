@@ -15,6 +15,8 @@ type Discovery struct {
 	OS         string      `json:"os"`
 	Arch       string      `json:"arch"`
 	GPUs       []GPUInfo   `json:"gpus"`
+	CondaBase  string      `json:"conda_base,omitempty"`
+	CondaInit  string      `json:"conda_init,omitempty"`
 	CondaEnvs  []CondaEnv  `json:"conda_envs"`
 	Pythons    []PythonBin `json:"pythons"`
 	Workspaces []Workspace `json:"workspaces"`
@@ -40,8 +42,8 @@ type PythonBin struct {
 }
 
 type Workspace struct {
-	Path       string `json:"path"`
-	SubdirCount int   `json:"subdir_count"`
+	Path        string `json:"path"`
+	SubdirCount int    `json:"subdir_count"`
 }
 
 // Explore runs discovery probes on a remote host and returns the results.
@@ -71,14 +73,18 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits 2>/
 
 echo "---CONDA---"
 # Try common conda locations
-for conda_bin in conda /opt/conda/bin/conda ~/miniconda3/bin/conda ~/anaconda3/bin/conda; do
+for conda_bin in conda /opt/conda/bin/conda "$HOME/miniforge3/bin/conda" "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda"; do
   if command -v "$conda_bin" &>/dev/null || [ -x "$conda_bin" ]; then
     CONDA_EXE="$conda_bin"
     break
   fi
 done
 if [ -n "$CONDA_EXE" ]; then
-  source "$("$CONDA_EXE" info --base 2>/dev/null)/etc/profile.d/conda.sh" 2>/dev/null
+  CONDA_BASE="$("$CONDA_EXE" info --base 2>/dev/null)"
+  CONDA_INIT="$CONDA_BASE/etc/profile.d/conda.sh"
+  echo "base|$CONDA_BASE"
+  echo "init|$CONDA_INIT"
+  source "$CONDA_INIT" 2>/dev/null
   conda env list 2>/dev/null | grep -v '^#' | grep -v '^$'
 else
   echo "no-conda"
@@ -93,10 +99,14 @@ for p in /usr/bin/python3 /usr/bin/python /opt/conda/bin/python; do
 done
 # Also check conda env pythons
 if [ -n "$CONDA_EXE" ]; then
-  for env_dir in /opt/conda/envs/*/bin/python ~/miniconda3/envs/*/bin/python ~/anaconda3/envs/*/bin/python; do
+  for env_dir in "$CONDA_BASE"/bin/python "$CONDA_BASE"/envs/*/bin/python "$HOME"/miniforge3/envs/*/bin/python "$HOME"/miniconda3/envs/*/bin/python "$HOME"/anaconda3/envs/*/bin/python /opt/conda/envs/*/bin/python; do
     if [ -x "$env_dir" ]; then
       ver=$("$env_dir" --version 2>&1)
-      env_name=$(echo "$env_dir" | sed 's|.*/envs/||' | sed 's|/bin/python||')
+      if [ "$env_dir" = "$CONDA_BASE/bin/python" ]; then
+        env_name="base"
+      else
+        env_name=$(echo "$env_dir" | sed 's|.*/envs/||' | sed 's|/bin/python||')
+      fi
       echo "$env_dir|$ver|env:$env_name"
     fi
   done
@@ -209,6 +219,14 @@ func parseConda(content string, d *Discovery) {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
 			continue
 		}
+		if strings.HasPrefix(line, "base|") {
+			d.CondaBase = strings.TrimSpace(strings.TrimPrefix(line, "base|"))
+			continue
+		}
+		if strings.HasPrefix(line, "init|") {
+			d.CondaInit = strings.TrimSpace(strings.TrimPrefix(line, "init|"))
+			continue
+		}
 		// conda env list format: env_name    /path/to/env
 		fields := strings.Fields(line)
 		if len(fields) >= 2 {
@@ -229,6 +247,7 @@ func parseConda(content string, d *Discovery) {
 
 func parsePython(content string, d *Discovery) {
 	lines := strings.Split(strings.TrimSpace(content), "\n")
+	seen := make(map[string]bool)
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -242,6 +261,10 @@ func parsePython(content string, d *Discovery) {
 			Path:    parts[0],
 			Version: strings.TrimSpace(parts[1]),
 		}
+		if seen[bin.Path] {
+			continue
+		}
+		seen[bin.Path] = true
 		if len(parts) >= 3 {
 			bin.Env = parts[2]
 		}
@@ -295,6 +318,9 @@ func FormatDiscovery(d *Discovery) string {
 	}
 
 	if len(d.CondaEnvs) > 0 {
+		if d.CondaBase != "" {
+			b.WriteString(fmt.Sprintf("Conda base: %s\n", d.CondaBase))
+		}
 		b.WriteString("Conda envs:\n")
 		for _, e := range d.CondaEnvs {
 			b.WriteString(fmt.Sprintf("  - %-20s %s\n", e.Name, e.Path))
