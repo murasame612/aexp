@@ -20,6 +20,7 @@ type SubmitRequest struct {
 	Name          string            `json:"name"`
 	Kind          string            `json:"kind"`     // smoke, pilot, formal, ablation
 	GPUIndex      int               `json:"gpu_index"` // -1 = all, 0+ = specific GPU
+	Force         bool              `json:"force"`     // skip GPU slot lock
 	Command       string            `json:"command"`
 	Program       string            `json:"program"` // structured: python, bash, etc.
 	Args          []string          `json:"args"`    // structured args
@@ -82,29 +83,32 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		}
 	}
 
-	// GPU slot lock
-	activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
-		ResourceID: req.ResourceID,
-		Status:     store.RunStatusRunning,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("check active runs: %w", err)
-	}
-
+	// Normalize GPU index
 	gpuIndex := req.GPUIndex
 	if gpuIndex < -1 {
 		gpuIndex = -1
 	}
 
-	for _, active := range activeRuns {
-		if gpuIndex == -1 {
-			return nil, fmt.Errorf("resource %s already has an active run (%s) using GPU %d", resource.Name, active.ID, active.GPUIndex)
+	// GPU slot lock (skip if --force)
+	if !req.Force {
+		activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
+			ResourceID: req.ResourceID,
+			Status:     store.RunStatusRunning,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("check active runs: %w", err)
 		}
-		if active.GPUIndex == -1 {
-			return nil, fmt.Errorf("resource %s has run %s using all GPUs", resource.Name, active.ID)
-		}
-		if active.GPUIndex == gpuIndex {
-			return nil, fmt.Errorf("GPU %d on resource %s is already in use by run %s", gpuIndex, resource.Name, active.ID)
+
+		for _, active := range activeRuns {
+			if gpuIndex == -1 {
+				return nil, fmt.Errorf("resource %s already has an active run (%s) using GPU %d; use --force to override", resource.Name, active.ID, active.GPUIndex)
+			}
+			if active.GPUIndex == -1 {
+				return nil, fmt.Errorf("resource %s has run %s using all GPUs; use --force to override", resource.Name, active.ID)
+			}
+			if active.GPUIndex == gpuIndex {
+				return nil, fmt.Errorf("GPU %d on resource %s is already in use by run %s; use --force to override", gpuIndex, resource.Name, active.ID)
+			}
 		}
 	}
 
@@ -438,7 +442,120 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
-// ensureWrapper deploys or upgrades the wrapper script on a resource.
+// ExecRequest is a one-shot remote command (not a Run).
+type ExecRequest struct {
+	ResourceID string `json:"resource_id"`
+	Command    string `json:"command"`
+	Cwd        string `json:"cwd"`
+	TimeoutSec int    `json:"timeout_sec"` // 0 = default 30s
+	Actor      string `json:"actor"`
+}
+
+// ExecResult is the response from a one-shot exec.
+type ExecResult struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+	Duration string `json:"duration"` // human-readable, e.g. "1.2s"
+}
+
+const (
+	defaultExecTimeout = 30 * time.Second
+	maxExecTimeout     = 5 * time.Minute
+	maxExecOutputBytes = 1 << 20 // 1 MiB
+)
+
+// Exec runs a one-shot command on a resource. It does NOT create a Run.
+// Used for operational/inspection commands by agents.
+func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error) {
+	resource, err := e.store.GetResource(ctx, req.ResourceID)
+	if err != nil {
+		return nil, fmt.Errorf("get resource: %w", err)
+	}
+	if resource == nil {
+		return nil, fmt.Errorf("resource %s not found", req.ResourceID)
+	}
+
+	// Command safety check
+	if err := validateCommand(req.Command); err != nil {
+		return nil, fmt.Errorf("command rejected: %w", err)
+	}
+
+	// Cwd sandbox
+	if req.Cwd != "" {
+		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
+			return nil, fmt.Errorf("cwd sandbox violation: %w", err)
+		}
+	}
+
+	// Timeout
+	timeout := defaultExecTimeout
+	if req.TimeoutSec > 0 {
+		timeout = time.Duration(req.TimeoutSec) * time.Second
+		if timeout > maxExecTimeout {
+			timeout = maxExecTimeout
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Build command with optional cwd
+	cmd := req.Command
+	if req.Cwd != "" {
+		resolved := req.Cwd
+		if !strings.HasPrefix(req.Cwd, "/") {
+			resolved = resource.RootDir + "/" + req.Cwd
+		}
+		cmd = fmt.Sprintf("cd %s && %s", shellQuote(resolved), req.Command)
+	}
+
+	// Execute
+	start := time.Now()
+	stdout, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, cmd, resource.SocksProxy, resource.ProxyCommand)
+	duration := time.Since(start)
+
+	// Truncate output if too large
+	if len(stdout) > maxExecOutputBytes {
+		stdout = stdout[:maxExecOutputBytes] + "\n... [truncated]"
+	}
+	if len(stderr) > maxExecOutputBytes {
+		stderr = stderr[:maxExecOutputBytes] + "\n... [truncated]"
+	}
+
+	// Determine exit code
+	exitCode := 0
+	if err != nil {
+		exitCode = 1
+		// Try to extract exit code from error
+		if exitErr, ok := err.(interface{ ExitStatus() int }); ok {
+			exitCode = exitErr.ExitStatus()
+		}
+	}
+
+	// Audit log
+	inputJSON := fmt.Sprintf(`{"resource":"%s","command":%s}`, resource.Name, mustJSON(req.Command))
+	outputJSON := fmt.Sprintf(`{"exit_code":%d,"duration_ms":%d}`, exitCode, duration.Milliseconds())
+	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
+		RunID:      "",
+		Actor:      req.Actor,
+		ToolName:   "exec",
+		InputJSON:  inputJSON,
+		OutputJSON: outputJSON,
+	})
+
+	return &ExecResult{
+		Stdout:   stdout,
+		Stderr:   stderr,
+		ExitCode: exitCode,
+		Duration: duration.Round(time.Millisecond).String(),
+	}, nil
+}
+
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {
 	// Check if wrapper exists AND has the correct version
 	checkCmd := "cat ~/.aexp/wrapper.version 2>/dev/null || echo none"

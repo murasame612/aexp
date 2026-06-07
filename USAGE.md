@@ -165,6 +165,13 @@ aexp runs:  0 active
 ./aexp run submit --resource mu-tslib --gpu-index 0 -- python train.py
 ```
 
+**强制提交（跳过 slot lock）：**
+
+```bash
+# 同一 resource 上已有 running run 时仍可提交（如 CPU-only 任务）
+./aexp run submit --resource mu-tslib --force -- python preprocess.py
+```
+
 注意：`--` 之后的所有内容是要执行的命令（默认 argv 模式）。
 
 必填参数：`--resource`, 命令部分
@@ -175,6 +182,7 @@ aexp runs:  0 active
 | `--name` | (空) | 运行名称（方便记忆） |
 | `--kind` | formal | 类型: smoke/pilot/formal/ablation |
 | `--gpu-index` | -1 | GPU 索引（-1 为全部） |
+| `--force` | false | 跳过 GPU slot lock，允许同 resource/GPU 并发提交 |
 | `--shell` | false | Shell 模式：用 bash -lc 解释命令 |
 | `--cwd` | (空) | 工作目录（相对于 root-dir 或绝对路径） |
 | `--conda-env` | (空) | 覆盖资源默认的 conda 环境 |
@@ -231,6 +239,31 @@ Started:   2026-06-07T14:30:05+08:00
 ```bash
 ./aexp run cancel run_Yn7pL2wE
 ```
+
+#### 远程执行（运维/检查命令）
+
+`aexp exec` 在已注册的 resource 上执行一次性命令，**不创建 Run**。用于检查环境、查看文件、诊断问题。
+
+```bash
+# 查看 GPU 状态
+./aexp exec --resource mu -- nvidia-smi
+
+# 查看目录内容
+./aexp exec --resource mu --cwd /workspace -- 'ls -la outputs/ | head'
+
+# JSON 输出（供 agent 解析）
+./aexp exec --resource mu --json -- 'du -sh /workspace/.aexp/runs/*'
+
+# 自定义超时
+./aexp exec --resource mu --timeout 120 -- 'find /workspace -name "*.pt" | wc -l'
+```
+
+安全限制：
+- `validateCommand` 拦截 `rm -rf /` 等危险模式
+- `--cwd` 受 root_dir sandbox 约束
+- 默认 30s 超时，最大 300s
+- 输出截断到 1 MiB
+- 所有执行写入 agent_events 审计日志
 
 ---
 

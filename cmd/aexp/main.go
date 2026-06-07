@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -39,6 +40,7 @@ func main() {
 		initCmd(),
 		resourceCmd(),
 		runCmd(),
+		execCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -171,7 +173,7 @@ func resourceListCmd() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List all resources",
+		Short: "List all resources with live status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := openDB()
 			defer db.Close()
@@ -185,23 +187,63 @@ func resourceListCmd() *cobra.Command {
 				return printJSON(resources)
 			}
 
-			fmt.Printf("%-20s %-6s %-20s %-6s %-12s\n", "NAME", "TYPE", "HOST", "GPU", "STATUS")
+			if len(resources) == 0 {
+				fmt.Println("No resources registered. Use 'aexp resource add' to add one.")
+				return nil
+			}
+
+			fmt.Printf("%-16s %-20s %-8s %-8s %-8s  %s\n", "NAME", "HOST", "STATUS", "CPU", "RAM", "GPU")
 			for _, r := range resources {
 				snap, _ := db.GetLatestSnapshot(cmd.Context(), r.ID)
 				cpuStr := "-"
-				memStr := "-"
+				ramStr := "-"
+				gpuStr := "-"
 				if snap != nil {
 					cpuStr = fmt.Sprintf("%.0f%%", snap.CPUPercent)
-					memStr = fmt.Sprintf("%.0f%%", snap.MemUsedMB/snap.MemTotalMB*100)
+					if snap.MemTotalMB > 0 {
+						ramStr = fmt.Sprintf("%.0f%%", snap.MemUsedMB/snap.MemTotalMB*100)
+					}
+					if snap.GPUJSON != "" && snap.GPUJSON != "[]" {
+						gpuStr = formatGPUList(snap.GPUJSON)
+					}
 				}
-				fmt.Printf("%-20s %-6s %-20s %-6s %-12s  CPU:%s MEM:%s\n",
-					r.Name, r.Type, r.Host, r.GPUIndices, r.Status, cpuStr, memStr)
+				fmt.Printf("%-16s %-20s %-8s %-8s %-8s  %s\n",
+					truncStr(r.Name, 16), r.Host, r.Status, cpuStr, ramStr, gpuStr)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+// formatGPUList parses gpu_json and returns a compact summary like "4090 45% 1.2/24G"
+func formatGPUList(gpuJSON string) string {
+	var gpus []struct {
+		Index    int     `json:"index"`
+		Name     string  `json:"name"`
+		Util     float64 `json:"util"`
+		MemUsed  float64 `json:"mem_used"`
+		MemTotal float64 `json:"mem_total"`
+	}
+	if err := json.Unmarshal([]byte(gpuJSON), &gpus); err != nil || len(gpus) == 0 {
+		return "-"
+	}
+	var parts []string
+	for _, g := range gpus {
+		name := g.Name
+		// Shorten GPU name: "NVIDIA GeForce RTX 4090" → "4090"
+		for _, tok := range strings.Fields(name) {
+			if len(tok) == 4 && tok[0] >= '0' && tok[0] <= '9' {
+				name = tok
+				break
+			}
+		}
+		memUsed := fmt.Sprintf("%.0f", g.MemUsed/1024)
+		memTotal := fmt.Sprintf("%.0f", g.MemTotal/1024)
+		parts = append(parts, fmt.Sprintf("%s %d%% %s/%sG", name, int(g.Util), memUsed, memTotal))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func resourceAddCmd() *cobra.Command {
@@ -352,7 +394,7 @@ func runCmd() *cobra.Command {
 func runSubmitCmd() *cobra.Command {
 	var resource, name, cwd, condaEnv, kind string
 	var gpuIndex int
-	var shellMode bool
+	var shellMode, force bool
 	var logPaths, artifactPaths, metricPaths []string
 
 	cmd := &cobra.Command{
@@ -387,6 +429,7 @@ func runSubmitCmd() *cobra.Command {
 			submitReq.Name = name
 			submitReq.Kind = kind
 			submitReq.GPUIndex = gpuIndex
+			submitReq.Force = force
 			submitReq.Cwd = cwd
 			submitReq.CondaEnv = condaEnv
 			submitReq.LogPaths = logPaths
@@ -425,6 +468,7 @@ func runSubmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: smoke, pilot, formal, ablation")
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", -1, "GPU index to use (-1 for all)")
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Shell mode: interpret command via bash -lc")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock, allow concurrent runs on same resource/GPU")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
@@ -617,6 +661,84 @@ func runCancelCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- exec ---
+
+func execCmd() *cobra.Command {
+	var resourceName, cwd string
+	var timeout int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "exec [flags] -- <command>",
+		Short: "Run a one-shot command on a resource (no Run created)",
+		Long: `Execute a command on a registered resource for inspection/ops.
+Does NOT create a Run — use 'run submit' for experiment tasks.
+
+Examples:
+  aexp exec --resource mu -- 'nvidia-smi'
+  aexp exec --resource mu --cwd /workspace -- 'ls outputs/'
+  aexp exec --resource mu --json -- 'du -sh /workspace/*'`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			command := strings.Join(args, " ")
+
+			db := openDB()
+			defer db.Close()
+
+			res, err := db.GetResourceByName(cmd.Context(), resourceName)
+			if err != nil || res == nil {
+				return fmt.Errorf("resource %s not found", resourceName)
+			}
+
+			sshPool := executor.NewSSHPool(10 * time.Second)
+			keyPath := expandPath("~/.aexp/id_ed25519")
+			if _, err := os.Stat(keyPath); err == nil {
+				sshPool.AddKey(keyPath)
+			}
+			homeKeyEd := expandPath("~/.ssh/id_ed25519")
+			if _, err := os.Stat(homeKeyEd); err == nil {
+				sshPool.AddKey(homeKeyEd)
+			}
+
+			exec := executor.NewExecutor(sshPool, db)
+
+			result, err := exec.Exec(cmd.Context(), executor.ExecRequest{
+				ResourceID: res.ID,
+				Command:    command,
+				Cwd:        cwd,
+				TimeoutSec: timeout,
+				Actor:      "cli",
+			})
+			if err != nil {
+				return err
+			}
+
+			if asJSON {
+				return printJSON(result)
+			}
+
+			if result.Stdout != "" {
+				fmt.Print(result.Stdout)
+			}
+			if result.Stderr != "" {
+				fmt.Fprint(os.Stderr, result.Stderr)
+			}
+			if result.ExitCode != 0 {
+				return fmt.Errorf("exit code %d", result.ExitCode)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory on remote")
+	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds (max 300)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (stdout/stderr/exit_code)")
+	_ = cmd.MarkFlagRequired("resource")
+
+	return cmd
 }
 
 // --- helpers ---

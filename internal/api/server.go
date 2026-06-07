@@ -88,6 +88,9 @@ func (s *Server) Handler() http.Handler {
 
 		// Agent Events
 		r.Get("/agent-events", s.handleListAgentEvents)
+
+		// Exec (one-shot remote command)
+		r.Post("/exec", s.handleExec)
 	})
 
 	// WebSocket
@@ -453,6 +456,32 @@ func (s *Server) handleListAgentEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+// --- Exec ---
+
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	var req executor.ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+
+	if req.ResourceID == "" || req.Command == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "resource_id and command are required")
+		return
+	}
+
+	// Extract actor from token (simplified: use "api" for now)
+	req.Actor = "api"
+
+	result, err := s.executor.Exec(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "EXEC_FAILED", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // --- WebSocket ---
