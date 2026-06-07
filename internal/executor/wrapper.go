@@ -1,5 +1,7 @@
 package executor
 
+import "crypto/sha256"
+
 // WrapperScript is deployed to remote resources at ~/.aexp/wrapper.sh.
 // Usage: wrapper.sh <run_dir>
 // It executes <run_dir>/command.sh and captures exit codes, timestamps, stdout/stderr.
@@ -44,3 +46,11 @@ echo "running" > "$RUN_DIR/status"
 } > >(tee -a "$RUN_DIR/logs/stdout.log") \
   2> >(tee -a "$RUN_DIR/logs/stderr.log" >&2)
 `
+
+// WrapperHash is the sha256 hex of WrapperScript, used to detect stale wrappers.
+var WrapperHash string
+
+func init() {
+	h := sha256.Sum256([]byte(WrapperScript))
+	WrapperHash = string(h[:8]) // first 8 bytes as version tag
+}

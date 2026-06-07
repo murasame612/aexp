@@ -344,23 +344,55 @@ func runCmd() *cobra.Command {
 func runSubmitCmd() *cobra.Command {
 	var resource, name, cwd, condaEnv, kind string
 	var gpuIndex int
+	var shellMode bool
 	var logPaths, artifactPaths, metricPaths []string
 
 	cmd := &cobra.Command{
-		Use:   "submit [flags] -- <command>",
+		Use:   "submit [flags] -- <program> [args...]",
 		Short: "Submit a new experiment run",
-		Args:  cobra.MinimumNArgs(1),
+		Long: `Submit an experiment run. Two modes:
+
+  Structured (default): argv preserved exactly
+    aexp run submit --resource mu -- python train.py --lr 0.001
+
+  Shell mode (--shell): full shell interpretation
+    aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			command := joinArgs(args)
+			var submitReq executor.SubmitRequest
+
+			if shellMode {
+				// Shell mode: wrap as bash -lc "<command>"
+				submitReq = executor.SubmitRequest{
+					Program: "bash",
+					Args:    []string{"-lc", joinArgs(args)},
+				}
+			} else {
+				// Structured mode: program + argv
+				submitReq = executor.SubmitRequest{
+					Program: args[0],
+					Args:    args[1:],
+				}
+			}
+
+			submitReq.ResourceID = resource
+			submitReq.Name = name
+			submitReq.Kind = kind
+			submitReq.GPUIndex = gpuIndex
+			submitReq.Cwd = cwd
+			submitReq.CondaEnv = condaEnv
+			submitReq.LogPaths = logPaths
+			submitReq.ArtifactPaths = artifactPaths
+			submitReq.MetricPaths = metricPaths
 
 			db := openDB()
 			defer db.Close()
 
-			// Find resource by name
 			res, err := db.GetResourceByName(cmd.Context(), resource)
 			if err != nil || res == nil {
 				return fmt.Errorf("resource %s not found", resource)
 			}
+			submitReq.ResourceID = res.ID
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			keyPath := expandPath("~/.aexp/id_ed25519")
@@ -370,18 +402,7 @@ func runSubmitCmd() *cobra.Command {
 
 			exec := executor.NewExecutor(sshPool, db)
 
-			run, err := exec.Submit(cmd.Context(), executor.SubmitRequest{
-				ResourceID:    res.ID,
-				Name:          name,
-				Kind:          kind,
-				GPUIndex:      gpuIndex,
-				Command:       command,
-				Cwd:           cwd,
-				CondaEnv:      condaEnv,
-				LogPaths:      logPaths,
-				ArtifactPaths: artifactPaths,
-				MetricPaths:   metricPaths,
-			})
+			run, err := exec.Submit(cmd.Context(), submitReq)
 			if err != nil {
 				return err
 			}
@@ -395,6 +416,7 @@ func runSubmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Run name")
 	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: smoke, pilot, formal, ablation")
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", -1, "GPU index to use (-1 for all)")
+	cmd.Flags().BoolVar(&shellMode, "shell", false, "Shell mode: interpret command via bash -lc")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
@@ -455,7 +477,7 @@ func runListCmd() *cobra.Command {
 func runStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status [run_id]",
-		Short: "Show run status",
+		Short: "Show run status (auto-refreshes running runs from remote)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := openDB()
@@ -466,13 +488,31 @@ func runStatusCmd() *cobra.Command {
 				return fmt.Errorf("run %s not found", args[0])
 			}
 
+			// Auto-refresh running/starting runs from remote
+			if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+				sshPool := executor.NewSSHPool(10 * time.Second)
+				keyPath := expandPath("~/.aexp/id_ed25519")
+				if _, err := os.Stat(keyPath); err == nil {
+					sshPool.AddKey(keyPath)
+				}
+				exec := executor.NewExecutor(sshPool, db)
+				refreshed, err := exec.CheckRunStatus(cmd.Context(), run.ID)
+				if err == nil && refreshed != nil {
+					run = refreshed
+				}
+			}
+
 			fmt.Printf("ID:        %s\n", run.ID)
 			fmt.Printf("Name:      %s\n", run.Name)
 			fmt.Printf("Resource:  %s\n", run.ResourceID)
 			fmt.Printf("Status:    %s\n", run.Status)
+			fmt.Printf("Kind:      %s\n", run.Kind)
 			fmt.Printf("Command:   %s\n", run.Command)
 			fmt.Printf("CWD:       %s\n", run.Cwd)
 			fmt.Printf("tmux:      %s\n", run.TmuxSession)
+			if run.GPUIndex >= 0 {
+				fmt.Printf("GPU:       %d\n", run.GPUIndex)
+			}
 			if run.ExitCode.Valid {
 				fmt.Printf("Exit code: %d\n", run.ExitCode.Int64)
 			}

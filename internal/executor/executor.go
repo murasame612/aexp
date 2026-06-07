@@ -428,13 +428,13 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
-// ensureWrapper deploys the wrapper script to a resource if not present.
+// ensureWrapper deploys or upgrades the wrapper script on a resource.
 func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {
-	// Check if wrapper exists
-	checkCmd := "test -f ~/.aexp/wrapper.sh && echo exists"
+	// Check if wrapper exists AND has the correct version
+	checkCmd := "cat ~/.aexp/wrapper.version 2>/dev/null || echo none"
 	out, _, _ := e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, checkCmd)
-	if strings.TrimSpace(out) == "exists" {
-		return nil
+	if strings.TrimSpace(out) == WrapperHash {
+		return nil // up to date
 	}
 
 	// Deploy wrapper
@@ -443,11 +443,16 @@ func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
-	// Write wrapper script via heredoc
-	writeCmd := fmt.Sprintf("cat > ~/.aexp/wrapper.sh << 'WRAPPER_EOF'\n%s\nWRAPPER_EOF\nchmod +x ~/.aexp/wrapper.sh", WrapperScript)
+	// Write wrapper script via base64 (avoids heredoc quoting issues)
+	encoded := base64Encode([]byte(WrapperScript))
+	writeCmd := fmt.Sprintf("echo %s | base64 -d > ~/.aexp/wrapper.sh && chmod +x ~/.aexp/wrapper.sh", encoded)
 	if _, stderr, err := e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, writeCmd); err != nil {
 		return fmt.Errorf("write wrapper: %w (stderr: %s)", err, stderr)
 	}
+
+	// Write version tag
+	versionCmd := fmt.Sprintf("echo %s > ~/.aexp/wrapper.version", WrapperHash)
+	e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, versionCmd)
 
 	return nil
 }
