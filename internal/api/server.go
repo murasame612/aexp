@@ -4,11 +4,16 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	osexec "os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 		r.Route("/resources", func(r chi.Router) {
 			r.Get("/", s.handleListResources)
 			r.Post("/", s.handleCreateResource)
+			r.Get("/local-defaults", s.handleLocalResourceDefaults)
+			r.Post("/local", s.handleCreateLocalResource)
 			r.Get("/{id}", s.handleGetResource)
 			r.Put("/{id}", s.handleUpdateResource)
 			r.Delete("/{id}", s.handleDeleteResource)
@@ -89,14 +96,29 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/{id}/logs", s.handleGetLogs)
 			r.Get("/{id}/summary", s.handleGetSummary)
 			r.Get("/{id}/artifacts", s.handleListArtifacts)
+			r.Get("/{id}/marks", s.handleListRunMarksForRun)
+			r.Post("/{id}/marks", s.handleCreateRunMark)
+			r.Post("/{id}/bookmark", s.handleSaveRunBookmark)
+			r.Delete("/{id}/bookmark", s.handleDeleteRunBookmark)
 			r.Post("/{id}/status-check", s.handleStatusCheck)
 		})
 
 		// Agent Events
 		r.Get("/agent-events", s.handleListAgentEvents)
 
+		// Run Marks
+		r.Get("/run-marks", s.handleListRunMarks)
+		r.Get("/run-marks/{id}", s.handleGetRunMark)
+
+		// Human-curated favorite runs
+		r.Get("/run-bookmarks", s.handleListRunBookmarks)
+
 		// Exec (one-shot remote command)
 		r.Post("/exec", s.handleExec)
+
+		// Exec Events
+		r.Get("/exec-events", s.handleListExecEvents)
+		r.Get("/exec-events/{id}", s.handleGetExecEvent)
 	})
 
 	// WebSocket
@@ -137,7 +159,12 @@ func (s *Server) Handler() http.Handler {
 // --- Health ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	host, _ := os.Hostname()
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":   "ok",
+		"os_type":  localOSType(),
+		"hostname": host,
+	})
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +244,169 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
+func (s *Server) handleLocalResourceDefaults(w http.ResponseWriter, r *http.Request) {
+	res, err := localSSHResourceDefaults("", "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "LOCAL_DEFAULTS_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleCreateLocalResource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		RootDir string `json:"root_dir"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	res, err := buildLocalSSHResource(req.Name, req.RootDir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "LOCAL_RESOURCE_FAILED", err.Error())
+		return
+	}
+
+	if err := testLocalSSH(r.Context(), &res); err != nil {
+		writeError(w, http.StatusBadRequest, "LOCAL_SSH_FAILED", err.Error())
+		return
+	}
+
+	if err := s.store.CreateResource(r.Context(), &res); err != nil {
+		writeError(w, http.StatusConflict, "CREATE_FAILED", err.Error())
+		return
+	}
+
+	s.monitor.AddResource(&res)
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func localSSHResourceDefaults(name string, rootDir string) (store.Resource, error) {
+	if rootDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return store.Resource{}, fmt.Errorf("get current directory: %w", err)
+		}
+		rootDir = wd
+	}
+	if name == "" {
+		host, _ := os.Hostname()
+		if host == "" {
+			host = "localhost"
+		}
+		name = "local-" + sanitizeLocalName(host)
+	}
+	userName := os.Getenv("USER")
+	if userName == "" {
+		userName = os.Getenv("LOGNAME")
+	}
+	if userName == "" {
+		return store.Resource{}, fmt.Errorf("cannot determine local user")
+	}
+
+	keyPath := firstDefaultSSHKey()
+	condaBase, condaInit := detectLocalConda()
+	return store.Resource{
+		Name:      name,
+		Type:      store.ResourceTypeSSH,
+		Host:      "127.0.0.1",
+		OSType:    localOSType(),
+		Port:      22,
+		User:      userName,
+		AuthRef:   keyPath,
+		RootDir:   rootDir,
+		CondaBase: condaBase,
+		CondaInit: condaInit,
+		Status:    store.ResourceStatusUnknown,
+		Tags:      "local",
+	}, nil
+}
+
+func buildLocalSSHResource(name string, rootDir string) (store.Resource, error) {
+	res, err := localSSHResourceDefaults(name, rootDir)
+	if err != nil {
+		return store.Resource{}, err
+	}
+	if res.AuthRef == "" {
+		return store.Resource{}, fmt.Errorf("no default SSH key found; create ~/.ssh/id_ed25519 or pass a normal SSH resource manually")
+	}
+	res.ID = genID("rsrc_")
+	return res, nil
+}
+
+func testLocalSSH(ctx context.Context, r *store.Resource) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	args := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=3",
+		"-o", "StrictHostKeyChecking=no",
+		"-i", r.AuthRef,
+		"-p", fmt.Sprintf("%d", r.Port),
+		r.User + "@" + r.Host,
+		"echo ok",
+	}
+	out, err := osexec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh localhost failed: %w (%s). Enable Remote Login on macOS and ensure the public key is in ~/.ssh/authorized_keys", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func firstDefaultSSHKey() string {
+	home, _ := os.UserHomeDir()
+	for _, rel := range []string{".aexp/id_ed25519", ".ssh/id_ed25519", ".ssh/id_rsa"} {
+		full := filepath.Join(home, rel)
+		if _, err := os.Stat(full); err == nil {
+			return full
+		}
+	}
+	return ""
+}
+
+func detectLocalConda() (string, string) {
+	conda, err := osexec.LookPath("conda")
+	if err != nil {
+		return "", ""
+	}
+	out, err := osexec.Command(conda, "info", "--base").Output()
+	if err != nil {
+		return "", ""
+	}
+	base := strings.TrimSpace(string(out))
+	if base == "" {
+		return "", ""
+	}
+	return base, filepath.Join(base, "etc/profile.d/conda.sh")
+}
+
+func localOSType() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macos"
+	case "linux":
+		return "linux"
+	default:
+		return runtime.GOOS
+	}
+}
+
+func sanitizeLocalName(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if b.Len() > 0 {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "machine"
+	}
+	return out
+}
+
 func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	res, err := s.store.GetResource(r.Context(), id)
@@ -278,6 +468,9 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if !hasField("host") {
 		update.Host = existing.Host
+	}
+	if !hasField("os_type") {
+		update.OSType = existing.OSType
 	}
 	if !hasField("port") {
 		update.Port = existing.Port
@@ -541,6 +734,220 @@ func (s *Server) handleListAgentEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+// --- Run Marks ---
+
+func (s *Server) handleListRunMarks(w http.ResponseWriter, r *http.Request) {
+	filter := runMarkFilterFromQuery(r)
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+
+	marks, err := s.store.ListRunMarks(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, marks)
+}
+
+func (s *Server) handleListRunMarksForRun(w http.ResponseWriter, r *http.Request) {
+	filter := runMarkFilterFromQuery(r)
+	filter.RunID = chi.URLParam(r, "id")
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+
+	marks, err := s.store.ListRunMarks(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, marks)
+}
+
+func (s *Server) handleGetRunMark(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	mark, err := s.store.GetRunMark(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if mark == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run mark not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, mark)
+}
+
+func (s *Server) handleCreateRunMark(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	run, err := s.store.GetRun(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+
+	var mark store.RunMark
+	if err := json.NewDecoder(r.Body).Decode(&mark); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	mark.ID = genID("mark_")
+	mark.RunID = runID
+	mark.Actor = strings.TrimSpace(mark.Actor)
+	mark.Kind = strings.TrimSpace(mark.Kind)
+	mark.Title = strings.TrimSpace(mark.Title)
+	mark.Reason = strings.TrimSpace(mark.Reason)
+	mark.Evidence = strings.TrimSpace(mark.Evidence)
+	if mark.Actor == "" {
+		mark.Actor = "api"
+	}
+	if mark.Kind == "" {
+		mark.Kind = "key_result"
+	}
+	if mark.Title == "" && mark.Reason == "" && mark.Evidence == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "title, reason, or evidence is required")
+		return
+	}
+
+	if err := s.store.SaveRunMark(r.Context(), &mark); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, mark)
+}
+
+func runMarkFilterFromQuery(r *http.Request) store.RunMarkFilter {
+	filter := store.RunMarkFilter{
+		RunID: r.URL.Query().Get("run_id"),
+		Actor: r.URL.Query().Get("actor"),
+		Kind:  r.URL.Query().Get("kind"),
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if n, err := strconv.Atoi(offsetStr); err == nil && n > 0 {
+			filter.Offset = n
+		}
+	}
+	return filter
+}
+
+// --- Run Bookmarks ---
+
+type runBookmarkView struct {
+	ID        string     `json:"id"`
+	RunID     string     `json:"run_id"`
+	Note      string     `json:"note"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	Run       *store.Run `json:"run,omitempty"`
+}
+
+func (s *Server) handleListRunBookmarks(w http.ResponseWriter, r *http.Request) {
+	filter := store.RunBookmarkFilter{}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if n, err := strconv.Atoi(offsetStr); err == nil && n > 0 {
+			filter.Offset = n
+		}
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 100
+	}
+
+	bookmarks, err := s.store.ListRunBookmarks(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.enrichRunBookmarks(r.Context(), bookmarks))
+}
+
+func (s *Server) handleSaveRunBookmark(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	run, err := s.store.GetRun(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+
+	var req struct {
+		Note string `json:"note"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+	}
+
+	existing, err := s.store.GetRunBookmark(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	bookmark := &store.RunBookmark{
+		ID:    genID("bm_"),
+		RunID: runID,
+		Note:  strings.TrimSpace(req.Note),
+	}
+	if existing != nil {
+		bookmark.ID = existing.ID
+		bookmark.CreatedAt = existing.CreatedAt
+	}
+
+	if err := s.store.SaveRunBookmark(r.Context(), bookmark); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.enrichRunBookmark(r.Context(), *bookmark))
+}
+
+func (s *Server) handleDeleteRunBookmark(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	if err := s.store.DeleteRunBookmark(r.Context(), runID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+func (s *Server) enrichRunBookmarks(ctx context.Context, bookmarks []store.RunBookmark) []runBookmarkView {
+	views := make([]runBookmarkView, 0, len(bookmarks))
+	for _, b := range bookmarks {
+		views = append(views, s.enrichRunBookmark(ctx, b))
+	}
+	return views
+}
+
+func (s *Server) enrichRunBookmark(ctx context.Context, b store.RunBookmark) runBookmarkView {
+	run, _ := s.store.GetRun(ctx, b.RunID)
+	return runBookmarkView{
+		ID:        b.ID,
+		RunID:     b.RunID,
+		Note:      b.Note,
+		CreatedAt: b.CreatedAt,
+		UpdatedAt: b.UpdatedAt,
+		Run:       run,
+	}
+}
+
 // --- Exec ---
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -565,6 +972,53 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// --- Exec Events ---
+
+func (s *Server) handleListExecEvents(w http.ResponseWriter, r *http.Request) {
+	filter := store.ExecEventFilter{}
+
+	if resourceID := r.URL.Query().Get("resource_id"); resourceID != "" {
+		filter.ResourceID = resourceID
+	}
+	if actor := r.URL.Query().Get("actor"); actor != "" {
+		filter.Actor = actor
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if n, err := strconv.Atoi(offsetStr); err == nil && n > 0 {
+			filter.Offset = n
+		}
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+
+	events, err := s.store.ListExecEvents(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) handleGetExecEvent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ev, err := s.store.GetExecEvent(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if ev == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "exec event not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, ev)
 }
 
 // --- WebSocket ---

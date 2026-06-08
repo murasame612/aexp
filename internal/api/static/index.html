@@ -180,26 +180,32 @@
         <header class="flex items-end justify-between mb-10">
             <div>
                 <h1 class="text-2xl font-semibold tracking-tight font-heading">aexp</h1>
-                <p class="text-sm text-ink-secondary mt-0.5">Agent Experiment Control Plane</p>
+                <p class="text-sm text-ink-secondary mt-0.5" data-i18n="app.subtitle">Agent Experiment Control Plane</p>
             </div>
             <div class="flex items-center gap-3">
                 <span id="status-indicator" class="text-xs text-ink-muted"></span>
-                <button onclick="loadData()" class="btn-secondary text-sm">Refresh</button>
+                <div class="lang-switch" aria-label="Language">
+                    <button type="button" id="lang-en" onclick="setLang('en')">EN</button>
+                    <button type="button" id="lang-zh" onclick="setLang('zh')">中文</button>
+                </div>
+                <button onclick="loadData()" class="btn-secondary text-sm" data-i18n="common.refresh">Refresh</button>
                 <div class="flex items-center gap-2 ml-2 pl-4 border-l border-border">
-                    <input id="token-input" type="password" placeholder="API token"
+                    <input id="token-input" type="password" placeholder="API token" data-i18n-placeholder="auth.tokenPlaceholder"
                         class="w-44 px-3 py-1.5 text-sm bg-surface border border-border rounded-input placeholder:text-ink-muted"
                         onkeydown="if(event.key==='Enter')saveToken()">
-                    <button onclick="saveToken()" class="btn-accent text-sm">Set</button>
-                    <button id="token-clear" onclick="clearToken()" class="btn-secondary text-sm hidden">Clear</button>
+                    <button onclick="saveToken()" class="btn-accent text-sm" data-i18n="common.set">Set</button>
+                    <button id="token-clear" onclick="clearToken()" class="btn-secondary text-sm hidden" data-i18n="common.clear">Clear</button>
                 </div>
             </div>
         </header>
 
         <!-- Tabs -->
         <nav class="flex gap-1 mb-8 border-b border-border">
-            <div class="tab-btn active" onclick="showTab('dashboard', this)">Dashboard</div>
-            <div class="tab-btn" onclick="showTab('resources', this)">Resources</div>
-            <div class="tab-btn" onclick="showTab('runs', this)">Runs</div>
+            <div class="tab-btn active" onclick="showTab('dashboard', this)" data-i18n="nav.dashboard">Dashboard</div>
+            <div class="tab-btn" onclick="showTab('resources', this)" data-i18n="nav.resources">Resources</div>
+            <div class="tab-btn" onclick="showTab('runs', this)" data-i18n="nav.runs">Runs</div>
+            <div class="tab-btn" onclick="showTab('favorites', this)" data-i18n="nav.favorites">Favorites</div>
+            <div class="tab-btn" onclick="showTab('execs', this)" data-i18n="nav.execs">Execs</div>
         </nav>
 
         <!-- Dashboard -->
@@ -207,110 +213,145 @@
             <!-- Stats -->
             <div class="grid grid-cols-3 gap-5 mb-10">
                 <div class="card">
-                    <div class="stat-label">Resources</div>
+                    <div class="stat-label" data-i18n="stats.resources">Resources</div>
                     <div class="stat-value" id="stat-resources">&ndash;</div>
                 </div>
                 <div class="card">
-                    <div class="stat-label">Active Runs</div>
+                    <div class="stat-label" data-i18n="stats.activeRuns">Active Runs</div>
                     <div class="stat-value" id="stat-active-runs">&ndash;</div>
                 </div>
                 <div class="card">
-                    <div class="stat-label">Total Runs</div>
+                    <div class="stat-label" data-i18n="stats.totalRuns">Total Runs</div>
                     <div class="stat-value" id="stat-total-runs">&ndash;</div>
                 </div>
             </div>
 
             <!-- Resources -->
             <section class="mb-10">
-                <h2 class="section-title">Resources</h2>
+                <h2 class="section-title" data-i18n="nav.resources">Resources</h2>
                 <div id="resource-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
             </section>
 
             <!-- Active Runs -->
             <section>
-                <h2 class="section-title">Active Runs</h2>
+                <h2 class="section-title" data-i18n="stats.activeRuns">Active Runs</h2>
                 <div id="active-run-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+            </section>
+
+            <!-- Agent Findings -->
+            <section class="mt-10">
+                <h2 class="section-title" data-i18n="sections.agentFindings">Agent Findings</h2>
+                <div id="run-marks-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </section>
+
+            <!-- Recent Exec -->
+            <section class="mt-10">
+                <h2 class="section-title" data-i18n="sections.recentExec">Recent Exec</h2>
+                <div class="table-scroll">
+                    <table class="data-table" id="exec-events-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="table.time">Time</th>
+                                <th data-i18n="table.resource">Resource</th>
+                                <th data-i18n="table.actor">Actor</th>
+                                <th data-i18n="table.command">Command</th>
+                                <th data-i18n="table.exit">Exit</th>
+                                <th data-i18n="table.duration">Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody id="exec-events-body">
+                            <tr><td colspan="6" class="empty-state" data-i18n="state.loading">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </section>
         </div>
 
         <!-- Resources Tab -->
         <div id="tab-resources" class="hidden">
             <div class="flex items-center justify-between mb-5">
-                <h2 class="section-title mb-0">Resources</h2>
-                <button onclick="toggleAddForm()" class="btn-accent text-sm" id="add-btn">+ Add Resource</button>
+                <h2 class="section-title mb-0" data-i18n="nav.resources">Resources</h2>
+                <div class="flex gap-2">
+                    <button onclick="fillLocalResourceForm()" class="btn-local text-sm" id="add-local-btn" data-i18n="resources.fillMachine">Fill This Machine</button>
+                    <button onclick="toggleAddForm()" class="btn-accent text-sm" id="add-btn" data-i18n="resources.add">+ Add Resource</button>
+                </div>
             </div>
             <div id="add-form-container" class="hidden mb-8">
                 <div class="card">
                     <!-- SSH command quick-parse -->
-                    <div class="mb-5">
-                        <label class="form-label">Paste SSH command to auto-fill</label>
+                    <div class="autofill-panel mb-5">
+                        <label class="form-label" data-i18n="resources.parseSsh">Paste SSH command to auto-fill</label>
                         <div class="flex gap-2">
                             <input id="ssh-parse-input" class="form-input flex-1" placeholder="ssh -i key -o ProxyCommand='...' user@host"
                                 onkeydown="if(event.key==='Enter'){parseSSHCommand();return false}">
-                            <button type="button" onclick="parseSSHCommand()" class="btn-secondary text-sm whitespace-nowrap">Parse</button>
+                            <button type="button" onclick="parseSSHCommand()" class="btn-secondary text-sm whitespace-nowrap" data-i18n="common.parse">Parse</button>
                         </div>
                     </div>
                     <form id="add-resource-form" onsubmit="submitResource(event)" class="grid grid-cols-2 gap-4">
                         <input type="hidden" name="id" value="">
                         <div>
-                            <label class="form-label">Name *</label>
+                            <label class="form-label"><span data-i18n="form.name">Name</span> <span class="required-star">*</span></label>
                             <input name="name" required class="form-input" placeholder="gpu-server-1">
                         </div>
                         <div>
-                            <label class="form-label">Host *</label>
+                            <label class="form-label"><span data-i18n="form.host">Host</span> <span class="required-star">*</span></label>
                             <input name="host" required class="form-input" placeholder="10.0.0.5">
                         </div>
                         <div>
-                            <label class="form-label">SSH User</label>
+                            <label class="form-label" data-i18n="form.osType">OS Type</label>
+                            <input name="os_type" class="form-input" placeholder="macos or linux">
+                        </div>
+                        <div>
+                            <label class="form-label" data-i18n="form.sshUser">SSH User</label>
                             <input name="user" value="root" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">SSH Port</label>
+                            <label class="form-label" data-i18n="form.sshPort">SSH Port</label>
                             <input name="port" type="number" value="22" class="form-input">
                         </div>
                         <div class="col-span-2">
-                            <label class="form-label">Root Directory *</label>
+                            <label class="form-label"><span data-i18n="form.rootDir">Root Directory</span> <span class="required-star">*</span></label>
                             <input name="root_dir" required class="form-input" placeholder="/workspace">
                         </div>
                         <div>
-                            <label class="form-label">Conda Base</label>
+                            <label class="form-label" data-i18n="form.condaBase">Conda Base</label>
                             <input name="conda_base" class="form-input" placeholder="/home/user/miniforge3">
                         </div>
                         <div>
-                            <label class="form-label">Conda Init</label>
+                            <label class="form-label" data-i18n="form.condaInit">Conda Init</label>
                             <input name="conda_init" class="form-input" placeholder="/home/user/miniforge3/etc/profile.d/conda.sh">
                         </div>
                         <div>
-                            <label class="form-label">Type</label>
+                            <label class="form-label" data-i18n="form.type">Type</label>
                             <input name="type" value="ssh" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">GPU Indices</label>
+                            <label class="form-label" data-i18n="form.gpuIndices">GPU Indices</label>
                             <input name="gpu_indices" class="form-input" placeholder="0,1">
                         </div>
                         <div>
-                            <label class="form-label">Conda Env</label>
+                            <label class="form-label" data-i18n="form.condaEnv">Conda Env</label>
                             <input name="conda_env" class="form-input" placeholder="base">
                         </div>
                         <div>
-                            <label class="form-label">SSH Key Path</label>
+                            <label class="form-label" data-i18n="form.sshKeyPath">SSH Key Path</label>
                             <input name="auth_ref" class="form-input" placeholder="~/.aexp/id_ed25519">
                         </div>
                         <div>
-                            <label class="form-label">SOCKS5 Proxy</label>
+                            <label class="form-label" data-i18n="form.socksProxy">SOCKS5 Proxy</label>
                             <input name="socks_proxy" class="form-input" placeholder="host:port">
                         </div>
                         <div>
-                            <label class="form-label">Proxy Command</label>
+                            <label class="form-label" data-i18n="form.proxyCommand">Proxy Command</label>
                             <input name="proxy_command" class="form-input" placeholder="nc -X 5 -x ... %h %p">
                         </div>
                         <div class="col-span-2">
-                            <label class="form-label">Tags</label>
+                            <label class="form-label" data-i18n="form.tags">Tags</label>
                             <input name="tags" class="form-input" placeholder="timeseries,gpu">
                         </div>
                         <div class="col-span-2 flex gap-3 justify-end pt-2">
-                            <button type="button" onclick="toggleAddForm()" class="btn-secondary text-sm">Cancel</button>
-                            <button type="submit" class="btn-accent text-sm" id="form-submit-btn">Register Resource</button>
+                            <button type="button" onclick="toggleAddForm()" class="btn-secondary text-sm" data-i18n="common.cancel">Cancel</button>
+                            <button type="submit" class="btn-accent text-sm" id="form-submit-btn" data-i18n="resources.register">Register Resource</button>
                         </div>
                     </form>
                     <div id="add-form-msg" class="text-sm mt-3 hidden"></div>
@@ -323,71 +364,75 @@
         <div id="edit-resource-modal" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-50" onclick="if(event.target===this)closeEditModal()">
             <div class="bg-surface rounded-card w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-soft border border-border">
                 <div class="sticky top-0 bg-surface flex justify-between items-center px-8 py-5 border-b border-border">
-                    <h2 class="text-lg font-semibold font-heading" id="edit-modal-title">Edit Resource</h2>
+                    <h2 class="text-lg font-semibold font-heading" id="edit-modal-title" data-i18n="resources.edit">Edit Resource</h2>
                     <button onclick="closeEditModal()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
                 </div>
                 <div class="px-8 py-6">
                     <form id="edit-resource-form" onsubmit="submitEditResource(event)" class="grid grid-cols-2 gap-4">
                         <input type="hidden" name="id" value="">
                         <div>
-                            <label class="form-label">Name *</label>
+                            <label class="form-label"><span data-i18n="form.name">Name</span> <span class="required-star">*</span></label>
                             <input name="name" required class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Host *</label>
+                            <label class="form-label"><span data-i18n="form.host">Host</span> <span class="required-star">*</span></label>
                             <input name="host" required class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">SSH User</label>
+                            <label class="form-label" data-i18n="form.osType">OS Type</label>
+                            <input name="os_type" class="form-input">
+                        </div>
+                        <div>
+                            <label class="form-label" data-i18n="form.sshUser">SSH User</label>
                             <input name="user" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">SSH Port</label>
+                            <label class="form-label" data-i18n="form.sshPort">SSH Port</label>
                             <input name="port" type="number" class="form-input">
                         </div>
                         <div class="col-span-2">
-                            <label class="form-label">Root Directory *</label>
+                            <label class="form-label"><span data-i18n="form.rootDir">Root Directory</span> <span class="required-star">*</span></label>
                             <input name="root_dir" required class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Conda Base</label>
+                            <label class="form-label" data-i18n="form.condaBase">Conda Base</label>
                             <input name="conda_base" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Conda Init</label>
+                            <label class="form-label" data-i18n="form.condaInit">Conda Init</label>
                             <input name="conda_init" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Type</label>
+                            <label class="form-label" data-i18n="form.type">Type</label>
                             <input name="type" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">GPU Indices</label>
+                            <label class="form-label" data-i18n="form.gpuIndices">GPU Indices</label>
                             <input name="gpu_indices" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Conda Env</label>
+                            <label class="form-label" data-i18n="form.condaEnv">Conda Env</label>
                             <input name="conda_env" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">SSH Key Path</label>
+                            <label class="form-label" data-i18n="form.sshKeyPath">SSH Key Path</label>
                             <input name="auth_ref" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">SOCKS5 Proxy</label>
+                            <label class="form-label" data-i18n="form.socksProxy">SOCKS5 Proxy</label>
                             <input name="socks_proxy" class="form-input">
                         </div>
                         <div>
-                            <label class="form-label">Proxy Command</label>
+                            <label class="form-label" data-i18n="form.proxyCommand">Proxy Command</label>
                             <input name="proxy_command" class="form-input">
                         </div>
                         <div class="col-span-2">
-                            <label class="form-label">Tags</label>
+                            <label class="form-label" data-i18n="form.tags">Tags</label>
                             <input name="tags" class="form-input">
                         </div>
                         <div class="col-span-2 flex gap-3 justify-end pt-2">
-                            <button type="button" onclick="closeEditModal()" class="btn-secondary text-sm">Cancel</button>
-                            <button type="submit" class="btn-accent text-sm">Save Changes</button>
+                            <button type="button" onclick="closeEditModal()" class="btn-secondary text-sm" data-i18n="common.cancel">Cancel</button>
+                            <button type="submit" class="btn-accent text-sm" data-i18n="common.saveChanges">Save Changes</button>
                         </div>
                     </form>
                     <div id="edit-form-msg" class="text-sm mt-3 hidden"></div>
@@ -400,35 +445,88 @@
             <div class="runs-toolbar">
                 <div class="custom-select" id="run-filter-status">
                     <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('status')">
-                        <span id="run-filter-status-label">All statuses</span>
+                        <span id="run-filter-status-label" data-i18n="filters.allStatuses">All statuses</span>
                     </button>
                     <div class="custom-select-menu hidden" id="run-filter-status-menu">
-                        <button type="button" data-value="" onclick="selectRunStatus('', 'All statuses')">All statuses</button>
-                        <button type="button" data-value="running" onclick="selectRunStatus('running', 'Running')">Running</button>
-                        <button type="button" data-value="succeeded" onclick="selectRunStatus('succeeded', 'Succeeded')">Succeeded</button>
-                        <button type="button" data-value="failed" onclick="selectRunStatus('failed', 'Failed')">Failed</button>
-                        <button type="button" data-value="cancelled" onclick="selectRunStatus('cancelled', 'Cancelled')">Cancelled</button>
+                        <button type="button" data-value="" onclick="selectRunStatus('', t('filters.allStatuses'))" data-i18n="filters.allStatuses">All statuses</button>
+                        <button type="button" data-value="running" onclick="selectRunStatus('running', t('status.running'))" data-i18n="status.running">Running</button>
+                        <button type="button" data-value="succeeded" onclick="selectRunStatus('succeeded', t('status.succeeded'))" data-i18n="status.succeeded">Succeeded</button>
+                        <button type="button" data-value="failed" onclick="selectRunStatus('failed', t('status.failed'))" data-i18n="status.failed">Failed</button>
+                        <button type="button" data-value="cancelled" onclick="selectRunStatus('cancelled', t('status.cancelled'))" data-i18n="status.cancelled">Cancelled</button>
                     </div>
                 </div>
                 <div class="custom-select" id="run-filter-resource">
                     <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('resource')">
-                        <span id="run-filter-resource-label">All resources</span>
+                        <span id="run-filter-resource-label" data-i18n="filters.allResources">All resources</span>
                     </button>
                     <div class="custom-select-menu hidden" id="run-filter-resource-menu">
-                        <button type="button" data-value="" onclick="selectRunResource('')">All resources</button>
+                        <button type="button" data-value="" onclick="selectRunResource('')" data-i18n="filters.allResources">All resources</button>
                     </div>
                 </div>
                 <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
-                    placeholder="Search name or command">
+                    placeholder="Search name or command" data-i18n-placeholder="filters.searchNameCommand">
             </div>
             <div id="runs-table-container"></div>
+        </div>
+
+        <!-- Favorites Tab -->
+        <div id="tab-favorites" class="hidden">
+            <div class="runs-toolbar">
+                <input id="favorite-filter-query" oninput="applyFavoriteFilters()" class="filter-input"
+                    placeholder="Search favorite runs or notes" data-i18n-placeholder="filters.searchFavorites">
+            </div>
+            <div id="favorites-container" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+        </div>
+
+        <!-- Execs Tab -->
+        <div id="tab-execs" class="hidden">
+            <div class="runs-toolbar">
+                <div class="custom-select" id="exec-filter-resource">
+                    <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('exec-resource')">
+                        <span id="exec-filter-resource-label" data-i18n="filters.allResources">All resources</span>
+                    </button>
+                    <div class="custom-select-menu hidden" id="exec-filter-resource-menu">
+                        <button type="button" data-value="" onclick="selectExecResource('')" data-i18n="filters.allResources">All resources</button>
+                    </div>
+                </div>
+                <div class="custom-select" id="exec-filter-actor">
+                    <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('exec-actor')">
+                        <span id="exec-filter-actor-label" data-i18n="filters.allActors">All actors</span>
+                    </button>
+                    <div class="custom-select-menu hidden" id="exec-filter-actor-menu">
+                        <button type="button" data-value="" onclick="selectExecActor('', t('filters.allActors'))" data-i18n="filters.allActors">All actors</button>
+                        <button type="button" data-value="cli" onclick="selectExecActor('cli', 'cli')">cli</button>
+                        <button type="button" data-value="api" onclick="selectExecActor('api', 'api')">api</button>
+                        <button type="button" data-value="agent" onclick="selectExecActor('agent', 'agent')">agent</button>
+                    </div>
+                </div>
+                <input id="exec-filter-query" oninput="applyExecFilters()" class="filter-input"
+                    placeholder="Search command, resource, actor, event id" data-i18n-placeholder="filters.searchExecs">
+            </div>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th data-i18n="table.time">Time</th>
+                            <th data-i18n="table.resource">Resource</th>
+                            <th data-i18n="table.actor">Actor</th>
+                            <th data-i18n="table.command">Command</th>
+                            <th data-i18n="table.exit">Exit</th>
+                            <th data-i18n="table.duration">Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody id="execs-table-body">
+                        <tr><td colspan="6" class="empty-state" data-i18n="state.loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Run Detail Modal -->
         <div id="run-detail" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-50" onclick="if(event.target===this)closeDetail()">
             <div class="bg-surface rounded-card w-full max-w-3xl max-h-[85vh] overflow-y-auto shadow-soft border border-border">
                 <div class="sticky top-0 bg-surface flex justify-between items-center px-8 py-5 border-b border-border">
-                    <h2 class="text-lg font-semibold font-heading" id="detail-title">Run Detail</h2>
+                    <h2 class="text-lg font-semibold font-heading" id="detail-title" data-i18n="runs.detail">Run Detail</h2>
                     <button onclick="closeDetail()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
                 </div>
                 <div id="detail-content" class="px-8 py-6"></div>
@@ -439,12 +537,12 @@
         <div id="confirm-modal" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-[60]" onclick="if(event.target===this)closeConfirmModal()">
             <div class="bg-surface rounded-card w-full max-w-md shadow-soft border border-border">
                 <div class="px-7 pt-6 pb-4">
-                    <h2 class="text-lg font-semibold font-heading" id="confirm-title">Confirm</h2>
+                    <h2 class="text-lg font-semibold font-heading" id="confirm-title" data-i18n="common.confirm">Confirm</h2>
                     <p class="text-sm text-ink-secondary mt-3 leading-relaxed" id="confirm-message"></p>
                 </div>
                 <div class="px-7 py-5 border-t border-border flex justify-end gap-3">
-                    <button type="button" onclick="closeConfirmModal()" class="btn-secondary text-sm">Cancel</button>
-                    <button type="button" onclick="confirmModalAction()" class="btn-danger text-sm" id="confirm-action">Confirm</button>
+                    <button type="button" onclick="closeConfirmModal()" class="btn-secondary text-sm" data-i18n="common.cancel">Cancel</button>
+                    <button type="button" onclick="confirmModalAction()" class="btn-danger text-sm" id="confirm-action" data-i18n="common.confirm">Confirm</button>
                 </div>
             </div>
         </div>
@@ -494,6 +592,31 @@
         }
         .card-clickable:hover { border-color: #c9c2b6; }
 
+        .btn-local {
+            background: #e6f0e8;
+            color: #35644a;
+            border: 1px solid #b7c9bc;
+            border-radius: 999px;
+            padding: 7px 14px;
+            font-weight: 500;
+        }
+        .btn-local:hover {
+            background: #dbeade;
+            border-color: #9fbaa8;
+        }
+        .autofill-panel {
+            background: #fff6e8;
+            border: 1px solid #e4c798;
+            border-radius: 0.875rem;
+            padding: 12px;
+        }
+        .autofill-panel .form-label {
+            color: #9b5a21;
+        }
+        .required-star {
+            color: #c96545;
+            font-weight: 700;
+        }
         .form-label {
             display: block;
             font-size: 12px;
@@ -663,6 +786,100 @@
             word-break: break-all;
             color: #191817;
         }
+        .mark-card {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.75rem;
+            background: #fffdf8;
+            padding: 14px 16px;
+        }
+        .mark-card.compact { margin-bottom: 12px; }
+        .mark-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .mark-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #191817;
+            line-height: 1.35;
+        }
+        .mark-meta {
+            color: #7a766d;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .mark-text {
+            color: #5f5b53;
+            font-size: 13px;
+            line-height: 1.55;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        .mark-evidence {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 0.5rem;
+            background: #f0ede5;
+            color: #5f5b53;
+            font-size: 12px;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+        }
+        .favorite-card {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.75rem;
+            background: #fffdf8;
+            padding: 14px 16px;
+        }
+        .favorite-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .favorite-note {
+            width: 100%;
+            min-height: 72px;
+            resize: vertical;
+            border: 1px solid #d8d3c8;
+            border-radius: 0.625rem;
+            background: #faf9f5;
+            color: #191817;
+            font-size: 13px;
+            line-height: 1.5;
+            padding: 9px 10px;
+        }
+        .favorite-toggle {
+            color: #c96545;
+            font-size: 16px;
+            line-height: 1;
+        }
+        .favorite-toggle.off {
+            color: #7a766d;
+        }
+        .lang-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            padding: 2px;
+            border: 1px solid #d8d3c8;
+            border-radius: 999px;
+            background: #fffdf8;
+        }
+        .lang-switch button {
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            color: #5f5b53;
+            line-height: 1.2;
+        }
+        .lang-switch button.active {
+            background: #c96545;
+            color: #fffdf8;
+        }
 
         /* Poll indicator */
         .poll-dot {
@@ -685,10 +902,302 @@
         let ws = null;
         let resourcesById = new Map();
         let allRuns = [];
+        let allExecEvents = [];
+        let allRunMarks = [];
+        let allRunBookmarks = [];
+        let bookmarkedRunIds = new Set();
         let runResourceFilterSignature = '';
+        let execResourceFilterSignature = '';
         let runFilterStatus = '';
         let runFilterResource = '';
+        let execFilterResource = '';
+        let execFilterActor = '';
         let pendingConfirmAction = null;
+        let currentLang = localStorage.getItem('aexp_lang') || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+
+        const translations = {
+            en: {
+                'app.subtitle': 'Agent Experiment Control Plane',
+                'common.refresh': 'Refresh',
+                'common.set': 'Set',
+                'common.clear': 'Clear',
+                'common.cancel': 'Cancel',
+                'common.confirm': 'Confirm',
+                'common.parse': 'Parse',
+                'common.saveChanges': 'Save Changes',
+                'common.remove': 'Remove',
+                'common.edit': 'Edit',
+                'common.copy': 'Copy',
+                'common.saveNote': 'Save Note',
+                'common.openRun': 'Open Run',
+                'auth.tokenPlaceholder': 'API token',
+                'nav.dashboard': 'Dashboard',
+                'nav.resources': 'Resources',
+                'nav.runs': 'Runs',
+                'nav.favorites': 'Favorites',
+                'nav.execs': 'Execs',
+                'stats.resources': 'Resources',
+                'stats.activeRuns': 'Active Runs',
+                'stats.totalRuns': 'Total Runs',
+                'sections.agentFindings': 'Agent Findings',
+                'sections.recentExec': 'Recent Exec',
+                'table.time': 'Time',
+                'table.resource': 'Resource',
+                'table.actor': 'Actor',
+                'table.command': 'Command',
+                'table.exit': 'Exit',
+                'table.duration': 'Duration',
+                'table.name': 'Name',
+                'table.host': 'Host',
+                'table.status': 'Status',
+                'table.gpu': 'GPU',
+                'table.actions': 'Actions',
+                'table.id': 'ID',
+                'form.name': 'Name',
+                'form.host': 'Host',
+                'form.osType': 'OS Type',
+                'form.sshUser': 'SSH User',
+                'form.sshPort': 'SSH Port',
+                'form.rootDir': 'Root Directory',
+                'form.condaBase': 'Conda Base',
+                'form.condaInit': 'Conda Init',
+                'form.type': 'Type',
+                'form.gpuIndices': 'GPU Indices',
+                'form.condaEnv': 'Conda Env',
+                'form.sshKeyPath': 'SSH Key Path',
+                'form.socksProxy': 'SOCKS5 Proxy',
+                'form.proxyCommand': 'Proxy Command',
+                'form.tags': 'Tags',
+                'resources.add': '+ Add Resource',
+                'resources.cancelAdd': 'Cancel',
+                'resources.register': 'Register Resource',
+                'resources.edit': 'Edit Resource',
+                'resources.parseSsh': 'Paste SSH command to auto-fill',
+                'resources.fillMac': 'Fill This Mac',
+                'resources.fillLinux': 'Fill This Linux',
+                'resources.fillMachine': 'Fill This Machine',
+                'resources.noResourcesRegistered': 'No resources registered',
+                'resources.noResources': 'No resources',
+                'resources.unreachable': 'resource unreachable',
+                'resources.removeTitle': 'Remove resource',
+                'resources.removeMessage': 'Remove resource "{name}"? Existing runs stay in history, but this resource will no longer be available.',
+                'resources.registered': 'Registered {name}',
+                'resources.failed': 'Failed',
+                'resources.updateFailed': 'Update failed',
+                'resources.localDefaultsFailed': 'Failed to get local defaults',
+                'resources.addLocalFailed': 'Failed to add local resource',
+                'resources.localFilledWithKey': 'Filled localhost SSH resource. Adjust SSH key path if needed, then register.',
+                'resources.localFilledNoKey': 'Filled localhost SSH resource. Add your SSH key path before registering.',
+                'filters.allStatuses': 'All statuses',
+                'filters.allResources': 'All resources',
+                'filters.allActors': 'All actors',
+                'filters.searchNameCommand': 'Search name or command',
+                'filters.searchFavorites': 'Search favorite runs or notes',
+                'filters.searchExecs': 'Search command, resource, actor, event id',
+                'state.loading': 'Loading...',
+                'state.enterToken': 'Enter API token',
+                'state.invalidToken': 'Invalid token',
+                'runs.noActive': 'No active runs',
+                'runs.noMatching': 'No matching runs',
+                'runs.detail': 'Run Detail',
+                'runs.addFavorite': 'Add Favorite',
+                'runs.removeFavorite': 'Remove Favorite',
+                'runs.cancelTitle': 'Cancel run',
+                'runs.cancelMessage': 'Cancel this run? The running process will be stopped and the run will be marked as cancelled.',
+                'runs.cancelAction': 'Cancel Run',
+                'marks.noRecent': 'No agent findings yet',
+                'marks.noMarks': 'No run marks',
+                'marks.noAttached': 'No findings attached to this run',
+                'favorites.noFavorites': 'No favorite runs yet',
+                'favorites.missingRun': 'Missing run',
+                'favorites.notePlaceholder': 'Add a small human note...',
+                'favorites.removeTitle': 'Remove favorite',
+                'favorites.removeMessage': 'Remove this run from Favorites? The run and agent findings stay unchanged.',
+                'exec.noRecent': 'No recent exec events',
+                'exec.noEvents': 'No exec events',
+                'exec.noMatching': 'No matching exec events',
+                'status.running': 'Running',
+                'status.succeeded': 'Succeeded',
+                'status.failed': 'Failed',
+                'status.cancelled': 'Cancelled',
+                'status.starting': 'Starting',
+                'status.lost': 'Lost',
+                'status.idle': 'Idle',
+                'status.busy': 'Busy',
+                'status.unknown': 'Unknown',
+                'status.unreachable': 'Unreachable',
+                'status.missing': 'Missing',
+            },
+            zh: {
+                'app.subtitle': 'Agent 实验控制平面',
+                'common.refresh': '刷新',
+                'common.set': '设置',
+                'common.clear': '清除',
+                'common.cancel': '取消',
+                'common.confirm': '确认',
+                'common.parse': '解析',
+                'common.saveChanges': '保存修改',
+                'common.remove': '移除',
+                'common.edit': '编辑',
+                'common.copy': '复制',
+                'common.saveNote': '保存标注',
+                'common.openRun': '打开实验',
+                'auth.tokenPlaceholder': 'API Token',
+                'nav.dashboard': '仪表盘',
+                'nav.resources': '资源',
+                'nav.runs': '实验',
+                'nav.favorites': '收藏',
+                'nav.execs': '执行',
+                'stats.resources': '资源',
+                'stats.activeRuns': '运行中实验',
+                'stats.totalRuns': '实验总数',
+                'sections.agentFindings': 'Agent 发现',
+                'sections.recentExec': '最近执行',
+                'table.time': '时间',
+                'table.resource': '资源',
+                'table.actor': '执行者',
+                'table.command': '命令',
+                'table.exit': '退出码',
+                'table.duration': '耗时',
+                'table.name': '名称',
+                'table.host': '主机',
+                'table.status': '状态',
+                'table.gpu': 'GPU',
+                'table.actions': '操作',
+                'table.id': 'ID',
+                'form.name': '名称',
+                'form.host': '主机',
+                'form.osType': '系统类型',
+                'form.sshUser': 'SSH 用户',
+                'form.sshPort': 'SSH 端口',
+                'form.rootDir': '根目录',
+                'form.condaBase': 'Conda 根路径',
+                'form.condaInit': 'Conda 初始化脚本',
+                'form.type': '类型',
+                'form.gpuIndices': 'GPU 编号',
+                'form.condaEnv': 'Conda 环境',
+                'form.sshKeyPath': 'SSH 密钥路径',
+                'form.socksProxy': 'SOCKS5 代理',
+                'form.proxyCommand': '代理命令',
+                'form.tags': '标签',
+                'resources.add': '+ 添加资源',
+                'resources.cancelAdd': '取消',
+                'resources.register': '注册资源',
+                'resources.edit': '编辑资源',
+                'resources.parseSsh': '粘贴 SSH 命令自动填充',
+                'resources.fillMac': '填充本机 Mac',
+                'resources.fillLinux': '填充本机 Linux',
+                'resources.fillMachine': '填充本机',
+                'resources.noResourcesRegistered': '还没有注册资源',
+                'resources.noResources': '没有资源',
+                'resources.unreachable': '资源不可达',
+                'resources.removeTitle': '移除资源',
+                'resources.removeMessage': '移除资源“{name}”？历史实验会保留，但这个资源将不可再用。',
+                'resources.registered': '已注册 {name}',
+                'resources.failed': '失败',
+                'resources.updateFailed': '更新失败',
+                'resources.localDefaultsFailed': '获取本机默认值失败',
+                'resources.addLocalFailed': '添加本机资源失败',
+                'resources.localFilledWithKey': '已填充 localhost SSH 资源。需要的话调整 SSH 密钥路径，然后注册。',
+                'resources.localFilledNoKey': '已填充 localhost SSH 资源。注册前请填写 SSH 密钥路径。',
+                'filters.allStatuses': '全部状态',
+                'filters.allResources': '全部资源',
+                'filters.allActors': '全部执行者',
+                'filters.searchNameCommand': '搜索名称或命令',
+                'filters.searchFavorites': '搜索收藏实验或标注',
+                'filters.searchExecs': '搜索命令、资源、执行者、事件 ID',
+                'state.loading': '加载中...',
+                'state.enterToken': '输入 API Token',
+                'state.invalidToken': 'Token 无效',
+                'runs.noActive': '没有运行中的实验',
+                'runs.noMatching': '没有匹配的实验',
+                'runs.detail': '实验详情',
+                'runs.addFavorite': '加入收藏',
+                'runs.removeFavorite': '取消收藏',
+                'runs.cancelTitle': '取消实验',
+                'runs.cancelMessage': '取消这个实验？运行中的进程会被停止，实验会被标记为已取消。',
+                'runs.cancelAction': '取消实验',
+                'marks.noRecent': '还没有 Agent 发现',
+                'marks.noMarks': '没有实验标记',
+                'marks.noAttached': '这个实验还没有关联发现',
+                'favorites.noFavorites': '还没有收藏实验',
+                'favorites.missingRun': '实验不存在',
+                'favorites.notePlaceholder': '添加一条人工小标注...',
+                'favorites.removeTitle': '移除收藏',
+                'favorites.removeMessage': '从收藏中移除这个实验？实验和 Agent 发现都会保留。',
+                'exec.noRecent': '没有最近执行',
+                'exec.noEvents': '没有执行事件',
+                'exec.noMatching': '没有匹配的执行事件',
+                'status.running': '运行中',
+                'status.succeeded': '成功',
+                'status.failed': '失败',
+                'status.cancelled': '已取消',
+                'status.starting': '启动中',
+                'status.lost': '失联',
+                'status.idle': '空闲',
+                'status.busy': '忙碌',
+                'status.unknown': '未知',
+                'status.unreachable': '不可达',
+                'status.missing': '缺失',
+            }
+        };
+
+        function t(key, vars) {
+            let text = (translations[currentLang] && translations[currentLang][key]) || translations.en[key] || key;
+            Object.entries(vars || {}).forEach(([name, value]) => {
+                text = text.replaceAll('{' + name + '}', value);
+            });
+            return text;
+        }
+
+        function applyTranslations() {
+            document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                el.textContent = t(el.dataset.i18n);
+            });
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                el.placeholder = t(el.dataset.i18nPlaceholder);
+            });
+            document.getElementById('lang-en')?.classList.toggle('active', currentLang === 'en');
+            document.getElementById('lang-zh')?.classList.toggle('active', currentLang === 'zh');
+        }
+
+        function setLang(lang) {
+            currentLang = lang === 'zh' ? 'zh' : 'en';
+            localStorage.setItem('aexp_lang', currentLang);
+            applyTranslations();
+            refreshFilterLabels();
+            loadServerInfo();
+            renderResourceCards(Array.from(resourcesById.values()));
+            renderActiveRuns(allRuns.filter(r => asObject(r).status === 'running'));
+            renderRunMarks('run-marks-list', allRunMarks.slice(0, 6), t('marks.noRecent'));
+            renderResourcesTable(Array.from(resourcesById.values()));
+            renderExecEvents('exec-events-body', allExecEvents.slice(0, 10), t('exec.noRecent'));
+            renderRunResourceFilter(Array.from(resourcesById.values()), true);
+            renderExecResourceFilter(Array.from(resourcesById.values()), true);
+            applyFavoriteFilters();
+            applyExecFilters();
+            applyRunFilters();
+        }
+
+        function refreshFilterLabels() {
+            const runStatusLabel = document.getElementById('run-filter-status-label');
+            if (runStatusLabel) {
+                runStatusLabel.textContent = runFilterStatus ? statusLabel(runFilterStatus) : t('filters.allStatuses');
+            }
+            const runResourceLabel = document.getElementById('run-filter-resource-label');
+            if (runResourceLabel) {
+                runResourceLabel.textContent = runFilterResource ? resourceLabel(runFilterResource) : t('filters.allResources');
+            }
+            const execResourceLabel = document.getElementById('exec-filter-resource-label');
+            if (execResourceLabel) {
+                execResourceLabel.textContent = execFilterResource ? resourceLabel(execFilterResource) : t('filters.allResources');
+            }
+            const execActorLabel = document.getElementById('exec-filter-actor-label');
+            if (execActorLabel) {
+                execActorLabel.textContent = execFilterActor || t('filters.allActors');
+            }
+        }
 
         // --- Token ---
         function getToken() { return localStorage.getItem('aexp_token') || ''; }
@@ -739,14 +1248,30 @@
         function logLines(logs) { return asArray(asObject(logs).lines); }
         function tryParseJSON(str, fb) { try { return JSON.parse(str || 'null') || fb; } catch { return fb; } }
 
+        async function loadServerInfo() {
+            const info = asObject(await fetchJSON('/health'));
+            const btn = document.getElementById('add-local-btn');
+            if (!btn) return;
+            if (info.os_type === 'macos') {
+                btn.textContent = t('resources.fillMac');
+            } else if (info.os_type === 'linux') {
+                btn.textContent = t('resources.fillLinux');
+            } else {
+                btn.textContent = t('resources.fillMachine');
+            }
+        }
+
         // --- Data loading (polls every 2s) ---
         let pollTimer = null;
 
         async function loadData() {
-            const [stats, resources, runs] = await Promise.all([
+            const [stats, resources, runs, execEvents, runMarks, runBookmarks] = await Promise.all([
                 fetchJSON('/stats'),
                 fetchJSON('/resources'),
-                fetchJSON('/runs?limit=30')
+                fetchJSON('/runs?limit=30'),
+                fetchJSON('/exec-events?limit=500'),
+                fetchJSON('/run-marks?limit=20'),
+                fetchJSON('/run-bookmarks?limit=200')
             ]);
 
             const s = asObject(stats);
@@ -758,19 +1283,29 @@
             const runArr = asArray(runs);
             resourcesById = new Map(resArr.map(r => [asObject(r).id, asObject(r)]));
             allRuns = runArr.map(asObject);
+            allExecEvents = asArray(execEvents).map(asObject);
+            allRunMarks = asArray(runMarks).map(asObject);
+            allRunBookmarks = asArray(runBookmarks).map(asObject);
+            bookmarkedRunIds = new Set(allRunBookmarks.map(b => asObject(b).run_id).filter(Boolean));
             renderRunResourceFilter(resArr);
+            renderExecResourceFilter(resArr);
             renderResourceCards(resArr);
             renderActiveRuns(runArr.filter(r => asObject(r).status === 'running'));
+            renderRunMarks('run-marks-list', allRunMarks.slice(0, 6), t('marks.noRecent'));
             renderResourcesTable(resArr);
+            renderExecEvents('exec-events-body', allExecEvents.slice(0, 10), t('exec.noRecent'));
+            refreshFilterLabels();
+            applyFavoriteFilters();
+            applyExecFilters();
             applyRunFilters();
 
             // Status indicator
             const got401 = (stats === null && resources === null && runs === null);
             const indicator = document.getElementById('status-indicator');
             if (got401 && !getToken()) {
-                indicator.innerHTML = 'Enter API token';
+                indicator.innerHTML = t('state.enterToken');
             } else if (got401) {
-                indicator.innerHTML = 'Invalid token';
+                indicator.innerHTML = t('state.invalidToken');
             } else {
                 indicator.innerHTML = '<span class="poll-dot"></span> ' + new Date().toLocaleTimeString();
             }
@@ -779,7 +1314,7 @@
         // --- Renderers ---
         function renderResourceCards(resources) {
             const c = document.getElementById('resource-cards');
-            if (!resources.length) { c.innerHTML = '<div class="empty-state">No resources registered</div>'; return; }
+            if (!resources.length) { c.innerHTML = '<div class="empty-state">' + escHTML(t('resources.noResourcesRegistered')) + '</div>'; return; }
             c.innerHTML = resources.map(r => {
                 r = asObject(r);
                 const snap = asObject(r.latest_snapshot);
@@ -787,7 +1322,8 @@
                 const unreachable = r.status === 'unreachable';
                 const memPct = snap.mem_total_mb ? (snap.mem_used_mb / snap.mem_total_mb * 100) : 0;
                 const condaLabel = r.conda_env ? 'env:' + r.conda_env : (r.conda_base ? 'conda' : '');
-                const sub = [r.host, condaLabel].filter(Boolean).join(' · ') || r.type || '-';
+                const osLabel = r.os_type || '';
+                const sub = [r.host, osLabel, condaLabel].filter(Boolean).join(' · ') || r.type || '-';
 
                 function metricRow(label, pct, valueText, extraText) {
                     return `<div class="resource-metric">
@@ -800,7 +1336,7 @@
                     </div>`;
                 }
 
-                let rows = '<div class="text-xs text-ink-muted py-1">resource unreachable</div>';
+                let rows = '<div class="text-xs text-ink-muted py-1">' + escHTML(t('resources.unreachable')) + '</div>';
                 if (!unreachable) {
                     rows = '';
                     rows += metricRow('CPU', snap.cpu_percent || 0, (snap.cpu_percent || 0).toFixed(0) + '%');
@@ -830,7 +1366,7 @@
 
         function renderActiveRuns(runs) {
             const c = document.getElementById('active-run-cards');
-            if (!runs.length) { c.innerHTML = '<div class="empty-state">No active runs</div>'; return; }
+            if (!runs.length) { c.innerHTML = '<div class="empty-state">' + escHTML(t('runs.noActive')) + '</div>'; return; }
             c.innerHTML = runs.map(r => {
                 r = asObject(r);
                 const cmd = asText(r.command);
@@ -838,21 +1374,100 @@
                 <div class="card card-clickable cursor-pointer" onclick="showRunDetail('${r.id}')">
                     <div class="flex justify-between items-start mb-1">
                         <span class="font-medium text-sm">${r.name || r.id}</span>
-                        <span class="pill pill-running">running</span>
+                        <span class="pill pill-running">${escHTML(statusLabel('running'))}</span>
                     </div>
                     <div class="text-xs text-ink-secondary font-mono mt-1">${cmd.substring(0, 70)}${cmd.length > 70 ? '...' : ''}</div>
                 </div>`;
             }).join('');
         }
 
+        function renderRunMarks(targetId, marks, emptyText) {
+            const c = document.getElementById(targetId);
+            if (!c) return;
+            const arr = asArray(marks);
+            if (arr.length === 0) {
+                c.innerHTML = '<div class="empty-state">' + escHTML(emptyText || t('marks.noMarks')) + '</div>';
+                return;
+            }
+            c.innerHTML = arr.map(m => runMarkCardHTML(asObject(m), false)).join('');
+        }
+
+        function runMarkCardHTML(mark, compact) {
+            const title = mark.title || mark.reason || mark.evidence || mark.id;
+            const time = mark.created_at ? new Date(mark.created_at).toLocaleString(undefined, { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+            const runLabel = mark.run_id || '-';
+            return `<div class="mark-card${compact ? ' compact' : ''}">
+                <div class="mark-head">
+                    <div>
+                        <div class="mark-title">${formatMarkText(title)}</div>
+                        <div class="mark-meta">${escHTML(asText(mark.actor || 'agent'))} · ${escHTML(time)} · <button class="link-btn" onclick="showRunDetail('${escAttr(mark.run_id || '')}')">${escHTML(runLabel)}</button></div>
+                    </div>
+                    <span class="pill pill-${markKindClass(mark.kind)}">${escHTML(mark.kind || 'key_result')}</span>
+                </div>
+                ${mark.reason && mark.reason !== title ? '<div class="mark-text">' + formatMarkText(mark.reason) + '</div>' : ''}
+                ${mark.evidence ? '<div class="mark-evidence">' + formatMarkText(mark.evidence) + '</div>' : ''}
+            </div>`;
+        }
+
+        function renderRunMarksInline(marks) {
+            const arr = asArray(marks);
+            if (!arr.length) {
+                return `<div class="mb-5">
+                    <h3 class="text-sm font-medium font-heading mb-2">${escHTML(t('sections.agentFindings'))}</h3>
+                    <div class="empty-state" style="padding:10px 0">${escHTML(t('marks.noAttached'))}</div>
+                </div>`;
+            }
+            return `<div class="mb-5">
+                <h3 class="text-sm font-medium font-heading mb-2">${escHTML(t('sections.agentFindings'))}</h3>
+                ${arr.map(m => runMarkCardHTML(asObject(m), true)).join('')}
+            </div>`;
+        }
+
+        function markKindClass(kind) {
+            kind = asText(kind).toLowerCase();
+            if (kind === 'failure') return 'failed';
+            if (kind === 'followup') return 'starting';
+            if (kind === 'note') return 'unknown';
+            return 'succeeded';
+        }
+
+        function renderExecEvents(targetId, events, emptyText) {
+            const tbody = document.getElementById(targetId);
+            if (!tbody) return;
+            const arr = asArray(events);
+            if (arr.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">' + escHTML(emptyText || t('exec.noEvents')) + '</td></tr>';
+                return;
+            }
+            tbody.innerHTML = arr.map(ev => {
+                const obj = asObject(ev);
+                const res = resourcesById.get(obj.resource_id);
+                const resName = res ? asObject(res).name : (obj.resource_id || '').slice(0, 8);
+                let cmd = asText(obj.command);
+                if (cmd.length > 40) cmd = cmd.slice(0, 37) + '...';
+                const exitCode = formatNullableInt(obj.exit_code);
+                const exitClass = exitCode === 0 ? 'text-green-600' : (exitCode === '-' ? '' : 'text-red-600');
+                const dur = obj.duration_ms != null ? (obj.duration_ms >= 1000 ? (obj.duration_ms / 1000).toFixed(1) + 's' : obj.duration_ms + 'ms') : '-';
+                const time = obj.created_at ? new Date(obj.created_at).toLocaleString(undefined, { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '-';
+                return `<tr>
+                    <td>${time}</td>
+                    <td>${escHTML(resName)}</td>
+                    <td>${escHTML(asText(obj.actor))}</td>
+                    <td class="font-mono text-xs">${escHTML(cmd)}</td>
+                    <td class="${exitClass}">${exitCode}</td>
+                    <td>${dur}</td>
+                </tr>`;
+            }).join('');
+        }
+
         function renderResourcesTable(resources) {
             const c = document.getElementById('resources-table-container');
-            if (!resources.length) { c.innerHTML = '<div class="empty-state">No resources</div>'; return; }
+            if (!resources.length) { c.innerHTML = '<div class="empty-state">' + escHTML(t('resources.noResources')) + '</div>'; return; }
             c.innerHTML = `
             <div class="table-scroll">
             <table class="data-table">
                 <thead><tr>
-                    <th>Name</th><th>Host</th><th>Status</th><th>CPU</th><th>RAM</th><th>GPU</th><th style="width:140px"></th>
+                    <th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.host'))}</th><th>OS</th><th>${escHTML(t('table.status'))}</th><th>CPU</th><th>RAM</th><th>${escHTML(t('table.gpu'))}</th><th style="width:140px"></th>
                 </tr></thead>
                 <tbody>${resources.map(r => {
                     r = asObject(r);
@@ -864,15 +1479,16 @@
                     return `<tr>
                         <td class="font-medium">${escHTML(r.name || '-')}</td>
                         <td class="font-mono text-xs">${escHTML(r.host || '-')}</td>
+                        <td>${escHTML(r.os_type || '-')}</td>
                         <td>${resourceStatusPill(r.status)}</td>
                         <td class="tabular-nums">${unreachable ? '' : (snap.cpu_percent||0).toFixed(0) + '%'}</td>
                         <td class="tabular-nums">${unreachable ? '' : fmtMB(snap.mem_used_mb) + '/' + fmtMB(snap.mem_total_mb)}</td>
                         <td class="tabular-nums text-xs">${unreachable ? '' : escHTML(gpuUtil + ' ' + gpuMem)}</td>
                         <td>
                             <div class="resource-actions">
-                                <button onclick="editResourceById('${escAttr(r.id)}')" class="link-btn" title="Edit">Edit</button>
-                                <button onclick="copyResourceById('${escAttr(r.id)}')" class="link-btn" title="Copy">Copy</button>
-                                <button onclick="deleteResourceById('${escAttr(r.id)}')" class="link-btn hover:text-state-red" title="Remove">&times;</button>
+                                <button onclick="editResourceById('${escAttr(r.id)}')" class="link-btn" title="${escAttr(t('common.edit'))}">${escHTML(t('common.edit'))}</button>
+                                <button onclick="copyResourceById('${escAttr(r.id)}')" class="link-btn" title="${escAttr(t('common.copy'))}">${escHTML(t('common.copy'))}</button>
+                                <button onclick="deleteResourceById('${escAttr(r.id)}')" class="link-btn hover:text-state-red" title="${escAttr(t('common.remove'))}">&times;</button>
                             </div>
                         </td>
                     </tr>`;
@@ -883,24 +1499,61 @@
 
         function renderRunsTable(runs) {
             const c = document.getElementById('runs-table-container');
-            if (!runs.length) { c.innerHTML = '<div class="empty-state">No matching runs</div>'; return; }
+            if (!runs.length) { c.innerHTML = '<div class="empty-state">' + escHTML(t('runs.noMatching')) + '</div>'; return; }
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
-                    <th>ID</th><th>Name</th><th>Resource</th><th>Status</th><th>Command</th>
+                    <th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
                     const resLabel = resourceLabel(r.resource_id);
+                    const fav = bookmarkedRunIds.has(r.id);
                     return `<tr class="cursor-pointer" onclick="showRunDetail('${r.id}')">
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>${escHTML(r.name || '-')}</td>
                         <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
-                        <td><span class="pill pill-${r.status || 'unknown'}">${escHTML(r.status || '-')}</span></td>
+                        <td><span class="pill pill-${r.status || 'unknown'}">${escHTML(statusLabel(r.status))}</span></td>
                         <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
+                        <td><button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button></td>
                     </tr>`;
                 }).join('')}</tbody>
             </table>`;
+        }
+
+        function renderFavorites(bookmarks) {
+            const c = document.getElementById('favorites-container');
+            if (!c) return;
+            const arr = asArray(bookmarks);
+            if (!arr.length) {
+                c.innerHTML = '<div class="empty-state">' + escHTML(t('favorites.noFavorites')) + '</div>';
+                return;
+            }
+            c.innerHTML = arr.map(b => favoriteCardHTML(asObject(b))).join('');
+        }
+
+        function favoriteCardHTML(bookmark) {
+            const run = asObject(bookmark.run);
+            const runId = bookmark.run_id || run.id || '';
+            const title = run.name || runId || t('favorites.missingRun');
+            const command = asText(run.command);
+            const updated = bookmark.updated_at ? new Date(bookmark.updated_at).toLocaleString(undefined, { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+            return `<div class="favorite-card">
+                <div class="flex items-start justify-between gap-4 mb-2">
+                    <div class="min-w-0">
+                        <div class="font-medium font-heading text-sm truncate">${escHTML(title)}</div>
+                        <div class="text-xs text-ink-muted">${escHTML(updated)} · ${escHTML(resourceLabel(run.resource_id))} · <span class="font-mono">${escHTML(runId)}</span></div>
+                    </div>
+                    <span class="pill pill-${escAttr(run.status || 'unknown')}">${escHTML(statusLabel(run.status || 'missing'))}</span>
+                </div>
+                <div class="detail-code mb-3">${escHTML(command || '—')}</div>
+                <textarea class="favorite-note" id="favorite-note-${escAttr(runId)}" placeholder="${escAttr(t('favorites.notePlaceholder'))}">${escHTML(bookmark.note || '')}</textarea>
+                <div class="favorite-actions mt-3">
+                    <button class="btn-accent text-sm" onclick="saveFavoriteNote('${escAttr(runId)}')">${escHTML(t('common.saveNote'))}</button>
+                    <button class="btn-secondary text-sm" onclick="showRunDetail('${escAttr(runId)}')">${escHTML(t('common.openRun'))}</button>
+                    <button class="link-btn hover:text-state-red" onclick="removeRunBookmark('${escAttr(runId)}')">${escHTML(t('common.remove'))}</button>
+                </div>
+            </div>`;
         }
 
         function resourceLabel(resourceId) {
@@ -909,14 +1562,34 @@
             return r.name || r.host || resourceId || '-';
         }
 
+        function formatNullableInt(v) {
+            if (v == null) return '-';
+            if (typeof v === 'number') return v;
+            if (typeof v === 'object') {
+                if (v.Valid === false || v.valid === false) return '-';
+                if (typeof v.Int64 === 'number') return v.Int64;
+                if (typeof v.int64 === 'number') return v.int64;
+            }
+            const n = Number(v);
+            return Number.isFinite(n) ? n : '-';
+        }
+
         function resourceStatusPill(status, extraClass) {
             status = status || 'unknown';
             const cls = extraClass ? ' ' + extraClass : '';
-            return `<span class="pill pill-${escAttr(status)}${cls}" style="font-size:11px;padding:1px 8px">${escHTML(status)}</span>`;
+            return `<span class="pill pill-${escAttr(status)}${cls}" style="font-size:11px;padding:1px 8px">${escHTML(statusLabel(status))}</span>`;
+        }
+
+        function statusLabel(status) {
+            const key = 'status.' + (status || 'unknown');
+            return t(key) === key ? (status || '-') : t(key);
         }
 
         function toggleFilterMenu(kind) {
-            const id = kind === 'resource' ? 'run-filter-resource-menu' : 'run-filter-status-menu';
+            const id = kind === 'resource' ? 'run-filter-resource-menu'
+                : kind === 'exec-resource' ? 'exec-filter-resource-menu'
+                : kind === 'exec-actor' ? 'exec-filter-actor-menu'
+                : 'run-filter-status-menu';
             const menu = document.getElementById(id);
             const shouldOpen = menu?.classList.contains('hidden');
             closeFilterMenus();
@@ -937,7 +1610,7 @@
 
         function selectRunResource(value) {
             runFilterResource = value;
-            const label = value ? resourceLabel(value) : 'All resources';
+            const label = value ? resourceLabel(value) : t('filters.allResources');
             document.getElementById('run-filter-resource-label').textContent = label;
             updateFilterMenuActive('run-filter-resource-menu', value);
             closeFilterMenus();
@@ -950,12 +1623,28 @@
             });
         }
 
-        function renderRunResourceFilter(resources) {
+        function selectExecResource(value) {
+            execFilterResource = value;
+            document.getElementById('exec-filter-resource-label').textContent = value ? resourceLabel(value) : t('filters.allResources');
+            updateFilterMenuActive('exec-filter-resource-menu', value);
+            closeFilterMenus();
+            applyExecFilters();
+        }
+
+        function selectExecActor(value, label) {
+            execFilterActor = value;
+            document.getElementById('exec-filter-actor-label').textContent = label;
+            updateFilterMenuActive('exec-filter-actor-menu', value);
+            closeFilterMenus();
+            applyExecFilters();
+        }
+
+        function renderRunResourceFilter(resources, force) {
             const el = document.getElementById('run-filter-resource-menu');
             if (!el) return;
             const normalized = asArray(resources).map(asObject).filter(r => r.id);
             const signature = normalized.map(r => [r.id, r.name || r.host || ''].join(':')).join('|');
-            if (signature === runResourceFilterSignature) return;
+            if (!force && signature === runResourceFilterSignature) return;
             runResourceFilterSignature = signature;
             const options = normalized
                 .map(r => {
@@ -963,14 +1652,41 @@
                     return `<button type="button" data-value="${escAttr(r.id)}" onclick="selectRunResource('${escAttr(r.id)}')">${escHTML(label)}</button>`;
                 })
                 .join('');
-            el.innerHTML = '<button type="button" data-value="" onclick="selectRunResource(\'\')">All resources</button>' + options;
+            el.innerHTML = '<button type="button" data-value="" onclick="selectRunResource(\'\')">' + escHTML(t('filters.allResources')) + '</button>' + options;
             if (runFilterResource && !normalized.some(r => r.id === runFilterResource)) {
                 runFilterResource = '';
-                document.getElementById('run-filter-resource-label').textContent = 'All resources';
+                document.getElementById('run-filter-resource-label').textContent = t('filters.allResources');
             } else if (runFilterResource) {
                 document.getElementById('run-filter-resource-label').textContent = resourceLabel(runFilterResource);
+            } else {
+                document.getElementById('run-filter-resource-label').textContent = t('filters.allResources');
             }
             updateFilterMenuActive('run-filter-resource-menu', runFilterResource);
+        }
+
+        function renderExecResourceFilter(resources, force) {
+            const el = document.getElementById('exec-filter-resource-menu');
+            if (!el) return;
+            const normalized = asArray(resources).map(asObject).filter(r => r.id);
+            const signature = normalized.map(r => [r.id, r.name || r.host || ''].join(':')).join('|');
+            if (!force && signature === execResourceFilterSignature) return;
+            execResourceFilterSignature = signature;
+            const options = normalized
+                .map(r => {
+                    const label = r.name || r.host || r.id;
+                    return `<button type="button" data-value="${escAttr(r.id)}" onclick="selectExecResource('${escAttr(r.id)}')">${escHTML(label)}</button>`;
+                })
+                .join('');
+            el.innerHTML = '<button type="button" data-value="" onclick="selectExecResource(\'\')">' + escHTML(t('filters.allResources')) + '</button>' + options;
+            if (execFilterResource && !normalized.some(r => r.id === execFilterResource)) {
+                execFilterResource = '';
+                document.getElementById('exec-filter-resource-label').textContent = t('filters.allResources');
+            } else if (execFilterResource) {
+                document.getElementById('exec-filter-resource-label').textContent = resourceLabel(execFilterResource);
+            } else {
+                document.getElementById('exec-filter-resource-label').textContent = t('filters.allResources');
+            }
+            updateFilterMenuActive('exec-filter-resource-menu', execFilterResource);
         }
 
         function applyRunFilters() {
@@ -988,27 +1704,110 @@
             renderRunsTable(filtered);
         }
 
+        function applyExecFilters() {
+            const query = (document.getElementById('exec-filter-query')?.value || '').trim().toLowerCase();
+            const filtered = allExecEvents.filter(ev => {
+                ev = asObject(ev);
+                if (execFilterResource && ev.resource_id !== execFilterResource) return false;
+                if (execFilterActor && ev.actor !== execFilterActor) return false;
+                if (query) {
+                    const resName = resourceLabel(ev.resource_id);
+                    const haystack = [ev.id, ev.command, ev.actor, ev.resource_id, resName].map(asText).join('\n').toLowerCase();
+                    if (!haystack.includes(query)) return false;
+                }
+                return true;
+            });
+            renderExecEvents('execs-table-body', filtered, t('exec.noMatching'));
+        }
+
+        function applyFavoriteFilters() {
+            const query = (document.getElementById('favorite-filter-query')?.value || '').trim().toLowerCase();
+            const filtered = allRunBookmarks.filter(b => {
+                b = asObject(b);
+                const run = asObject(b.run);
+                if (query) {
+                    const haystack = [b.note, b.run_id, run.name, run.command, run.status, resourceLabel(run.resource_id)].map(asText).join('\n').toLowerCase();
+                    if (!haystack.includes(query)) return false;
+                }
+                return true;
+            });
+            renderFavorites(filtered);
+        }
+
+        function bookmarkForRun(runId) {
+            return allRunBookmarks.find(b => asObject(b).run_id === runId) || null;
+        }
+
+        async function toggleRunBookmark(runId) {
+            if (bookmarkedRunIds.has(runId)) {
+                await removeRunBookmark(runId);
+                return;
+            }
+            await saveRunBookmark(runId, '');
+        }
+
+        async function saveRunBookmark(runId, note) {
+            const res = await fetch(API + '/runs/' + encodeURIComponent(runId) + '/bookmark', {
+                method: 'POST',
+                headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: note || '' })
+            });
+            if (!res.ok) return;
+            await loadData();
+        }
+
+        async function saveFavoriteNote(runId) {
+            const note = document.getElementById('favorite-note-' + runId)?.value || '';
+            await saveRunBookmark(runId, note);
+        }
+
+        async function removeRunBookmark(runId) {
+            openConfirmModal({
+                title: t('favorites.removeTitle'),
+                message: t('favorites.removeMessage'),
+                actionLabel: t('common.remove'),
+                action: async () => {
+                    await fetch(API + '/runs/' + encodeURIComponent(runId) + '/bookmark', {
+                        method: 'DELETE',
+                        headers: authHeaders()
+                    });
+                    await loadData();
+                }
+            });
+        }
+
         // --- Run Detail ---
         async function showRunDetail(id) {
             const run = await fetchJSON('/runs/' + id);
             if (!run) return;
-            const logs = asObject(await fetchJSON('/runs/' + id + '/logs?source=stdout&limit=100'));
-            const errLogs = asObject(await fetchJSON('/runs/' + id + '/logs?source=stderr&limit=50'));
+            const [logsRaw, errLogsRaw, marksRaw] = await Promise.all([
+                fetchJSON('/runs/' + id + '/logs?source=stdout&limit=100'),
+                fetchJSON('/runs/' + id + '/logs?source=stderr&limit=50'),
+                fetchJSON('/runs/' + id + '/marks?limit=20')
+            ]);
+            const logs = asObject(logsRaw);
+            const errLogs = asObject(errLogsRaw);
+            const marks = asArray(marksRaw);
             const outLines = logLines(logs);
             const errLines = logLines(errLogs);
             const resLabel = resourceLabel(run.resource_id);
+            const isFavorite = bookmarkedRunIds.has(run.id);
 
             document.getElementById('detail-title').textContent = run.name || run.id;
             document.getElementById('detail-content').innerHTML = `
+                <div class="flex justify-end mb-4">
+                    <button class="btn-secondary text-sm" onclick="toggleRunBookmark('${escAttr(run.id)}')">${escHTML(isFavorite ? t('runs.removeFavorite') : t('runs.addFavorite'))}</button>
+                </div>
                 <div class="detail-grid">
                     <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${escHTML(run.id)}</div></div>
-                    <div><div class="detail-label">Status</div><div class="detail-value"><span class="pill pill-${run.status}">${escHTML(run.status)}</span></div></div>
-                    <div><div class="detail-label">Resource</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
+                    <div><div class="detail-label">${escHTML(t('table.status'))}</div><div class="detail-value"><span class="pill pill-${run.status}">${escHTML(statusLabel(run.status))}</span></div></div>
+                    <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
                     <div><div class="detail-label">Conda</div><div class="detail-value">${escHTML(run.conda_env || '—')}</div></div>
                     <div class="detail-code">${escHTML(asText(run.command))}</div>
                     <div><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${escHTML(run.cwd || '—')}</div></div>
                     <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
                 </div>
+                ${renderRunMarksInline(marks)}
                 <div class="mb-5">
                     <h3 class="text-sm font-medium font-heading mb-2">stdout <span class="text-ink-muted font-normal">(${logs.total_lines || 0} lines)</span></h3>
                     <div class="log-pane" id="log-pane">${outLines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
@@ -1018,7 +1817,7 @@
                     <h3 class="text-sm font-medium font-heading mb-2">stderr</h3>
                     <div class="log-pane" style="color:#e8a090">${errLines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
                 </div>` : ''}
-                ${run.status === 'running' ? '<button onclick="cancelRun(\'' + run.id + '\')" class="btn-danger">Cancel Run</button>' : ''}
+                ${run.status === 'running' ? '<button onclick="cancelRun(\'' + run.id + '\')" class="btn-danger">' + escHTML(t('runs.cancelAction')) + '</button>' : ''}
             `;
             document.getElementById('run-detail').classList.remove('hidden');
             const lp = document.getElementById('log-pane');
@@ -1046,9 +1845,9 @@
 
         async function cancelRun(id) {
             openConfirmModal({
-                title: 'Cancel run',
-                message: 'Cancel this run? The running process will be stopped and the run will be marked as cancelled.',
-                actionLabel: 'Cancel Run',
+                title: t('runs.cancelTitle'),
+                message: t('runs.cancelMessage'),
+                actionLabel: t('runs.cancelAction'),
                 action: async () => {
                     await fetch(API + '/runs/' + id + '/cancel', { method: 'POST', headers: authHeaders() });
                     loadData();
@@ -1092,15 +1891,18 @@
         function escHTML(s) {
             return asText(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         }
+        function formatMarkText(s) {
+            return escHTML(s).replace(/\n/g, '<br>');
+        }
         function escAttr(s) {
             return escHTML(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
         function openConfirmModal({ title, message, actionLabel, action }) {
             pendingConfirmAction = action;
-            document.getElementById('confirm-title').textContent = title || 'Confirm';
+            document.getElementById('confirm-title').textContent = title || t('common.confirm');
             document.getElementById('confirm-message').textContent = message || '';
-            document.getElementById('confirm-action').textContent = actionLabel || 'Confirm';
+            document.getElementById('confirm-action').textContent = actionLabel || t('common.confirm');
             document.getElementById('confirm-modal').classList.remove('hidden');
         }
 
@@ -1117,9 +1919,9 @@
 
         async function deleteResource(id, name) {
             openConfirmModal({
-                title: 'Remove resource',
-                message: 'Remove resource "' + name + '"? Existing runs stay in history, but this resource will no longer be available.',
-                actionLabel: 'Remove',
+                title: t('resources.removeTitle'),
+                message: t('resources.removeMessage', { name }),
+                actionLabel: t('common.remove'),
                 action: async () => {
                     await fetch(API + '/resources/' + id, { method: 'DELETE', headers: authHeaders() });
                     loadData();
@@ -1236,6 +2038,7 @@
             form.querySelector('[name="name"]').value = r.name || '';
             form.querySelector('[name="type"]').value = r.type || 'ssh';
             form.querySelector('[name="host"]').value = r.host || '';
+            form.querySelector('[name="os_type"]').value = r.os_type || '';
             form.querySelector('[name="user"]').value = r.user || 'root';
             form.querySelector('[name="port"]').value = r.port || 22;
             form.querySelector('[name="root_dir"]').value = r.root_dir || '';
@@ -1247,7 +2050,7 @@
             form.querySelector('[name="socks_proxy"]').value = r.socks_proxy || '';
             form.querySelector('[name="proxy_command"]').value = r.proxy_command || '';
             form.querySelector('[name="tags"]').value = r.tags || '';
-            document.getElementById('edit-modal-title').textContent = 'Edit: ' + r.name;
+            document.getElementById('edit-modal-title').textContent = t('resources.edit') + ': ' + r.name;
             document.getElementById('edit-form-msg').classList.add('hidden');
             document.getElementById('edit-resource-modal').classList.remove('hidden');
         }
@@ -1281,7 +2084,7 @@
                 } else {
                     const data = await res.json();
                     msg.className = 'text-sm mt-3'; msg.style.color = '#a84a3a';
-                    msg.textContent = data.details || 'Update failed';
+                    msg.textContent = data.details || t('resources.updateFailed');
                     msg.classList.remove('hidden');
                 }
             } catch (err) {
@@ -1317,6 +2120,7 @@
                 name: nameOverride || r.name || '',
                 type: r.type || 'ssh',
                 host: r.host || '',
+                os_type: r.os_type || '',
                 user: r.user || 'root',
                 port: parseInt(r.port || 22, 10),
                 root_dir: r.root_dir || '',
@@ -1338,6 +2142,7 @@
                 name: fd.get('name'),
                 type: fd.get('type') || 'ssh',
                 host: fd.get('host'),
+                os_type: fd.get('os_type') || '',
                 user: fd.get('user') || 'root',
                 port: parseInt(fd.get('port') || '22', 10),
                 root_dir: fd.get('root_dir'),
@@ -1358,7 +2163,7 @@
             const el = document.getElementById('add-form-container');
             const btn = document.getElementById('add-btn');
             const showing = el.classList.toggle('hidden');
-            btn.textContent = showing ? '+ Add Resource' : 'Cancel';
+            btn.textContent = showing ? t('resources.add') : t('resources.cancelAdd');
             if (showing) {
                 document.getElementById('add-form-msg').classList.add('hidden');
             }
@@ -1379,7 +2184,7 @@
                 if (res.ok) {
                     msg.className = 'text-sm mt-3';
                     msg.style.color = '#788c5d';
-                    msg.textContent = 'Registered ' + body.name;
+                    msg.textContent = t('resources.registered', { name: body.name });
                     form.reset();
                     form.querySelector('[name="type"]').value = 'ssh';
                     form.querySelector('[name="user"]').value = 'root';
@@ -1389,13 +2194,92 @@
                 } else {
                     msg.className = 'text-sm mt-3';
                     msg.style.color = '#c45d4a';
-                    msg.textContent = data.details || data.error || 'Failed';
+                    msg.textContent = data.details || data.error || t('resources.failed');
                 }
             } catch (err) {
                 msg.className = 'text-sm mt-3';
                 msg.style.color = '#c45d4a';
                 msg.textContent = err.message;
             }
+            msg.classList.remove('hidden');
+        }
+
+        async function fillLocalResourceForm() {
+            const msg = document.getElementById('add-form-msg');
+            try {
+                const res = await fetch(API + '/resources/local-defaults', { headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.details || data.error || t('resources.localDefaultsFailed'));
+                }
+                const form = document.getElementById('add-resource-form');
+                const set = (name, value) => {
+                    const el = form.querySelector('[name="' + name + '"]');
+                    if (el) el.value = value || '';
+                };
+                set('name', data.name);
+                set('type', data.type || 'ssh');
+                set('host', data.host || '127.0.0.1');
+                set('os_type', data.os_type);
+                set('user', data.user);
+                set('port', data.port || 22);
+                set('root_dir', data.root_dir);
+                set('conda_base', data.conda_base);
+                set('conda_init', data.conda_init);
+                set('conda_env', data.conda_env);
+                set('auth_ref', data.auth_ref);
+                set('gpu_indices', data.gpu_indices);
+                set('tags', data.tags || 'local');
+
+                document.getElementById('add-form-container').classList.remove('hidden');
+                document.getElementById('add-btn').textContent = t('resources.cancelAdd');
+                msg.className = 'text-sm mt-3';
+                msg.style.color = '#788c5d';
+                if (data.auth_ref) {
+                    msg.textContent = t('resources.localFilledWithKey');
+                } else {
+                    msg.textContent = t('resources.localFilledNoKey');
+                }
+                msg.classList.remove('hidden');
+                const hostInput = form.querySelector('[name="host"]');
+                if (hostInput) {
+                    hostInput.focus();
+                    hostInput.select();
+                }
+                return;
+            } catch (err) {
+                msg.className = 'text-sm mt-3';
+                msg.style.color = '#c45d4a';
+                msg.textContent = err.message;
+                document.getElementById('add-form-container').classList.remove('hidden');
+                document.getElementById('add-btn').textContent = t('resources.cancelAdd');
+                msg.classList.remove('hidden');
+            }
+        }
+
+        async function addLocalResource() {
+            const msg = document.getElementById('add-form-msg');
+            try {
+                const res = await fetch(API + '/resources/local', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    loadData();
+                    return;
+                }
+                msg.className = 'text-sm mt-3';
+                msg.style.color = '#c45d4a';
+                msg.textContent = data.details || data.error || t('resources.addLocalFailed');
+            } catch (err) {
+                msg.className = 'text-sm mt-3';
+                msg.style.color = '#c45d4a';
+                msg.textContent = err.message;
+            }
+            document.getElementById('add-form-container').classList.remove('hidden');
+            document.getElementById('add-btn').textContent = t('resources.cancelAdd');
             msg.classList.remove('hidden');
         }
 
@@ -1407,7 +2291,9 @@
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.custom-select')) closeFilterMenus();
         });
+        applyTranslations();
         updateTokenUI();
+        loadServerInfo();
         loadData();
         pollTimer = setInterval(loadData, 2000);
     </script>

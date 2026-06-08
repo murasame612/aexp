@@ -11,6 +11,7 @@ type Resource struct {
 	Name         string    `json:"name"`
 	Type         string    `json:"type"` // ssh, docker, local, slurm, k8s
 	Host         string    `json:"host"`
+	OSType       string    `json:"os_type"`
 	Port         int       `json:"port"`
 	User         string    `json:"user"`
 	AuthRef      string    `json:"auth_ref"`
@@ -106,6 +107,66 @@ type AgentEvent struct {
 	InputJSON  string    `json:"input_json"`
 	OutputJSON string    `json:"output_json"`
 	Timestamp  time.Time `json:"timestamp"`
+}
+
+// RunMark records a human/agent interpretation of a run.
+type RunMark struct {
+	ID        string    `json:"id"`
+	RunID     string    `json:"run_id"`
+	Actor     string    `json:"actor"`
+	Kind      string    `json:"kind"`
+	Title     string    `json:"title"`
+	Reason    string    `json:"reason"`
+	Evidence  string    `json:"evidence"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RunMarkFilter is used to filter run marks when listing.
+type RunMarkFilter struct {
+	RunID  string
+	Actor  string
+	Kind   string
+	Limit  int
+	Offset int
+}
+
+// RunBookmark records a human-curated run favorite with a small note.
+type RunBookmark struct {
+	ID        string    `json:"id"`
+	RunID     string    `json:"run_id"`
+	Note      string    `json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// RunBookmarkFilter is used to filter run bookmarks when listing.
+type RunBookmarkFilter struct {
+	Limit  int
+	Offset int
+}
+
+// ExecEvent records a one-shot exec command for audit.
+type ExecEvent struct {
+	ID         string        `json:"id"`
+	ResourceID string        `json:"resource_id"`
+	Actor      string        `json:"actor"`
+	Command    string        `json:"command"`
+	Cwd        string        `json:"cwd"`
+	ExitCode   sql.NullInt64 `json:"exit_code"`
+	StartedAt  time.Time     `json:"started_at"`
+	FinishedAt sql.NullTime  `json:"finished_at"`
+	DurationMs int64         `json:"duration_ms"`
+	StdoutTail string        `json:"stdout_tail"`
+	StderrTail string        `json:"stderr_tail"`
+	CreatedAt  time.Time     `json:"created_at"`
+}
+
+// ExecEventFilter is used to filter exec events when listing.
+type ExecEventFilter struct {
+	ResourceID string
+	Actor      string
+	Limit      int
+	Offset     int
 }
 
 // RunStatus constants

@@ -64,6 +64,7 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("runs", "args_json", "TEXT", "'[]'")
 	addColumn("resources", "socks_proxy", "TEXT", "''")
 	addColumn("resources", "proxy_command", "TEXT", "''")
+	addColumn("resources", "os_type", "TEXT", "''")
 	addColumn("resources", "conda_base", "TEXT", "''")
 	addColumn("resources", "conda_init", "TEXT", "''")
 
@@ -76,15 +77,15 @@ func (s *SQLite) Close() error {
 
 // --- Resources ---
 
-const resourceColumns = "id, name, type, host, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_base, conda_init, conda_env, gpu_indices, tags, status, created_at, updated_at"
+const resourceColumns = "id, name, type, host, os_type, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_base, conda_init, conda_env, gpu_indices, tags, status, created_at, updated_at"
 
 func (s *SQLite) CreateResource(ctx context.Context, r *Resource) error {
 	r.CreatedAt = time.Now()
 	r.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO resources (`+resourceColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.CreatedAt, r.UpdatedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	return err
 }
@@ -128,8 +129,8 @@ func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
 func (s *SQLite) UpdateResource(ctx context.Context, r *Resource) error {
 	r.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE resources SET name=?, type=?, host=?, port=?, user=?, auth_ref=?, socks_proxy=?, proxy_command=?, root_dir=?, conda_base=?, conda_init=?, conda_env=?, gpu_indices=?, tags=?, status=?, updated_at=? WHERE id=?`,
-		r.Name, r.Type, r.Host, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.UpdatedAt, r.ID,
+		`UPDATE resources SET name=?, type=?, host=?, os_type=?, port=?, user=?, auth_ref=?, socks_proxy=?, proxy_command=?, root_dir=?, conda_base=?, conda_init=?, conda_env=?, gpu_indices=?, tags=?, status=?, updated_at=? WHERE id=?`,
+		r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.UpdatedAt, r.ID,
 	)
 	return err
 }
@@ -140,7 +141,7 @@ type rowScanner interface {
 
 func scanResource(r *Resource) func(rowScanner) error {
 	return func(row rowScanner) error {
-		return row.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaBase, &r.CondaInit, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+		return row.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.OSType, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaBase, &r.CondaInit, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	}
 }
 
@@ -416,6 +417,225 @@ func (s *SQLite) ListAgentEvents(ctx context.Context, runID string) ([]AgentEven
 	for rows.Next() {
 		var e AgentEvent
 		if err := rows.Scan(&e.ID, &e.RunID, &e.Actor, &e.ToolName, &e.InputJSON, &e.OutputJSON, &e.Timestamp); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// --- Run Marks ---
+
+const runMarkColumns = "id, run_id, actor, kind, title, reason, evidence, created_at"
+
+func scanRunMark(m *RunMark) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&m.ID, &m.RunID, &m.Actor, &m.Kind, &m.Title, &m.Reason, &m.Evidence, &m.CreatedAt)
+	}
+}
+
+func (s *SQLite) SaveRunMark(ctx context.Context, m *RunMark) error {
+	m.CreatedAt = time.Now()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO run_marks (id, run_id, actor, kind, title, reason, evidence, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.RunID, m.Actor, m.Kind, m.Title, m.Reason, m.Evidence, m.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetRunMark(ctx context.Context, id string) (*RunMark, error) {
+	m := &RunMark{}
+	err := scanRunMark(m)(s.db.QueryRowContext(ctx,
+		`SELECT `+runMarkColumns+` FROM run_marks WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return m, err
+}
+
+func (s *SQLite) ListRunMarks(ctx context.Context, filter RunMarkFilter) ([]RunMark, error) {
+	query := `SELECT ` + runMarkColumns + ` FROM run_marks WHERE 1=1`
+	var args []interface{}
+
+	if filter.RunID != "" {
+		query += " AND run_id = ?"
+		args = append(args, filter.RunID)
+	}
+	if filter.Actor != "" {
+		query += " AND actor = ?"
+		args = append(args, filter.Actor)
+	}
+	if filter.Kind != "" {
+		query += " AND kind = ?"
+		args = append(args, filter.Kind)
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	marks := make([]RunMark, 0)
+	for rows.Next() {
+		var m RunMark
+		if err := scanRunMark(&m)(rows); err != nil {
+			return nil, err
+		}
+		marks = append(marks, m)
+	}
+	return marks, rows.Err()
+}
+
+// --- Run Bookmarks ---
+
+const runBookmarkColumns = "id, run_id, note, created_at, updated_at"
+
+func scanRunBookmark(b *RunBookmark) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&b.ID, &b.RunID, &b.Note, &b.CreatedAt, &b.UpdatedAt)
+	}
+}
+
+func (s *SQLite) SaveRunBookmark(ctx context.Context, b *RunBookmark) error {
+	now := time.Now()
+	if b.CreatedAt.IsZero() {
+		b.CreatedAt = now
+	}
+	b.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO run_bookmarks (id, run_id, note, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET note=excluded.note, updated_at=excluded.updated_at`,
+		b.ID, b.RunID, b.Note, b.CreatedAt, b.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetRunBookmark(ctx context.Context, runID string) (*RunBookmark, error) {
+	b := &RunBookmark{}
+	err := scanRunBookmark(b)(s.db.QueryRowContext(ctx,
+		`SELECT `+runBookmarkColumns+` FROM run_bookmarks WHERE run_id = ?`, runID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return b, err
+}
+
+func (s *SQLite) ListRunBookmarks(ctx context.Context, filter RunBookmarkFilter) ([]RunBookmark, error) {
+	query := `SELECT ` + runBookmarkColumns + ` FROM run_bookmarks ORDER BY updated_at DESC`
+	var args []interface{}
+
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	bookmarks := make([]RunBookmark, 0)
+	for rows.Next() {
+		var b RunBookmark
+		if err := scanRunBookmark(&b)(rows); err != nil {
+			return nil, err
+		}
+		bookmarks = append(bookmarks, b)
+	}
+	return bookmarks, rows.Err()
+}
+
+func (s *SQLite) DeleteRunBookmark(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM run_bookmarks WHERE run_id = ?`, runID)
+	return err
+}
+
+// --- Exec Events ---
+
+const execEventColumns = "id, resource_id, actor, command, cwd, exit_code, started_at, finished_at, duration_ms, stdout_tail, stderr_tail, created_at"
+
+func scanExecEvent(e *ExecEvent) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&e.ID, &e.ResourceID, &e.Actor, &e.Command, &e.Cwd,
+			&e.ExitCode, &e.StartedAt, &e.FinishedAt, &e.DurationMs,
+			&e.StdoutTail, &e.StderrTail, &e.CreatedAt)
+	}
+}
+
+func (s *SQLite) SaveExecEvent(ctx context.Context, e *ExecEvent) error {
+	e.CreatedAt = time.Now()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO exec_events (id, resource_id, actor, command, cwd, exit_code, started_at, finished_at, duration_ms, stdout_tail, stderr_tail, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.ResourceID, e.Actor, e.Command, e.Cwd, e.ExitCode,
+		e.StartedAt, e.FinishedAt, e.DurationMs, e.StdoutTail, e.StderrTail, e.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetExecEvent(ctx context.Context, id string) (*ExecEvent, error) {
+	e := &ExecEvent{}
+	err := scanExecEvent(e)(s.db.QueryRowContext(ctx,
+		`SELECT `+execEventColumns+` FROM exec_events WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return e, err
+}
+
+func (s *SQLite) ListExecEvents(ctx context.Context, filter ExecEventFilter) ([]ExecEvent, error) {
+	query := `SELECT ` + execEventColumns + ` FROM exec_events WHERE 1=1`
+	var args []interface{}
+
+	if filter.ResourceID != "" {
+		query += " AND resource_id = ?"
+		args = append(args, filter.ResourceID)
+	}
+	if filter.Actor != "" {
+		query += " AND actor = ?"
+		args = append(args, filter.Actor)
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]ExecEvent, 0)
+	for rows.Next() {
+		var e ExecEvent
+		if err := scanExecEvent(&e)(rows); err != nil {
 			return nil, err
 		}
 		events = append(events, e)

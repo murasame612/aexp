@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS resources (
     name          TEXT NOT NULL UNIQUE,
     type          TEXT NOT NULL DEFAULT 'ssh',
     host          TEXT NOT NULL,
+    os_type       TEXT DEFAULT '',
     port          INTEGER NOT NULL DEFAULT 22,
     user          TEXT NOT NULL DEFAULT 'root',
     auth_ref      TEXT DEFAULT '',
@@ -94,3 +95,46 @@ CREATE TABLE IF NOT EXISTS agent_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_run ON agent_events(run_id);
+
+CREATE TABLE IF NOT EXISTS run_marks (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL REFERENCES runs(id),
+    actor       TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'key_result',
+    title       TEXT DEFAULT '',
+    reason      TEXT DEFAULT '',
+    evidence    TEXT DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_marks_run ON run_marks(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_run_marks_kind ON run_marks(kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_run_marks_actor ON run_marks(actor, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_bookmarks (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    note        TEXT DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_bookmarks_updated ON run_bookmarks(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS exec_events (
+    id            TEXT PRIMARY KEY,
+    resource_id   TEXT NOT NULL REFERENCES resources(id),
+    actor         TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    cwd           TEXT DEFAULT '',
+    exit_code     INTEGER,
+    started_at    DATETIME NOT NULL,
+    finished_at   DATETIME,
+    duration_ms   INTEGER DEFAULT 0,
+    stdout_tail   TEXT DEFAULT '',
+    stderr_tail   TEXT DEFAULT '',
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_exec_events_resource ON exec_events(resource_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exec_events_actor ON exec_events(actor, created_at DESC);

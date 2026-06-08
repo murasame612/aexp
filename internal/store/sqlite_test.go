@@ -168,3 +168,110 @@ func TestAgentEvents(t *testing.T) {
 		t.Errorf("tool_name = %q, want %q", events[0].ToolName, "create_run")
 	}
 }
+
+func TestRunMarks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.CreateResource(ctx, &Resource{ID: "rsrc_m01", Name: "res-mark", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle})
+	s.CreateRun(ctx, &Run{ID: "run_mark01", ResourceID: "rsrc_m01", Status: RunStatusSucceeded, Command: "python train.py"})
+
+	mark := &RunMark{
+		ID:       "mark_test001",
+		RunID:    "run_mark01",
+		Actor:    "agent",
+		Kind:     "key_result",
+		Title:    "Useful ablation",
+		Reason:   "Validation loss improved.",
+		Evidence: "logs/train.log",
+	}
+	if err := s.SaveRunMark(ctx, mark); err != nil {
+		t.Fatalf("SaveRunMark: %v", err)
+	}
+	if err := s.SaveRunMark(ctx, &RunMark{
+		ID:     "mark_test002",
+		RunID:  "run_mark01",
+		Actor:  "agent",
+		Kind:   "followup",
+		Title:  "Try stricter seed control",
+		Reason: "Variance is still unclear.",
+	}); err != nil {
+		t.Fatalf("SaveRunMark followup: %v", err)
+	}
+
+	got, err := s.GetRunMark(ctx, "mark_test001")
+	if err != nil || got == nil {
+		t.Fatalf("GetRunMark: %v", err)
+	}
+	if got.Title != "Useful ablation" {
+		t.Errorf("title = %q, want %q", got.Title, "Useful ablation")
+	}
+
+	marks, err := s.ListRunMarks(ctx, RunMarkFilter{RunID: "run_mark01", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRunMarks: %v", err)
+	}
+	if len(marks) != 2 {
+		t.Errorf("marks = %d, want 2", len(marks))
+	}
+
+	keyResults, err := s.ListRunMarks(ctx, RunMarkFilter{Kind: "key_result", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRunMarks kind: %v", err)
+	}
+	if len(keyResults) != 1 || keyResults[0].ID != "mark_test001" {
+		t.Errorf("key result filter = %#v, want mark_test001", keyResults)
+	}
+}
+
+func TestRunBookmarks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.CreateResource(ctx, &Resource{ID: "rsrc_b01", Name: "res-bookmark", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle})
+	s.CreateRun(ctx, &Run{ID: "run_bookmark01", ResourceID: "rsrc_b01", Status: RunStatusSucceeded, Command: "python train.py"})
+
+	bookmark := &RunBookmark{
+		ID:    "bm_test001",
+		RunID: "run_bookmark01",
+		Note:  "worth comparing",
+	}
+	if err := s.SaveRunBookmark(ctx, bookmark); err != nil {
+		t.Fatalf("SaveRunBookmark: %v", err)
+	}
+
+	got, err := s.GetRunBookmark(ctx, "run_bookmark01")
+	if err != nil || got == nil {
+		t.Fatalf("GetRunBookmark: %v", err)
+	}
+	if got.Note != "worth comparing" {
+		t.Errorf("note = %q, want %q", got.Note, "worth comparing")
+	}
+
+	if err := s.SaveRunBookmark(ctx, &RunBookmark{ID: "bm_ignored", RunID: "run_bookmark01", Note: "updated note"}); err != nil {
+		t.Fatalf("SaveRunBookmark upsert: %v", err)
+	}
+	updated, _ := s.GetRunBookmark(ctx, "run_bookmark01")
+	if updated.ID != "bm_test001" {
+		t.Errorf("id = %q, want original id", updated.ID)
+	}
+	if updated.Note != "updated note" {
+		t.Errorf("updated note = %q, want %q", updated.Note, "updated note")
+	}
+
+	bookmarks, err := s.ListRunBookmarks(ctx, RunBookmarkFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRunBookmarks: %v", err)
+	}
+	if len(bookmarks) != 1 {
+		t.Errorf("bookmarks = %d, want 1", len(bookmarks))
+	}
+
+	if err := s.DeleteRunBookmark(ctx, "run_bookmark01"); err != nil {
+		t.Fatalf("DeleteRunBookmark: %v", err)
+	}
+	deleted, _ := s.GetRunBookmark(ctx, "run_bookmark01")
+	if deleted != nil {
+		t.Error("expected nil after delete")
+	}
+}

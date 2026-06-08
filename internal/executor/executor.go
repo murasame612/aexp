@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
 
@@ -453,10 +455,13 @@ type ExecRequest struct {
 
 // ExecResult is the response from a one-shot exec.
 type ExecResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
-	Duration string `json:"duration"` // human-readable, e.g. "1.2s"
+	Stdout     string    `json:"stdout"`
+	Stderr     string    `json:"stderr"`
+	ExitCode   int       `json:"exit_code"`
+	Duration   string    `json:"duration"` // human-readable, e.g. "1.2s"
+	EventID    string    `json:"event_id,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
 
 const (
@@ -532,9 +537,34 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 		}
 	}
 
-	// Audit log
+	// Audit: record exec event
+	startedAt := start
+	finishedAt := time.Now()
+	eventID := genID("exec_")
+
+	stdoutTail := truncateToLastBytes(stdout, 2048)
+	stderrTail := truncateToLastBytes(stderr, 2048)
+
+	event := &store.ExecEvent{
+		ID:         eventID,
+		ResourceID: req.ResourceID,
+		Actor:      req.Actor,
+		Command:    req.Command,
+		Cwd:        req.Cwd,
+		ExitCode:   sql.NullInt64{Int64: int64(exitCode), Valid: true},
+		StartedAt:  startedAt,
+		FinishedAt: sql.NullTime{Time: finishedAt, Valid: true},
+		DurationMs: duration.Milliseconds(),
+		StdoutTail: stdoutTail,
+		StderrTail: stderrTail,
+	}
+	if saveErr := e.store.SaveExecEvent(ctx, event); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to save exec event: %v\n", saveErr)
+	}
+
+	// Also keep legacy agent_events audit (cross-reference via event_id)
 	inputJSON := fmt.Sprintf(`{"resource":"%s","command":%s}`, resource.Name, mustJSON(req.Command))
-	outputJSON := fmt.Sprintf(`{"exit_code":%d,"duration_ms":%d}`, exitCode, duration.Milliseconds())
+	outputJSON := fmt.Sprintf(`{"exit_code":%d,"duration_ms":%d,"event_id":"%s"}`, exitCode, duration.Milliseconds(), eventID)
 	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
 		RunID:      "",
 		Actor:      req.Actor,
@@ -544,16 +574,71 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 	})
 
 	return &ExecResult{
-		Stdout:   stdout,
-		Stderr:   stderr,
-		ExitCode: exitCode,
-		Duration: duration.Round(time.Millisecond).String(),
+		Stdout:     stdout,
+		Stderr:     stderr,
+		ExitCode:   exitCode,
+		Duration:   duration.Round(time.Millisecond).String(),
+		EventID:    eventID,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
 	}, nil
 }
 
 func mustJSON(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// truncateToLastBytes returns the last n bytes of s, trimming any incomplete
+// leading UTF-8 rune so the result is always valid UTF-8.
+func truncateToLastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[len(s)-n:]
+	for i := 0; i < len(s); i++ {
+		if utf8.RuneStart(s[i]) {
+			return s[i:]
+		}
+	}
+	return s
+}
+
+// DetectLongRunningCmd checks if a command looks like it would run for
+// a long time (training, etc.) and returns a reason string if so.
+func DetectLongRunningCmd(command string) (bool, string) {
+	type pattern struct {
+		substr string
+		reason string
+	}
+	patterns := []pattern{
+		{"torchrun ", "torchrun (multi-GPU training)"},
+		{"torchrun\n", "torchrun (multi-GPU training)"},
+		{"accelerate launch", "accelerate launch (HuggingFace training)"},
+		{"deepspeed ", "deepspeed (distributed training)"},
+		{"deepspeed\n", "deepspeed (distributed training)"},
+		{"mpirun ", "mpirun (MPI job)"},
+		{"mpirun\n", "mpirun (MPI job)"},
+		{"nohup ", "nohup (background process)"},
+		{"python train", "python training script"},
+		{"python3 train", "python3 training script"},
+		{"python finetune", "python finetuning script"},
+		{"python3 finetune", "python3 finetuning script"},
+		{"python pretrain", "python pretraining script"},
+		{"python3 pretrain", "python3 pretraining script"},
+		{"bash train.sh", "training shell script"},
+		{"bash run.sh", "run shell script"},
+		{"./train", "./train binary"},
+		{"./run.sh", "./run.sh script"},
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(command))
+	for _, p := range patterns {
+		if strings.Contains(lower, strings.ToLower(p.substr)) {
+			return true, p.reason
+		}
+	}
+	return false, ""
 }
 
 func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {

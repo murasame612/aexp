@@ -229,16 +229,50 @@ func (m *Manager) PollResource(ctx context.Context, r *store.Resource) (*store.S
 }
 
 func buildProbeScript(rootDir string) string {
-	return fmt.Sprintf(`echo "---CPU---"
-top -bn1 | grep '%%Cpu' | head -1
+	return fmt.Sprintf(`ROOT_DIR=%q
+OS_NAME="$(uname -s 2>/dev/null || echo unknown)"
+echo "---CPU---"
+if [ "$OS_NAME" = "Darwin" ]; then
+  top -l 1 -n 0 2>/dev/null | awk '/CPU usage/ {u=$3; s=$5; gsub("%%","",u); gsub("%%","",s); printf "cpu_percent|%%.1f\n", u+s}'
+else
+  top -bn1 | grep '%%Cpu' | head -1
+fi
 echo "---MEM---"
-grep -E 'MemTotal|MemAvailable' /proc/meminfo
+if [ "$OS_NAME" = "Darwin" ]; then
+  total_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  total_mb=$(( total_bytes / 1024 / 1024 ))
+  free_pct="$(memory_pressure -Q 2>/dev/null | awk -F': ' '/System-wide memory free percentage/ {gsub("%%","",$2); print $2}')"
+  if [ -n "$free_pct" ]; then
+    used_mb=$(( total_mb * (100 - free_pct) / 100 ))
+  else
+    page_size="$(sysctl -n hw.pagesize 2>/dev/null || echo 4096)"
+    free_pages="$(vm_stat 2>/dev/null | awk '/Pages free/ {gsub("\\.","",$3); print $3}')"
+    speculative_pages="$(vm_stat 2>/dev/null | awk '/Pages speculative/ {gsub("\\.","",$3); print $3}')"
+    purgeable_pages="$(vm_stat 2>/dev/null | awk '/Pages purgeable/ {gsub("\\.","",$3); print $3}')"
+    free_pages="${free_pages:-0}"
+    speculative_pages="${speculative_pages:-0}"
+    purgeable_pages="${purgeable_pages:-0}"
+    reclaimable_bytes=$(( (free_pages + speculative_pages + purgeable_pages) * page_size ))
+    used_mb=$(( (total_bytes - reclaimable_bytes) / 1024 / 1024 ))
+  fi
+  echo "mem_mb|$used_mb|$total_mb"
+else
+  grep -E 'MemTotal|MemAvailable' /proc/meminfo
+fi
 echo "---LOAD---"
-cat /proc/loadavg
+if [ "$OS_NAME" = "Darwin" ]; then
+  sysctl -n vm.loadavg 2>/dev/null | awk '{print $2, $3, $4}'
+else
+  cat /proc/loadavg
+fi
 echo "---GPU---"
-nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || echo "no-gpu"
+if [ "$OS_NAME" = "Darwin" ]; then
+  echo "no-gpu"
+else
+  nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || echo "no-gpu"
+fi
 echo "---DISK---"
-df -BM %s 2>/dev/null | tail -1`, rootDir)
+df -m "$ROOT_DIR" 2>/dev/null | tail -1`, rootDir)
 }
 
 func parseProbeOutput(output string, snap *store.Snapshot) {
@@ -275,6 +309,10 @@ func parseProbeOutput(output string, snap *store.Snapshot) {
 func parseCPU(line string) float64 {
 	// top output: %Cpu(s): 23.1 us,  1.2 sy,  0.0 ni, 75.3 id,  0.3 wa, ...
 	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "cpu_percent|") {
+		v, _ := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(line, "cpu_percent|")), 64)
+		return v
+	}
 	parts := strings.Split(line, ",")
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
@@ -290,6 +328,15 @@ func parseCPU(line string) float64 {
 }
 
 func parseMem(content string) (usedMB, totalMB float64) {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "mem_mb|") {
+		parts := strings.Split(content, "|")
+		if len(parts) >= 3 {
+			usedMB, _ = strconv.ParseFloat(parts[1], 64)
+			totalMB, _ = strconv.ParseFloat(parts[2], 64)
+		}
+		return
+	}
 	lines := strings.Split(content, "\n")
 	var total, available float64
 	for _, line := range lines {

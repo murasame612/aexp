@@ -36,6 +36,22 @@ type Store interface {
 	SaveAgentEvent(ctx context.Context, e *AgentEvent) error
 	ListAgentEvents(ctx context.Context, runID string) ([]AgentEvent, error)
 
+	// Run Marks
+	SaveRunMark(ctx context.Context, m *RunMark) error
+	GetRunMark(ctx context.Context, id string) (*RunMark, error)
+	ListRunMarks(ctx context.Context, filter RunMarkFilter) ([]RunMark, error)
+
+	// Run Bookmarks
+	SaveRunBookmark(ctx context.Context, b *RunBookmark) error
+	GetRunBookmark(ctx context.Context, runID string) (*RunBookmark, error)
+	ListRunBookmarks(ctx context.Context, filter RunBookmarkFilter) ([]RunBookmark, error)
+	DeleteRunBookmark(ctx context.Context, runID string) error
+
+	// Exec Events
+	SaveExecEvent(ctx context.Context, e *ExecEvent) error
+	GetExecEvent(ctx context.Context, id string) (*ExecEvent, error)
+	ListExecEvents(ctx context.Context, filter ExecEventFilter) ([]ExecEvent, error)
+
 	// Lifecycle
 	Close() error
 }
