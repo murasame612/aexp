@@ -81,6 +81,11 @@
         .pill-busy        { background: #f1e8d0; color: #7a5d1a; }
         .pill-unknown     { background: #e8e5dc; color: #5e5a50; }
         .pill-unreachable { background: #f5e0db; color: #8a3a2a; }
+        .pill-setup       { background: #e8e5dc; color: #5e5a50; }
+        .pill-smoke       { background: #f1e8d0; color: #7a5d1a; }
+        .pill-pilot       { background: #f1e8d0; color: #7a5d1a; }
+        .pill-formal      { background: #e3edf6; color: #346486; }
+        .pill-ablation    { background: #e6f0e8; color: #35644a; }
 
         /* Progress bars */
         .meter-track {
@@ -950,6 +955,7 @@
                 'table.name': 'Name',
                 'table.host': 'Host',
                 'table.status': 'Status',
+                'table.kind': 'Kind',
                 'table.gpu': 'GPU',
                 'table.actions': 'Actions',
                 'table.id': 'ID',
@@ -1031,6 +1037,11 @@
                 'status.unknown': 'Unknown',
                 'status.unreachable': 'Unreachable',
                 'status.missing': 'Missing',
+                'kind.setup': 'Setup',
+                'kind.smoke': 'Smoke',
+                'kind.pilot': 'Pilot',
+                'kind.formal': 'Formal',
+                'kind.ablation': 'Ablation',
             },
             zh: {
                 'app.subtitle': 'Agent 实验控制平面',
@@ -1066,6 +1077,7 @@
                 'table.name': '名称',
                 'table.host': '主机',
                 'table.status': '状态',
+                'table.kind': '类型',
                 'table.gpu': 'GPU',
                 'table.actions': '操作',
                 'table.id': 'ID',
@@ -1147,6 +1159,11 @@
                 'status.unknown': '未知',
                 'status.unreachable': '不可达',
                 'status.missing': '缺失',
+                'kind.setup': '准备',
+                'kind.smoke': '冒烟',
+                'kind.pilot': '预跑',
+                'kind.formal': '正式',
+                'kind.ablation': '消融',
             }
         };
 
@@ -1419,11 +1436,15 @@
             c.innerHTML = runs.map(r => {
                 r = asObject(r);
                 const cmd = asText(r.command);
+                const kind = asText(r.kind || 'formal');
                 return `
-                <div class="card card-clickable cursor-pointer" onclick="showRunDetail('${r.id}')">
+                <div class="card card-clickable cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''}" onclick="showRunDetail('${r.id}')">
                     <div class="flex justify-between items-start mb-1">
                         <span class="font-medium text-sm">${r.name || r.id}</span>
-                        <span class="pill pill-running">${escHTML(statusLabel('running'))}</span>
+                        <div class="flex gap-2 flex-wrap justify-end">
+                            ${runKindPill(kind)}
+                            <span class="pill pill-running">${escHTML(statusLabel('running'))}</span>
+                        </div>
                     </div>
                     <div class="text-xs text-ink-secondary font-mono mt-1">${cmd.substring(0, 70)}${cmd.length > 70 ? '...' : ''}</div>
                 </div>`;
@@ -1552,17 +1573,20 @@
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
-                    <th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
+                    <th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
                     const resLabel = resourceLabel(r.resource_id);
                     const fav = bookmarkedRunIds.has(r.id);
-                    return `<tr class="cursor-pointer" onclick="showRunDetail('${r.id}')">
+                    const kind = asText(r.kind || 'formal');
+                    return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''}" onclick="showRunDetail('${r.id}')">
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>${escHTML(r.name || '-')}</td>
                         <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
+                        <td>${runKindPill(kind)}</td>
                         <td><span class="pill pill-${r.status || 'unknown'}">${escHTML(statusLabel(r.status))}</span></td>
+                        <td class="tabular-nums text-xs">${escHTML(runGPULabel(r.gpu_index))}</td>
                         <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
                         <td><button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button></td>
                     </tr>`;
@@ -1632,6 +1656,24 @@
         function statusLabel(status) {
             const key = 'status.' + (status || 'unknown');
             return t(key) === key ? (status || '-') : t(key);
+        }
+
+        function runKindLabel(kind) {
+            const key = 'kind.' + (kind || 'formal');
+            return t(key) === key ? (kind || '-') : t(key);
+        }
+
+        function runKindPill(kind) {
+            kind = asText(kind || 'formal').toLowerCase();
+            return `<span class="pill pill-${escAttr(kind)}">${escHTML(runKindLabel(kind))}</span>`;
+        }
+
+        function runGPULabel(gpuIndex) {
+            const n = Number(gpuIndex);
+            if (n === -2) return 'none';
+            if (n === -1) return 'all';
+            if (Number.isFinite(n)) return String(n);
+            return '-';
         }
 
         function toggleFilterMenu(kind) {
@@ -1848,6 +1890,8 @@
                 <div class="detail-grid">
                     <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${escHTML(run.id)}</div></div>
                     <div><div class="detail-label">${escHTML(t('table.status'))}</div><div class="detail-value"><span class="pill pill-${run.status}">${escHTML(statusLabel(run.status))}</span></div></div>
+                    <div><div class="detail-label">${escHTML(t('table.kind'))}</div><div class="detail-value">${runKindPill(run.kind || 'formal')}</div></div>
+                    <div><div class="detail-label">${escHTML(t('table.gpu'))}</div><div class="detail-value">${escHTML(runGPULabel(run.gpu_index))}</div></div>
                     <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
                     <div><div class="detail-label">Conda</div><div class="detail-value">${escHTML(run.conda_env || '—')}</div></div>
                     <div class="detail-code">${escHTML(asText(run.command))}</div>

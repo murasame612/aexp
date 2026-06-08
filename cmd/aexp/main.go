@@ -185,6 +185,7 @@ func agentCmd() *cobra.Command {
 		"Check resources: aexp resource list --verbose",
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
+		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
 		"Inspect run: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve finding: aexp run mark <run_id> --title ... --reason ... --evidence ...",
 	}
@@ -192,7 +193,7 @@ func agentCmd() *cobra.Command {
 		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
 		"Use run submit for experiments; use exec only for inspection/ops.",
 		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
-		"Use --kind formal for paper evidence; never treat smoke tests as real results.",
+		"Use --kind formal for paper evidence; never treat setup/smoke runs as real results.",
 		"Always provide --metric-paths and --log-paths for formal runs.",
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
 		"After interpreting logs/metrics/artifacts, write a run mark so results survive context loss.",
@@ -1645,7 +1646,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 func runSubmitCmd() *cobra.Command {
 	var resource, name, cwd, condaEnv, projectEnv, kind string
 	var gpuIndex int
-	var shellMode, force bool
+	var shellMode, force, noGPU bool
 	var logPaths, artifactPaths, metricPaths []string
 
 	cmd := &cobra.Command{
@@ -1661,10 +1662,16 @@ elsewhere, register the resource with that root_dir first.
     aexp run submit --resource mu -- python train.py --lr 0.001
 
   Shell mode (--shell): full shell interpretation
-    aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'`,
+    aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'
+
+  Setup task (tracked, async, but not experiment evidence):
+    aexp run submit --resource mu --kind setup --no-gpu --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var submitReq executor.SubmitRequest
+			if noGPU {
+				gpuIndex = store.GPUIndexNone
+			}
 
 			if shellMode {
 				// Shell mode: wrap as bash -lc "<command>"
@@ -1719,8 +1726,9 @@ elsewhere, register the resource with that root_dir first.
 
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource name (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Run name")
-	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: smoke, pilot, formal, ablation")
-	cmd.Flags().IntVar(&gpuIndex, "gpu-index", -1, "GPU index to use (-1 for all)")
+	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: setup, smoke, pilot, formal, ablation")
+	cmd.Flags().IntVar(&gpuIndex, "gpu-index", store.GPUIndexAll, "GPU index to use (-1 for all)")
+	cmd.Flags().BoolVar(&noGPU, "no-gpu", false, "Do not reserve GPUs or set CUDA_VISIBLE_DEVICES")
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Shell mode: interpret command via bash -lc")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock, allow concurrent runs on same resource/GPU")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
@@ -1777,7 +1785,7 @@ func runListCmd() *cobra.Command {
 				return printJSON(runs)
 			}
 
-			fmt.Printf("%-15s %-25s %-20s %-12s %s\n", "RUN_ID", "NAME", "RESOURCE", "STATUS", "COMMAND")
+			fmt.Printf("%-15s %-25s %-20s %-10s %-12s %-8s %s\n", "RUN_ID", "NAME", "RESOURCE", "KIND", "STATUS", "GPU", "COMMAND")
 			for _, r := range runs {
 				name := r.Name
 				if name == "" {
@@ -1787,8 +1795,8 @@ func runListCmd() *cobra.Command {
 				if cached[r.ID] {
 					displayStatus += " (cached)"
 				}
-				fmt.Printf("%-15s %-25s %-20s %-12s %s\n",
-					r.ID, truncStr(name, 25), r.ResourceID, displayStatus, truncStr(r.Command, 60))
+				fmt.Printf("%-15s %-25s %-20s %-10s %-12s %-8s %s\n",
+					r.ID, truncStr(name, 25), r.ResourceID, r.Kind, displayStatus, displayRunGPU(r.GPUIndex), truncStr(r.Command, 60))
 			}
 			return nil
 		},
@@ -1899,6 +1907,8 @@ func runStatusCmd() *cobra.Command {
 			fmt.Printf("tmux:      %s\n", run.TmuxSession)
 			if run.GPUIndex >= 0 {
 				fmt.Printf("GPU:       %d\n", run.GPUIndex)
+			} else if run.GPUIndex == store.GPUIndexNone {
+				fmt.Printf("GPU:       none\n")
 			}
 			if run.ExitCode.Valid {
 				fmt.Printf("Exit code: %d\n", run.ExitCode.Int64)
@@ -1960,6 +1970,8 @@ func printShortRunStatus(db store.Store, ctx context.Context, run *store.Run) {
 	fmt.Printf("%s  %s  resource=%s", status["id"], status["status"], status["resource"])
 	if run.GPUIndex >= 0 {
 		fmt.Printf("  gpu=%d", run.GPUIndex)
+	} else if run.GPUIndex == store.GPUIndexNone {
+		fmt.Printf("  gpu=none")
 	}
 	if run.ExitCode.Valid {
 		fmt.Printf("  exit=%d", run.ExitCode.Int64)
@@ -1988,6 +2000,17 @@ func printShortRunStatus(db store.Store, ctx context.Context, run *store.Run) {
 	fmt.Printf("stderr: %s\n", status["stderr"])
 	if metrics := tryJSONStringSlice(run.MetricPathsJSON); len(metrics) > 0 {
 		fmt.Printf("metrics:%s\n", strings.Join(metrics, ","))
+	}
+}
+
+func displayRunGPU(gpuIndex int) string {
+	switch gpuIndex {
+	case store.GPUIndexNone:
+		return "none"
+	case store.GPUIndexAll:
+		return "all"
+	default:
+		return fmt.Sprintf("%d", gpuIndex)
 	}
 }
 
@@ -2261,11 +2284,11 @@ Examples:
 				if dryRun {
 					fmt.Printf("[dry-run] Command: %s\n", command)
 					fmt.Printf("[dry-run] Long-running detected: %s\n", reason)
-					fmt.Println("[dry-run] Would refuse execution. Use 'aexp run submit' for training jobs.")
+					fmt.Println("[dry-run] Would refuse execution. Use 'aexp run submit --kind setup --no-gpu' for setup tasks, or '--kind formal --gpu-index <n>' for experiment runs.")
 					return nil
 				}
 				if !force {
-					return fmt.Errorf("command looks like a long-running job (%s); use 'aexp run submit' for training jobs, or --force to override", reason)
+					return fmt.Errorf("command looks like a long-running job (%s); use 'aexp run submit --kind setup --no-gpu' for setup tasks, or '--kind formal --gpu-index <n>' for experiment runs; use --force only for bounded inspection", reason)
 				}
 				fmt.Fprintf(os.Stderr, "warning: long-running command detected (%s), proceeding due to --force\n", reason)
 			}

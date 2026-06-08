@@ -21,7 +21,7 @@ type SubmitRequest struct {
 	ResourceID    string            `json:"resource_id"`
 	Name          string            `json:"name"`
 	Kind          string            `json:"kind"`      // smoke, pilot, formal, ablation
-	GPUIndex      int               `json:"gpu_index"` // -1 = all, 0+ = specific GPU
+	GPUIndex      int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
 	Force         bool              `json:"force"`     // skip GPU slot lock
 	Command       string            `json:"command"`
 	Program       string            `json:"program"` // structured: python, bash, etc.
@@ -91,12 +91,12 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 
 	// Normalize GPU index
 	gpuIndex := req.GPUIndex
-	if gpuIndex < -1 {
-		gpuIndex = -1
+	if gpuIndex < store.GPUIndexNone {
+		gpuIndex = store.GPUIndexAll
 	}
 
-	// GPU slot lock (skip if --force)
-	if !req.Force {
+	// GPU slot lock (skip if --force, or if this run explicitly needs no GPU).
+	if !req.Force && gpuIndex != store.GPUIndexNone {
 		activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
 			ResourceID: req.ResourceID,
 			Status:     store.RunStatusRunning,
@@ -106,10 +106,13 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		}
 
 		for _, active := range activeRuns {
-			if gpuIndex == -1 {
+			if active.GPUIndex == store.GPUIndexNone {
+				continue
+			}
+			if gpuIndex == store.GPUIndexAll {
 				return nil, fmt.Errorf("resource %s already has an active run (%s) using GPU %d; use --force to override", resource.Name, active.ID, active.GPUIndex)
 			}
-			if active.GPUIndex == -1 {
+			if active.GPUIndex == store.GPUIndexAll {
 				return nil, fmt.Errorf("resource %s has run %s using all GPUs; use --force to override", resource.Name, active.ID)
 			}
 			if active.GPUIndex == gpuIndex {
@@ -712,6 +715,7 @@ func DetectLongRunningCmd(command string) (bool, string) {
 	}
 
 	lower := strings.ToLower(strings.TrimSpace(command))
+	lower = strings.NewReplacer("'", "", "\"", "").Replace(lower)
 	for _, p := range patterns {
 		if strings.Contains(lower, strings.ToLower(p.substr)) {
 			return true, p.reason

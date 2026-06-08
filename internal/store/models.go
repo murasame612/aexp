@@ -34,8 +34,8 @@ type Run struct {
 	ResourceID        string        `json:"resource_id"`
 	Name              string        `json:"name"`
 	Status            string        `json:"status"`    // created,queued,starting,running,succeeded,failed,cancelled,lost
-	Kind              string        `json:"kind"`      // smoke, pilot, formal, ablation
-	GPUIndex          int           `json:"gpu_index"` // -1 = all, 0+ = specific GPU
+	Kind              string        `json:"kind"`      // setup, smoke, pilot, formal, ablation
+	GPUIndex          int           `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
 	Cwd               string        `json:"cwd"`
 	Command           string        `json:"command"`
 	Program           string        `json:"program"` // structured: python, bash, etc.
@@ -209,10 +209,17 @@ const (
 
 // RunKind constants
 const (
+	RunKindSetup    = "setup"    // environment/data preparation; not experiment evidence
 	RunKindSmoke    = "smoke"    // quick test, not for real results
 	RunKindPilot    = "pilot"    // preliminary run to verify setup
 	RunKindFormal   = "formal"   // real experiment, results are trustworthy
 	RunKindAblation = "ablation" // systematic variation experiment
+)
+
+// GPU index sentinel values used by runs.
+const (
+	GPUIndexNone = -2 // no GPU lock and no CUDA_VISIBLE_DEVICES injection
+	GPUIndexAll  = -1 // lock all GPUs
 )
 
 // ResourceStatus constants
