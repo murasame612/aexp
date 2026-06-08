@@ -41,6 +41,10 @@ type Run struct {
 	Program           string        `json:"program"` // structured: python, bash, etc.
 	ArgsJSON          string        `json:"args_json"`
 	CondaEnv          string        `json:"conda_env"`
+	ProjectEnv        string        `json:"project_env"`
+	ResolvedEnv       string        `json:"resolved_env"`
+	ResolvedPython    string        `json:"resolved_python"`
+	ResolvedCwd       string        `json:"resolved_cwd"`
 	EnvJSON           string        `json:"env_json"`
 	LogPathsJSON      string        `json:"log_paths_json"`
 	ArtifactPathsJSON string        `json:"artifact_paths_json"`
@@ -52,6 +56,28 @@ type Run struct {
 	CreatedAt         time.Time     `json:"created_at"`
 	StartedAt         sql.NullTime  `json:"started_at"`
 	FinishedAt        sql.NullTime  `json:"finished_at"`
+}
+
+// ProjectProfile captures how a project directory should be entered on a resource.
+type ProjectProfile struct {
+	ResourceID    string    `json:"resource_id"`
+	ResourceName  string    `json:"resource"`
+	Cwd           string    `json:"cwd"`
+	EnvStrategy   string    `json:"env_strategy"`
+	ResolvedEnv   string    `json:"resolved_env"`
+	EnvName       string    `json:"env_name,omitempty"`
+	Python        string    `json:"python"`
+	ResolvedCwd   string    `json:"resolved_cwd"`
+	CommandPrefix string    `json:"command_prefix,omitempty"`
+	PythonOK      bool      `json:"python_ok"`
+	TorchOK       bool      `json:"torch_ok"`
+	CUDA          string    `json:"cuda"`
+	CUDAOK        bool      `json:"cuda_ok"`
+	Entrypoints   []string  `json:"entrypoints"`
+	Metrics       []string  `json:"metrics"`
+	Logs          []string  `json:"logs"`
+	Warnings      []string  `json:"warnings,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // RunFilter is used to filter runs when listing.

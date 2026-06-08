@@ -18,6 +18,10 @@ type Store interface {
 	ListRuns(ctx context.Context, filter RunFilter) ([]Run, error)
 	UpdateRun(ctx context.Context, r *Run) error
 
+	// Project Profiles
+	SaveProjectProfile(ctx context.Context, p *ProjectProfile) error
+	GetProjectProfile(ctx context.Context, resourceID string, cwd string) (*ProjectProfile, error)
+
 	// Snapshots
 	SaveSnapshot(ctx context.Context, s *Snapshot) error
 	GetLatestSnapshot(ctx context.Context, resourceID string) (*Snapshot, error)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -62,6 +63,10 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("runs", "gpu_index", "INTEGER NOT NULL", "-1")
 	addColumn("runs", "program", "TEXT", "''")
 	addColumn("runs", "args_json", "TEXT", "'[]'")
+	addColumn("runs", "project_env", "TEXT", "''")
+	addColumn("runs", "resolved_env", "TEXT", "''")
+	addColumn("runs", "resolved_python", "TEXT", "''")
+	addColumn("runs", "resolved_cwd", "TEXT", "''")
 	addColumn("resources", "socks_proxy", "TEXT", "''")
 	addColumn("resources", "proxy_command", "TEXT", "''")
 	addColumn("resources", "os_type", "TEXT", "''")
@@ -155,9 +160,9 @@ func (s *SQLite) DeleteResource(ctx context.Context, id string) error {
 func (s *SQLite) CreateRun(ctx context.Context, r *Run) error {
 	r.CreatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ResourceID, r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.CreatedAt, r.StartedAt, r.FinishedAt,
+		`INSERT INTO runs (id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, project_env, resolved_env, resolved_python, resolved_cwd, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.ResourceID, r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.CreatedAt, r.StartedAt, r.FinishedAt,
 	)
 	return err
 }
@@ -165,8 +170,8 @@ func (s *SQLite) CreateRun(ctx context.Context, r *Run) error {
 func (s *SQLite) GetRun(ctx context.Context, id string) (*Run, error) {
 	r := &Run{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at FROM runs WHERE id = ?`, id).
-		Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+		`SELECT id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, project_env, resolved_env, resolved_python, resolved_cwd, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at FROM runs WHERE id = ?`, id).
+		Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.ProjectEnv, &r.ResolvedEnv, &r.ResolvedPython, &r.ResolvedCwd, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -174,7 +179,7 @@ func (s *SQLite) GetRun(ctx context.Context, id string) (*Run, error) {
 }
 
 func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) {
-	query := `SELECT id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at FROM runs WHERE 1=1`
+	query := `SELECT id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, project_env, resolved_env, resolved_python, resolved_cwd, env_json, log_paths_json, artifact_paths_json, metric_paths_json, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at FROM runs WHERE 1=1`
 	var args []interface{}
 
 	if filter.ResourceID != "" {
@@ -206,7 +211,7 @@ func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) 
 	runs := make([]Run, 0)
 	for rows.Next() {
 		var r Run
-		if err := rows.Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.ProjectEnv, &r.ResolvedEnv, &r.ResolvedPython, &r.ResolvedCwd, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
 			return nil, err
 		}
 		runs = append(runs, r)
@@ -216,10 +221,75 @@ func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) 
 
 func (s *SQLite) UpdateRun(ctx context.Context, r *Run) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET name=?, status=?, kind=?, gpu_index=?, cwd=?, command=?, program=?, args_json=?, conda_env=?, env_json=?, log_paths_json=?, artifact_paths_json=?, metric_paths_json=?, tmux_session=?, remote_run_dir=?, exit_code=?, created_by=?, started_at=?, finished_at=? WHERE id=?`,
-		r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.StartedAt, r.FinishedAt, r.ID,
+		`UPDATE runs SET name=?, status=?, kind=?, gpu_index=?, cwd=?, command=?, program=?, args_json=?, conda_env=?, project_env=?, resolved_env=?, resolved_python=?, resolved_cwd=?, env_json=?, log_paths_json=?, artifact_paths_json=?, metric_paths_json=?, tmux_session=?, remote_run_dir=?, exit_code=?, created_by=?, started_at=?, finished_at=? WHERE id=?`,
+		r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.StartedAt, r.FinishedAt, r.ID,
 	)
 	return err
+}
+
+// --- Project Profiles ---
+
+func (s *SQLite) SaveProjectProfile(ctx context.Context, p *ProjectProfile) error {
+	p.UpdatedAt = time.Now()
+	entrypointsJSON, _ := json.Marshal(p.Entrypoints)
+	metricsJSON, _ := json.Marshal(p.Metrics)
+	logsJSON, _ := json.Marshal(p.Logs)
+	warningsJSON, _ := json.Marshal(p.Warnings)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO project_profiles (
+		resource_id, resource_name, cwd, env_strategy, resolved_env, env_name, python, resolved_cwd, command_prefix,
+		python_ok, torch_ok, cuda, cuda_ok, entrypoints_json, metrics_json, logs_json, warnings_json, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(resource_id, cwd) DO UPDATE SET
+		resource_name=excluded.resource_name,
+		env_strategy=excluded.env_strategy,
+		resolved_env=excluded.resolved_env,
+		env_name=excluded.env_name,
+		python=excluded.python,
+		resolved_cwd=excluded.resolved_cwd,
+		command_prefix=excluded.command_prefix,
+		python_ok=excluded.python_ok,
+		torch_ok=excluded.torch_ok,
+		cuda=excluded.cuda,
+		cuda_ok=excluded.cuda_ok,
+		entrypoints_json=excluded.entrypoints_json,
+		metrics_json=excluded.metrics_json,
+		logs_json=excluded.logs_json,
+		warnings_json=excluded.warnings_json,
+		updated_at=excluded.updated_at`,
+		p.ResourceID, p.ResourceName, p.Cwd, p.EnvStrategy, p.ResolvedEnv, p.EnvName, p.Python, p.ResolvedCwd, p.CommandPrefix,
+		boolInt(p.PythonOK), boolInt(p.TorchOK), p.CUDA, boolInt(p.CUDAOK), string(entrypointsJSON), string(metricsJSON), string(logsJSON), string(warningsJSON), p.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetProjectProfile(ctx context.Context, resourceID string, cwd string) (*ProjectProfile, error) {
+	var p ProjectProfile
+	var pythonOK, torchOK, cudaOK int
+	var entrypointsJSON, metricsJSON, logsJSON, warningsJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT resource_id, resource_name, cwd, env_strategy, resolved_env, env_name, python, resolved_cwd, command_prefix, python_ok, torch_ok, cuda, cuda_ok, entrypoints_json, metrics_json, logs_json, warnings_json, updated_at
+		FROM project_profiles WHERE resource_id = ? AND cwd = ?`, resourceID, cwd).
+		Scan(&p.ResourceID, &p.ResourceName, &p.Cwd, &p.EnvStrategy, &p.ResolvedEnv, &p.EnvName, &p.Python, &p.ResolvedCwd, &p.CommandPrefix, &pythonOK, &torchOK, &p.CUDA, &cudaOK, &entrypointsJSON, &metricsJSON, &logsJSON, &warningsJSON, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.PythonOK = pythonOK != 0
+	p.TorchOK = torchOK != 0
+	p.CUDAOK = cudaOK != 0
+	_ = json.Unmarshal([]byte(entrypointsJSON), &p.Entrypoints)
+	_ = json.Unmarshal([]byte(metricsJSON), &p.Metrics)
+	_ = json.Unmarshal([]byte(logsJSON), &p.Logs)
+	_ = json.Unmarshal([]byte(warningsJSON), &p.Warnings)
+	return &p, nil
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // --- Snapshots ---

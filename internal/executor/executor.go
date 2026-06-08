@@ -28,6 +28,7 @@ type SubmitRequest struct {
 	Args          []string          `json:"args"`    // structured args
 	Cwd           string            `json:"cwd"`
 	CondaEnv      string            `json:"conda_env"`
+	ProjectEnv    string            `json:"project_env"` // "", raw, auto
 	LogPaths      []string          `json:"log_paths"`
 	ArtifactPaths []string          `json:"artifact_paths"`
 	MetricPaths   []string          `json:"metric_paths"`
@@ -69,6 +70,9 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	}
 	if resource == nil {
 		return nil, fmt.Errorf("resource %s not found", req.ResourceID)
+	}
+	if req.ProjectEnv != "" && req.ProjectEnv != ProjectEnvRaw && req.ProjectEnv != ProjectEnvAuto {
+		return nil, fmt.Errorf("project_env must be raw or auto")
 	}
 
 	// Path sandbox: cwd must be under root_dir
@@ -124,6 +128,27 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	if condaEnv == "" {
 		condaEnv = resource.CondaEnv
 	}
+	var projectProfile *store.ProjectProfile
+	if req.ProjectEnv == ProjectEnvAuto {
+		projectProfile, err = e.DetectProject(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv)
+		if err != nil {
+			return nil, fmt.Errorf("detect project: %w", err)
+		}
+		if saveErr := e.store.SaveProjectProfile(ctx, projectProfile); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", saveErr)
+		}
+		if len(req.LogPaths) == 0 {
+			req.LogPaths = projectProfile.Logs
+		}
+		if len(req.MetricPaths) == 0 {
+			req.MetricPaths = projectProfile.Metrics
+		}
+		if projectProfile.ResolvedEnv == ProjectEnvConda {
+			condaEnv = projectProfile.EnvName
+		} else {
+			condaEnv = ""
+		}
+	}
 
 	// Build env vars (GPU env must be injected before command)
 	envVars := copyMap(req.EnvVars)
@@ -132,7 +157,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	}
 
 	// Build command.sh content
-	commandScript := buildCommandScript(req, condaEnv, resource.CondaBase, resource.CondaInit, resource.RootDir, envVars)
+	commandScript := buildCommandScript(req, condaEnv, resource.CondaBase, resource.CondaInit, resource.RootDir, envVars, projectProfile)
 
 	// Serialize for DB
 	logPathsJSON, _ := json.Marshal(req.LogPaths)
@@ -159,6 +184,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		Program:           req.Program,
 		ArgsJSON:          string(argsJSON),
 		CondaEnv:          condaEnv,
+		ProjectEnv:        req.ProjectEnv,
 		EnvJSON:           string(envJSON),
 		LogPathsJSON:      string(logPathsJSON),
 		ArtifactPathsJSON: string(artifactPathsJSON),
@@ -166,6 +192,11 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 		TmuxSession:       tmuxSession,
 		RemoteRunDir:      remoteRunDir,
 		CreatedBy:         req.CreatedBy,
+	}
+	if projectProfile != nil {
+		run.ResolvedEnv = projectProfile.ResolvedEnv
+		run.ResolvedPython = projectProfile.Python
+		run.ResolvedCwd = projectProfile.ResolvedCwd
 	}
 
 	if err := e.store.CreateRun(ctx, run); err != nil {
@@ -312,7 +343,7 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 		lastN = 200
 	}
 
-	cmd := fmt.Sprintf("tail -f -n %d %s", lastN, logFile)
+	cmd := fmt.Sprintf("tail -f -n %d %s", lastN, shellQuote(logFile))
 	ch, err := e.execStream(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
@@ -323,6 +354,9 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 		defer close(logCh)
 		lineNo := 0
 		for line := range ch {
+			if line == "" {
+				continue
+			}
 			lineNo++
 			select {
 			case logCh <- LogLine{RunID: runID, Source: source, LineNo: lineNo, Content: line}:
@@ -358,22 +392,37 @@ func (e *Executor) GetLogSnapshot(ctx context.Context, runID string, source stri
 	}
 
 	logFile := fmt.Sprintf("%s/logs/%s.log", run.RemoteRunDir, source)
-	cmd := fmt.Sprintf("tail -n %d %s 2>/dev/null", lastN, logFile)
+	cmd := fmt.Sprintf(`LOG_FILE=%s
+if [ ! -f "$LOG_FILE" ]; then exit 0; fi
+total=$(tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ')
+printf '\001AEXP_TOTAL_LINES\t%%s\n' "$total"
+tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN)
 
 	out, _, err := e.exec(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
 	}
 
+	totalLines := 0
+	contentLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(contentLines) > 0 && strings.HasPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t") {
+		fmt.Sscanf(strings.TrimPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t"), "%d", &totalLines)
+		contentLines = contentLines[1:]
+	}
+	startLine := 1
+	if totalLines > len(contentLines) {
+		startLine = totalLines - len(contentLines) + 1
+	}
+
 	var lines []LogLine
-	for i, content := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+	for i, content := range contentLines {
 		if content == "" {
 			continue
 		}
 		lines = append(lines, LogLine{
 			RunID:   runID,
 			Source:  source,
-			LineNo:  i + 1,
+			LineNo:  startLine + i,
 			Content: content,
 		})
 	}
@@ -449,6 +498,8 @@ type ExecRequest struct {
 	ResourceID string `json:"resource_id"`
 	Command    string `json:"command"`
 	Cwd        string `json:"cwd"`
+	ProjectEnv string `json:"project_env"` // "", raw, auto
+	CondaEnv   string `json:"conda_env"`   // optional override for project_env=auto
 	TimeoutSec int    `json:"timeout_sec"` // 0 = default 30s
 	Actor      string `json:"actor"`
 }
@@ -504,9 +555,18 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build command with optional cwd
+	// Build command with optional cwd and project environment.
 	cmd := req.Command
-	if req.Cwd != "" {
+	if req.ProjectEnv == ProjectEnvAuto {
+		profile, err := e.DetectProject(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv)
+		if err != nil {
+			return nil, fmt.Errorf("detect project: %w", err)
+		}
+		if saveErr := e.store.SaveProjectProfile(ctx, profile); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", saveErr)
+		}
+		cmd = buildProjectWrappedCommand(resource, profile, req.Command)
+	} else if req.Cwd != "" {
 		resolved := req.Cwd
 		if !strings.HasPrefix(req.Cwd, "/") {
 			resolved = resource.RootDir + "/" + req.Cwd
@@ -755,7 +815,7 @@ func cleanPath(p string) string {
 }
 
 // buildCommandScript generates the content of command.sh for a run.
-func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootDir string, envVars map[string]string) string {
+func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootDir string, envVars map[string]string, projectProfile *store.ProjectProfile) string {
 	var lines []string
 
 	lines = append(lines, "#!/usr/bin/env bash")
@@ -766,8 +826,11 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 		lines = append(lines, fmt.Sprintf("export %s=%s", k, shellQuote(v)))
 	}
 
-	// Activate conda environment. If an env is requested, activation must succeed.
-	if condaEnv != "" {
+	if projectProfile != nil {
+		lines = append(lines, fmt.Sprintf("cd %s", shellQuote(projectProfile.ResolvedCwd)))
+		lines = append(lines, projectEnvPrelude(&store.Resource{CondaBase: condaBase, CondaInit: condaInit}, projectProfile)...)
+	} else if condaEnv != "" {
+		// Activate conda environment. If an env is requested, activation must succeed.
 		for _, path := range condaInitCandidates(condaBase, condaInit) {
 			lines = append(lines, fmt.Sprintf("if [ -f %s ]; then source %s; fi", shellPath(path), shellPath(path)))
 		}
@@ -776,7 +839,7 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 	}
 
 	// cd to working directory
-	if req.Cwd != "" {
+	if projectProfile == nil && req.Cwd != "" {
 		resolved := req.Cwd
 		if !strings.HasPrefix(req.Cwd, "/") {
 			resolved = rootDir + "/" + req.Cwd
@@ -785,19 +848,30 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 	}
 
 	// The actual command
+	commandLine := runCommandLine(req)
+	if projectProfile != nil && projectProfile.ResolvedEnv == ProjectEnvUV {
+		if req.Program != "" {
+			commandLine = "uv run " + commandLine
+		} else {
+			commandLine = "uv run bash -lc " + shellQuote(commandLine)
+		}
+	}
+	lines = append(lines, commandLine)
+
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func runCommandLine(req SubmitRequest) string {
 	if req.Program != "" {
 		// Structured mode: properly escape each arg
 		parts := []string{req.Program}
 		for _, arg := range req.Args {
 			parts = append(parts, shellQuote(arg))
 		}
-		lines = append(lines, strings.Join(parts, " "))
-	} else {
-		// Free-form command: pass through as-is
-		lines = append(lines, req.Command)
+		return strings.Join(parts, " ")
 	}
-
-	return strings.Join(lines, "\n") + "\n"
+	// Free-form command: pass through as-is
+	return req.Command
 }
 
 func condaInitCandidates(condaBase, condaInit string) []string {

@@ -53,6 +53,7 @@ Agent workflow:
 	root.AddCommand(
 		agentCmd(),
 		doctorCmd(),
+		projectCmd(),
 		serveCmd(),
 		initCmd(),
 		resourceCmd(),
@@ -181,13 +182,15 @@ func agentCmd() *cobra.Command {
 
 	steps := []string{
 		"Check resources: aexp resource list --verbose",
-		"Inspect remote: aexp exec --resource <name> --cwd <path> -- 'pwd; nvidia-smi'",
+		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
-		"Inspect run: aexp run status <run_id>; aexp run logs <run_id>",
+		"Inspect run: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve finding: aexp run mark <run_id> --title ... --reason ... --evidence ...",
 	}
 	rules := []string{
+		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
 		"Use run submit for experiments; use exec only for inspection/ops.",
+		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
 		"Use --kind formal for paper evidence; never treat smoke tests as real results.",
 		"Always provide --metric-paths and --log-paths for formal runs.",
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
@@ -236,11 +239,13 @@ type doctorCheck struct {
 }
 
 type doctorReport struct {
-	Resource                 string        `json:"resource"`
-	Cwd                      string        `json:"cwd"`
-	CondaEnv                 string        `json:"conda_env"`
-	Checks                   []doctorCheck `json:"checks"`
-	RecommendedSubmitCommand string        `json:"recommended_submit_command"`
+	Resource                 string                `json:"resource"`
+	Cwd                      string                `json:"cwd"`
+	CondaEnv                 string                `json:"conda_env"`
+	Project                  *store.ProjectProfile `json:"project,omitempty"`
+	Checks                   []doctorCheck         `json:"checks"`
+	RecommendedSubmitCommand string                `json:"recommended_submit_command"`
+	RecommendedFixes         []string              `json:"recommended_fixes,omitempty"`
 }
 
 func doctorCmd() *cobra.Command {
@@ -272,13 +277,18 @@ func doctorCmd() *cobra.Command {
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			loadSSHKeys(sshPool)
 			report := runDoctorChecks(cmd.Context(), sshPool, res, cwd, condaEnv, gpuIndex)
+			if report.Project != nil {
+				if err := db.SaveProjectProfile(cmd.Context(), report.Project); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", err)
+				}
+			}
 
 			if asJSON {
 				return printJSON(report)
 			}
 			printDoctorReport(report)
 			for _, check := range report.Checks {
-				if !check.OK {
+				if !check.OK && check.Severity != "warn" {
 					return fmt.Errorf("doctor failed: %s", check.Name)
 				}
 			}
@@ -341,38 +351,30 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 	}
 	add("cwd exists", checkOK, strings.TrimSpace(firstNonEmpty(stderr, errString(err))))
 
-	if condaEnv != "" {
-		condaCmd := remoteCondaPrefix(res, condaEnv) + "python -c 'import sys; print(sys.executable)'"
-		out, stderr, err = execRemote(condaCmd)
-		checkOK = err == nil && strings.TrimSpace(out) != ""
-		if checkOK {
-			remoteOK++
-		}
-		add("conda env exists", checkOK, strings.TrimSpace(firstNonEmpty(out, stderr, errString(err))))
+	detector := executor.NewExecutor(pool, nil)
+	profile, detectErr := detector.DetectProject(ctx, res, cwd, executor.ProjectEnvAuto, condaEnv)
+	if detectErr != nil {
+		add("project env detect", false, detectErr.Error())
+		report.RecommendedFixes = append(report.RecommendedFixes, "Fix cwd/resource access, then run: aexp project detect --resource "+cliShellQuote(res.Name)+" --cwd "+cliShellQuote(cwd))
 	} else {
-		add("conda env exists", true, "not requested")
-	}
-
-	pythonCmd := "cd " + cliShellQuote(cwd) + " && " + remoteCondaPrefix(res, condaEnv) + "python -c 'import sys; print(sys.version.split()[0])'"
-	out, stderr, err = execRemote(pythonCmd)
-	checkOK = err == nil && strings.TrimSpace(out) != ""
-	if checkOK {
+		report.Project = profile
 		remoteOK++
-	}
-	add("python available", checkOK, strings.TrimSpace(firstNonEmpty(out, stderr, errString(err))))
-
-	cudaCmd := remoteCondaPrefix(res, condaEnv) + "python - <<'PY'\ntry:\n import torch\n print('torch cuda', torch.cuda.is_available(), torch.cuda.device_count())\nexcept Exception as e:\n print('torch unavailable', e)\nPY"
-	out, stderr, err = execRemote(cudaCmd)
-	if err == nil && strings.Contains(out, "torch cuda True") {
-		remoteOK++
-		add("cuda visible", true, strings.TrimSpace(out))
-	} else {
-		nvout, nvstderr, nverr := execRemote("command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L")
-		checkOK = nverr == nil && strings.TrimSpace(nvout) != ""
-		if checkOK {
-			remoteOK++
+		add("project env resolved", profile.PythonOK, fmt.Sprintf("%s python=%s", profile.ResolvedEnv, profile.Python))
+		add("torch import", profile.TorchOK, boolDetail(profile.TorchOK, "torch ok", "torch unavailable in resolved python"))
+		if !profile.TorchOK {
+			report.Checks[len(report.Checks)-1].Severity = "warn"
 		}
-		add("cuda visible", checkOK, strings.TrimSpace(firstNonEmpty(out, nvout, stderr, nvstderr, errString(err), errString(nverr))))
+		add("cuda visible", profile.CUDAOK, profile.CUDA)
+		if !profile.CUDAOK {
+			report.Checks[len(report.Checks)-1].Severity = "warn"
+		}
+		for _, warning := range profile.Warnings {
+			idx := add("project warning", false, warning)
+			report.Checks[idx].Severity = "warn"
+		}
+		if profile.ResolvedEnv == executor.ProjectEnvRaw {
+			report.RecommendedFixes = append(report.RecommendedFixes, "python missing in project env; create .venv or set resource conda_env, then use --project-env auto")
+		}
 	}
 
 	out, stderr, err = execRemote("command -v tmux >/dev/null 2>&1 && tmux -V")
@@ -449,6 +451,7 @@ func recommendedSubmitCommand(resourceName, cwd, condaEnv string, gpuIndex int) 
 		"--kind formal",
 		"--name <run-name>",
 		"--cwd " + cliShellQuote(cwd),
+		"--project-env auto",
 	}
 	if condaEnv != "" {
 		parts = append(parts, "--conda-env "+cliShellQuote(condaEnv))
@@ -462,6 +465,13 @@ func recommendedSubmitCommand(resourceName, cwd, condaEnv string, gpuIndex int) 
 	return strings.Join(parts, " ")
 }
 
+func boolDetail(ok bool, okText, failText string) string {
+	if ok {
+		return okText
+	}
+	return failText
+}
+
 func printDoctorReport(report doctorReport) {
 	fmt.Println("AEXP Doctor")
 	fmt.Println()
@@ -469,6 +479,10 @@ func printDoctorReport(report doctorReport) {
 	fmt.Printf("cwd:      %s\n", report.Cwd)
 	if report.CondaEnv != "" {
 		fmt.Printf("conda:    %s\n", report.CondaEnv)
+	}
+	if report.Project != nil {
+		fmt.Printf("env:      %s\n", report.Project.ResolvedEnv)
+		fmt.Printf("python:   %s\n", report.Project.Python)
 	}
 	fmt.Println()
 	for _, check := range report.Checks {
@@ -486,6 +500,13 @@ func printDoctorReport(report doctorReport) {
 		}
 	}
 	fmt.Println()
+	if len(report.RecommendedFixes) > 0 {
+		fmt.Println("fix:")
+		for _, fix := range report.RecommendedFixes {
+			fmt.Println(fix)
+		}
+		fmt.Println()
+	}
 	fmt.Println("recommended submit command:")
 	fmt.Println(report.RecommendedSubmitCommand)
 }
@@ -504,6 +525,162 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// --- project ---
+
+func projectCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "project",
+		Short: "Detect and validate project runtime profiles",
+		Long: `Project profiles describe how to enter a project on a resource:
+resource + cwd + environment strategy + result/log globs.`,
+	}
+	cmd.AddCommand(projectDetectCmd())
+	cmd.AddCommand(projectDoctorCmd())
+	return cmd
+}
+
+func projectDetectCmd() *cobra.Command {
+	var resourceName, cwd, projectEnv, condaEnv string
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "detect",
+		Short: "Detect a project runtime profile and save it locally",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if projectEnv == "" {
+				projectEnv = executor.ProjectEnvAuto
+			}
+			if projectEnv != executor.ProjectEnvAuto && projectEnv != executor.ProjectEnvRaw {
+				return fmt.Errorf("--project-env must be raw or auto")
+			}
+			db := openDB()
+			defer db.Close()
+
+			res, err := db.GetResourceByName(cmd.Context(), resourceName)
+			if err != nil || res == nil {
+				return fmt.Errorf("resource %s not found", resourceName)
+			}
+			if cwd == "" {
+				cwd = res.RootDir
+			}
+			if cwdEscapesRoot(res.RootDir, cwd) {
+				return fmt.Errorf("cwd %q escapes resource root_dir %q", cwd, res.RootDir)
+			}
+
+			sshPool := executor.NewSSHPool(10 * time.Second)
+			loadSSHKeys(sshPool)
+			exec := executor.NewExecutor(sshPool, db)
+			profile, err := exec.DetectProject(cmd.Context(), res, cwd, projectEnv, condaEnv)
+			if err != nil {
+				return err
+			}
+			if err := db.SaveProjectProfile(cmd.Context(), profile); err != nil {
+				return fmt.Errorf("save project profile: %w", err)
+			}
+			if asJSON {
+				return printJSON(profile)
+			}
+			printProjectProfile(profile)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Project working directory")
+	cmd.Flags().StringVar(&projectEnv, "project-env", executor.ProjectEnvAuto, "Runtime env strategy: auto or raw")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment override for auto detection")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func projectDoctorCmd() *cobra.Command {
+	var resourceName, cwd, condaEnv string
+	var gpuIndex int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Validate a project profile and print the next submit command",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			res, err := db.GetResourceByName(cmd.Context(), resourceName)
+			if err != nil || res == nil {
+				return fmt.Errorf("resource %s not found", resourceName)
+			}
+			if cwd == "" {
+				cwd = res.RootDir
+			}
+			if condaEnv == "" {
+				condaEnv = res.CondaEnv
+			}
+
+			sshPool := executor.NewSSHPool(10 * time.Second)
+			loadSSHKeys(sshPool)
+			report := runDoctorChecks(cmd.Context(), sshPool, res, cwd, condaEnv, gpuIndex)
+			if report.Project != nil {
+				if err := db.SaveProjectProfile(cmd.Context(), report.Project); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", err)
+				}
+			}
+			if asJSON {
+				return printJSON(report)
+			}
+			printDoctorReport(report)
+			for _, check := range report.Checks {
+				if !check.OK && check.Severity != "warn" {
+					return fmt.Errorf("project doctor failed: %s", check.Name)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Project working directory")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment override for auto detection")
+	cmd.Flags().IntVar(&gpuIndex, "gpu-index", 0, "GPU index used in the recommended submit command")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func printProjectProfile(profile *store.ProjectProfile) {
+	fmt.Printf("cwd: %s\n", profile.Cwd)
+	fmt.Printf("env_strategy: %s\n", profile.EnvStrategy)
+	fmt.Printf("resolved_env: %s\n", profile.ResolvedEnv)
+	if profile.EnvName != "" {
+		fmt.Printf("env_name: %s\n", profile.EnvName)
+	}
+	fmt.Printf("resolved_cwd: %s\n", profile.ResolvedCwd)
+	if profile.Python != "" {
+		fmt.Printf("python: %s\n", profile.Python)
+	}
+	fmt.Printf("torch: %s\n", boolWord(profile.TorchOK))
+	fmt.Printf("cuda: %s\n", profile.CUDA)
+	printStringList("entrypoints", profile.Entrypoints)
+	printStringList("metrics", profile.Metrics)
+	printStringList("logs", profile.Logs)
+	printStringList("warnings", profile.Warnings)
+}
+
+func printStringList(label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Printf("%s:\n", label)
+	for _, value := range values {
+		fmt.Printf("  - %s\n", value)
+	}
+}
+
+func boolWord(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "unavailable"
 }
 
 // --- init ---
@@ -955,7 +1132,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 }
 
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv, kind string
+	var resource, name, cwd, condaEnv, projectEnv, kind string
 	var gpuIndex int
 	var shellMode, force bool
 	var logPaths, artifactPaths, metricPaths []string
@@ -999,6 +1176,7 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.Force = force
 			submitReq.Cwd = cwd
 			submitReq.CondaEnv = condaEnv
+			submitReq.ProjectEnv = projectEnv
 			submitReq.LogPaths = logPaths
 			submitReq.ArtifactPaths = artifactPaths
 			submitReq.MetricPaths = metricPaths
@@ -1036,6 +1214,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock, allow concurrent runs on same resource/GPU")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
+	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Runtime env strategy: auto or raw")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
@@ -1093,6 +1272,7 @@ func runListCmd() *cobra.Command {
 
 func runStatusCmd() *cobra.Command {
 	var asJSON bool
+	var short bool
 
 	cmd := &cobra.Command{
 		Use:   "status [run_id]",
@@ -1119,7 +1299,15 @@ func runStatusCmd() *cobra.Command {
 			}
 
 			if asJSON {
+				if short {
+					return printJSON(shortRunStatus(db, cmd.Context(), run))
+				}
 				return printJSON(run)
+			}
+
+			if short {
+				printShortRunStatus(db, cmd.Context(), run)
+				return nil
 			}
 
 			fmt.Printf("ID:        %s\n", run.ID)
@@ -1129,6 +1317,18 @@ func runStatusCmd() *cobra.Command {
 			fmt.Printf("Kind:      %s\n", run.Kind)
 			fmt.Printf("Command:   %s\n", run.Command)
 			fmt.Printf("CWD:       %s\n", run.Cwd)
+			if run.ProjectEnv != "" {
+				fmt.Printf("ProjectEnv:%s\n", run.ProjectEnv)
+			}
+			if run.ResolvedEnv != "" {
+				fmt.Printf("Resolved:  %s\n", run.ResolvedEnv)
+			}
+			if run.ResolvedPython != "" {
+				fmt.Printf("Python:    %s\n", run.ResolvedPython)
+			}
+			if run.ResolvedCwd != "" {
+				fmt.Printf("Run CWD:   %s\n", run.ResolvedCwd)
+			}
 			fmt.Printf("tmux:      %s\n", run.TmuxSession)
 			if run.GPUIndex >= 0 {
 				fmt.Printf("GPU:       %d\n", run.GPUIndex)
@@ -1147,11 +1347,98 @@ func runStatusCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&short, "short", false, "Show compact status and output paths")
 	return cmd
+}
+
+func shortRunStatus(db store.Store, ctx context.Context, run *store.Run) map[string]interface{} {
+	resourceName := run.ResourceID
+	if res, _ := db.GetResource(ctx, run.ResourceID); res != nil {
+		resourceName = res.Name
+	}
+	out := map[string]interface{}{
+		"id":              run.ID,
+		"name":            run.Name,
+		"resource":        resourceName,
+		"resource_id":     run.ResourceID,
+		"status":          run.Status,
+		"kind":            run.Kind,
+		"gpu_index":       run.GPUIndex,
+		"cwd":             run.Cwd,
+		"conda_env":       run.CondaEnv,
+		"project_env":     run.ProjectEnv,
+		"resolved_env":    run.ResolvedEnv,
+		"resolved_python": run.ResolvedPython,
+		"resolved_cwd":    run.ResolvedCwd,
+		"tmux":            run.TmuxSession,
+		"remote_run_dir":  run.RemoteRunDir,
+		"stdout":          strings.TrimRight(run.RemoteRunDir, "/") + "/logs/stdout.log",
+		"stderr":          strings.TrimRight(run.RemoteRunDir, "/") + "/logs/stderr.log",
+		"metrics":         tryJSONStringSlice(run.MetricPathsJSON),
+	}
+	if run.ExitCode.Valid {
+		out["exit_code"] = run.ExitCode.Int64
+	}
+	if run.StartedAt.Valid {
+		out["started_at"] = run.StartedAt.Time.Format(time.RFC3339)
+	}
+	if run.FinishedAt.Valid {
+		out["finished_at"] = run.FinishedAt.Time.Format(time.RFC3339)
+	}
+	return out
+}
+
+func printShortRunStatus(db store.Store, ctx context.Context, run *store.Run) {
+	status := shortRunStatus(db, ctx, run)
+	fmt.Printf("%s  %s  resource=%s", status["id"], status["status"], status["resource"])
+	if run.GPUIndex >= 0 {
+		fmt.Printf("  gpu=%d", run.GPUIndex)
+	}
+	if run.ExitCode.Valid {
+		fmt.Printf("  exit=%d", run.ExitCode.Int64)
+	}
+	fmt.Println()
+	if run.Name != "" {
+		fmt.Printf("name:   %s\n", run.Name)
+	}
+	if run.Cwd != "" {
+		fmt.Printf("cwd:    %s\n", run.Cwd)
+	}
+	if run.CondaEnv != "" {
+		fmt.Printf("env:    %s\n", run.CondaEnv)
+	}
+	if run.ResolvedEnv != "" {
+		fmt.Printf("resolved_env:    %s\n", run.ResolvedEnv)
+	}
+	if run.ResolvedPython != "" {
+		fmt.Printf("resolved_python: %s\n", run.ResolvedPython)
+	}
+	if run.ResolvedCwd != "" {
+		fmt.Printf("resolved_cwd:    %s\n", run.ResolvedCwd)
+	}
+	fmt.Printf("run_dir:%s\n", status["remote_run_dir"])
+	fmt.Printf("stdout: %s\n", status["stdout"])
+	fmt.Printf("stderr: %s\n", status["stderr"])
+	if metrics := tryJSONStringSlice(run.MetricPathsJSON); len(metrics) > 0 {
+		fmt.Printf("metrics:%s\n", strings.Join(metrics, ","))
+	}
+}
+
+func tryJSONStringSlice(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func runLogsCmd() *cobra.Command {
 	var lastN int
+	var source string
+	var noFollow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [run_id]",
@@ -1176,9 +1463,13 @@ func runLogsCmd() *cobra.Command {
 
 			exec := executor.NewExecutor(sshPool, db)
 
-			if run.Status != store.RunStatusRunning {
+			if source == "" {
+				source = "stdout"
+			}
+
+			if run.Status != store.RunStatusRunning || noFollow {
 				// One-shot read
-				lines, err := exec.GetLogSnapshot(cmd.Context(), args[0], "stdout", lastN)
+				lines, err := exec.GetLogSnapshot(cmd.Context(), args[0], source, lastN)
 				if err != nil {
 					return err
 				}
@@ -1189,8 +1480,8 @@ func runLogsCmd() *cobra.Command {
 			}
 
 			// Tail mode
-			fmt.Printf("Tailing logs for %s (Ctrl+C to stop)...\n", args[0])
-			ch, err := exec.TailLogs(cmd.Context(), args[0], "stdout", lastN)
+			fmt.Printf("Tailing %s logs for %s (Ctrl+C to stop)...\n", source, args[0])
+			ch, err := exec.TailLogs(cmd.Context(), args[0], source, lastN)
 			if err != nil {
 				return err
 			}
@@ -1202,6 +1493,9 @@ func runLogsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().IntVar(&lastN, "last", 200, "Number of last lines to show")
+	cmd.Flags().IntVar(&lastN, "tail", 200, "Number of last lines to show")
+	cmd.Flags().StringVar(&source, "source", "stdout", "Log source: stdout or stderr")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print a snapshot and exit instead of following running logs")
 	return cmd
 }
 
@@ -1350,7 +1644,7 @@ func runMarksCmd() *cobra.Command {
 // --- exec ---
 
 func execCmd() *cobra.Command {
-	var resourceName, cwd string
+	var resourceName, cwd, projectEnv, condaEnv string
 	var timeout int
 	var asJSON, shellMode, dryRun, force bool
 
@@ -1379,6 +1673,7 @@ Subcommands:
 
 Examples:
   aexp exec --resource mu -- 'nvidia-smi'
+  aexp exec --resource mu --cwd /workspace/project --project-env auto -- 'python -V'
   aexp exec --resource mu -- bash -lc 'cd /workspace && python script.py'
   aexp exec --resource mu --cwd /workspace -- 'ls outputs/'
   aexp exec --resource mu --shell -- echo start '&&' nvidia-smi
@@ -1390,6 +1685,9 @@ Examples:
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			command := buildExecCommand(args, shellMode)
+			if projectEnv != "" && projectEnv != "raw" && projectEnv != "auto" {
+				return fmt.Errorf("--project-env must be raw or auto")
+			}
 
 			// Long-running detection
 			if isLong, reason := executor.DetectLongRunningCmd(command); isLong {
@@ -1410,6 +1708,12 @@ Examples:
 				fmt.Printf("[dry-run] Resource: %s\n", resourceName)
 				if cwd != "" {
 					fmt.Printf("[dry-run] Cwd: %s\n", cwd)
+				}
+				if projectEnv != "" {
+					fmt.Printf("[dry-run] Project env: %s\n", projectEnv)
+				}
+				if condaEnv != "" {
+					fmt.Printf("[dry-run] Conda env override: %s\n", condaEnv)
 				}
 				fmt.Printf("[dry-run] Timeout: %ds\n", timeout)
 				return nil
@@ -1432,6 +1736,8 @@ Examples:
 				ResourceID: res.ID,
 				Command:    command,
 				Cwd:        cwd,
+				ProjectEnv: projectEnv,
+				CondaEnv:   condaEnv,
 				TimeoutSec: timeout,
 				Actor:      "cli",
 			})
@@ -1458,6 +1764,8 @@ Examples:
 
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory on remote")
+	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Runtime env strategy for exec: raw or auto (.venv, then conda_env, then raw shell)")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment override for --project-env auto")
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds (max 300)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (stdout/stderr/exit_code)")
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Join command arguments as a raw remote shell string")

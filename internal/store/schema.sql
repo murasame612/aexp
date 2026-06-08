@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS runs (
     program             TEXT DEFAULT '',
     args_json           TEXT DEFAULT '[]',
     conda_env           TEXT DEFAULT '',
+    project_env         TEXT DEFAULT '',
+    resolved_env        TEXT DEFAULT '',
+    resolved_python     TEXT DEFAULT '',
+    resolved_cwd        TEXT DEFAULT '',
     env_json            TEXT DEFAULT '{}',
     log_paths_json      TEXT DEFAULT '[]',
     artifact_paths_json TEXT DEFAULT '[]',
@@ -43,6 +47,28 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at          DATETIME,
     finished_at         DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS project_profiles (
+    resource_id       TEXT NOT NULL REFERENCES resources(id),
+    resource_name     TEXT DEFAULT '',
+    cwd               TEXT NOT NULL,
+    env_strategy      TEXT DEFAULT 'auto',
+    resolved_env      TEXT DEFAULT '',
+    env_name          TEXT DEFAULT '',
+    python            TEXT DEFAULT '',
+    resolved_cwd      TEXT DEFAULT '',
+    command_prefix    TEXT DEFAULT '',
+    python_ok         INTEGER NOT NULL DEFAULT 0,
+    torch_ok          INTEGER NOT NULL DEFAULT 0,
+    cuda              TEXT DEFAULT 'unknown',
+    cuda_ok           INTEGER NOT NULL DEFAULT 0,
+    entrypoints_json  TEXT DEFAULT '[]',
+    metrics_json      TEXT DEFAULT '[]',
+    logs_json         TEXT DEFAULT '[]',
+    warnings_json     TEXT DEFAULT '[]',
+    updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (resource_id, cwd)
 );
 
 CREATE TABLE IF NOT EXISTS resource_snapshots (
