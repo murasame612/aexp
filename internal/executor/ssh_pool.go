@@ -62,7 +62,7 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 	client, ok := p.conns[connKey]
 	p.mu.RUnlock()
 
-	if ok && isAlive(client) {
+	if ok && p.isAliveContext(ctx, client) {
 		return client, nil
 	}
 
@@ -70,7 +70,7 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if client, ok = p.conns[connKey]; ok && isAlive(client) {
+	if client, ok = p.conns[connKey]; ok && p.isAliveContext(ctx, client) {
 		return client, nil
 	}
 
@@ -248,9 +248,27 @@ func (p *SSHPool) RemoveByHost(host string, port int) {
 	p.mu.Unlock()
 }
 
-func isAlive(client *ssh.Client) bool {
-	_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-	return err == nil
+func (p *SSHPool) isAliveContext(ctx context.Context, client *ssh.Client) bool {
+	timeout := p.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		return err == nil
+	case <-checkCtx.Done():
+		_ = client.Close()
+		return false
+	}
 }
 
 // Exec runs a command and returns stdout+stderr as strings.
@@ -279,6 +297,11 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 	wg.Add(2)
 	go func() { defer wg.Done(); io.Copy(&outBuf, stdout) }()
 	go func() { defer wg.Done(); io.Copy(&errBuf, stderr) }()
+	copyDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(copyDone)
+	}()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -290,10 +313,13 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGINT)
 		_ = session.Close()
-		wg.Wait()
+		select {
+		case <-copyDone:
+		case <-time.After(500 * time.Millisecond):
+		}
 		return outBuf.String(), errBuf.String(), ctx.Err()
 	}
-	wg.Wait()
+	<-copyDone
 
 	return outBuf.String(), errBuf.String(), err
 }

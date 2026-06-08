@@ -438,7 +438,15 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	if run == nil {
 		return fmt.Errorf("run %s not found", runID)
 	}
+	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+		if refreshed, refreshErr := e.CheckRunStatus(ctx, runID); refreshErr == nil && refreshed != nil {
+			run = refreshed
+		}
+	}
 	if run.Status != store.RunStatusRunning && run.Status != store.RunStatusStarting {
+		if isFinishedRunStatus(run.Status) {
+			return fmt.Errorf("run %s already finished (status: %s)", runID, run.Status)
+		}
 		return fmt.Errorf("run %s is not running (status: %s)", runID, run.Status)
 	}
 
@@ -491,6 +499,13 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	})
 
 	return nil
+}
+
+func isFinishedRunStatus(status string) bool {
+	return status == store.RunStatusSucceeded ||
+		status == store.RunStatusFailed ||
+		status == store.RunStatusCancelled ||
+		status == store.RunStatusLost
 }
 
 // ExecRequest is a one-shot remote command (not a Run).
@@ -618,20 +633,24 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 		StdoutTail: stdoutTail,
 		StderrTail: stderrTail,
 	}
-	if saveErr := e.store.SaveExecEvent(ctx, event); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to save exec event: %v\n", saveErr)
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer persistCancel()
+	if saveErr := e.store.SaveExecEvent(persistCtx, event); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: remote command completed, but local exec audit persistence failed: %v\n", saveErr)
 	}
 
 	// Also keep legacy agent_events audit (cross-reference via event_id)
 	inputJSON := fmt.Sprintf(`{"resource":"%s","command":%s}`, resource.Name, mustJSON(req.Command))
 	outputJSON := fmt.Sprintf(`{"exit_code":%d,"duration_ms":%d,"event_id":"%s"}`, exitCode, duration.Milliseconds(), eventID)
-	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
+	if saveErr := e.store.SaveAgentEvent(persistCtx, &store.AgentEvent{
 		RunID:      "",
 		Actor:      req.Actor,
 		ToolName:   "exec",
 		InputJSON:  inputJSON,
 		OutputJSON: outputJSON,
-	})
+	}); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: remote command completed, but legacy local agent audit persistence failed: %v\n", saveErr)
+	}
 
 	return &ExecResult{
 		Stdout:     stdout,

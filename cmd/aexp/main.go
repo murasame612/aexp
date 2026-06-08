@@ -54,6 +54,7 @@ Agent workflow:
 		agentCmd(),
 		doctorCmd(),
 		projectCmd(),
+		syncCmd(),
 		serveCmd(),
 		initCmd(),
 		resourceCmd(),
@@ -683,6 +684,516 @@ func boolWord(ok bool) string {
 	return "unavailable"
 }
 
+// --- sync ---
+
+type syncPlan struct {
+	Resource      string   `json:"resource"`
+	Source        string   `json:"source,omitempty"`
+	Target        string   `json:"target,omitempty"`
+	RemoteTarget  string   `json:"remote_target,omitempty"`
+	LocalRsyncOK  bool     `json:"local_rsync_ok"`
+	RemoteRsyncOK bool     `json:"remote_rsync_ok"`
+	TargetOK      bool     `json:"target_ok"`
+	WritableOK    bool     `json:"writable_ok"`
+	Mode          string   `json:"mode"`
+	Command       []string `json:"command,omitempty"`
+	Recommended   []string `json:"recommended,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
+}
+
+func syncCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Sync project code/data with a resource using rsync",
+		Long: `Sync code or data with a registered resource using rsync-style source/target arguments.
+
+Typical flow:
+  aexp sync doctor --resource mu ./ /remote/project/
+  aexp sync push --resource mu ./ /remote/project/
+  aexp sync pull --resource mu /remote/results/ ./results/
+
+If the remote cannot be reached by local rsync but can reach another source,
+use remote-pull:
+  aexp sync remote-pull --resource mu ziwu@source:/path/project/ /remote/project/`,
+	}
+	cmd.AddCommand(syncDoctorCmd())
+	cmd.AddCommand(syncPushCmd())
+	cmd.AddCommand(syncPullCmd())
+	cmd.AddCommand(syncRemotePullCmd())
+	return cmd
+}
+
+func syncDoctorCmd() *cobra.Command {
+	var resourceName string
+	var asJSON bool
+	var timeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "doctor [source] [target]",
+		Short: "Check rsync availability and print recommended sync commands",
+		Args:  cobra.RangeArgs(0, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, pool, cleanup, err := syncResourcePool(resourceName)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			source, target := "", ""
+			if len(args) > 0 {
+				source = args[0]
+			}
+			if len(args) > 1 {
+				target = args[1]
+			}
+			plan := buildSyncPlan(cmd.Context(), pool, res, source, target, timeoutSec, !asJSON)
+			if asJSON {
+				return printJSON(plan)
+			}
+			printSyncPlan(plan)
+			if !plan.LocalRsyncOK && !plan.RemoteRsyncOK {
+				return fmt.Errorf("rsync unavailable locally and remotely")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 20, "Timeout per remote check in seconds")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func syncPushCmd() *cobra.Command {
+	var resourceName string
+	var dryRun, deleteExtra bool
+	var excludes []string
+	var extraArgs []string
+	var timeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "push [flags] <local-source> <remote-target-dir>",
+		Short: "Push local files to a resource with rsync",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, exec, cleanup, err := syncResourceExecutor(resourceName)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := osexec.LookPath("rsync"); err != nil {
+				return fmt.Errorf("local rsync not found: %w", err)
+			}
+			if err := checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20); err != nil {
+				return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
+			}
+			source := expandPath(args[0])
+			target := resolveSyncRemotePath(res, args[1])
+			if !dryRun {
+				if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
+					return err
+				}
+			}
+			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, excludes, extraArgs)
+			rsyncArgs = append(rsyncArgs, source, remoteRsyncSpec(res, target))
+			if dryRun {
+				fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
+				return nil
+			}
+			return runLocalRsync(cmd.Context(), timeoutSec, rsyncArgs)
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the rsync command without running it")
+	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
+	cmd.Flags().StringSliceVar(&extraArgs, "rsync-arg", nil, "Extra raw rsync argument, repeatable")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func syncPullCmd() *cobra.Command {
+	var resourceName string
+	var dryRun, deleteExtra bool
+	var excludes []string
+	var extraArgs []string
+	var timeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "pull [flags] <remote-source> <local-target-dir>",
+		Short: "Pull files from a resource with rsync",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, _, cleanup, err := syncResourceExecutor(resourceName)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := osexec.LookPath("rsync"); err != nil {
+				return fmt.Errorf("local rsync not found: %w", err)
+			}
+			source := resolveSyncRemotePath(res, args[0])
+			target := expandPath(args[1])
+			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, excludes, extraArgs)
+			rsyncArgs = append(rsyncArgs, remoteRsyncSpec(res, source), target)
+			if dryRun {
+				fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
+				return nil
+			}
+			return runLocalRsync(cmd.Context(), timeoutSec, rsyncArgs)
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the rsync command without running it")
+	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
+	cmd.Flags().StringSliceVar(&extraArgs, "rsync-arg", nil, "Extra raw rsync argument, repeatable")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func syncRemotePullCmd() *cobra.Command {
+	var resourceName string
+	var dryRun, deleteExtra bool
+	var excludes []string
+	var extraArgs []string
+	var timeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "remote-pull [flags] <rsync-source> <remote-target-dir>",
+		Short: "Run rsync on the remote resource so it pulls from another source",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, exec, cleanup, err := syncResourceExecutor(resourceName)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			target := resolveSyncRemotePath(res, args[1])
+			if !dryRun {
+				if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
+					return err
+				}
+			}
+			remoteArgs := []string{"-avz", "--progress"}
+			if dryRun {
+				remoteArgs = append(remoteArgs, "--dry-run")
+			}
+			if deleteExtra {
+				remoteArgs = append(remoteArgs, "--delete")
+			}
+			for _, pattern := range excludes {
+				remoteArgs = append(remoteArgs, "--exclude", pattern)
+			}
+			remoteArgs = append(remoteArgs, extraArgs...)
+			remoteArgs = append(remoteArgs, args[0], target)
+			remoteCmd := joinShellArgs(append([]string{"rsync"}, remoteArgs...))
+			if dryRun {
+				fmt.Println(remoteCmd)
+				return nil
+			}
+			req := executor.ExecRequest{
+				ResourceID: res.ID,
+				Command:    remoteCmd,
+				TimeoutSec: timeoutSec,
+				Actor:      "cli",
+			}
+			result, err := exec.Exec(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+			if result.Stdout != "" {
+				fmt.Print(result.Stdout)
+			}
+			if result.Stderr != "" {
+				fmt.Fprint(os.Stderr, result.Stderr)
+			}
+			if result.ExitCode != 0 {
+				return fmt.Errorf("remote rsync exit code %d", result.ExitCode)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the remote rsync command without running it")
+	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
+	cmd.Flags().StringSliceVar(&extraArgs, "rsync-arg", nil, "Extra raw rsync argument, repeatable")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = default exec timeout)")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+func syncResourcePool(resourceName string) (*store.Resource, *executor.SSHPool, func(), error) {
+	db := openDB()
+	cleanup := func() { db.Close() }
+	res, err := db.GetResourceByName(context.Background(), resourceName)
+	if err != nil || res == nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("resource %s not found", resourceName)
+	}
+	sshPool := executor.NewSSHPool(10 * time.Second)
+	loadSSHKeys(sshPool)
+	return res, sshPool, cleanup, nil
+}
+
+func syncResourceExecutor(resourceName string) (*store.Resource, *executor.Executor, func(), error) {
+	db := openDB()
+	cleanup := func() { db.Close() }
+	res, err := db.GetResourceByName(context.Background(), resourceName)
+	if err != nil || res == nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("resource %s not found", resourceName)
+	}
+	sshPool := executor.NewSSHPool(10 * time.Second)
+	loadSSHKeys(sshPool)
+	return res, executor.NewExecutor(sshPool, db), cleanup, nil
+}
+
+func buildSyncPlan(ctx context.Context, pool *executor.SSHPool, res *store.Resource, source, target string, timeoutSec int, progress bool) syncPlan {
+	plan := syncPlan{
+		Resource:     res.Name,
+		Source:       source,
+		Target:       target,
+		RemoteTarget: resolveSyncRemotePath(res, target),
+		Mode:         "push",
+	}
+	syncProgress(progress, "checking local rsync...")
+	if _, err := osexec.LookPath("rsync"); err == nil {
+		plan.LocalRsyncOK = true
+		syncProgress(progress, "checking local rsync... ok")
+	} else {
+		plan.Warnings = append(plan.Warnings, "local rsync not found; use remote-pull if the resource can reach a source host")
+		syncProgress(progress, "checking local rsync... missing")
+	}
+	if source != "" && !strings.Contains(source, ":") {
+		syncProgress(progress, "checking local source...")
+		if _, err := os.Stat(expandPath(source)); err != nil {
+			plan.Warnings = append(plan.Warnings, "local source not accessible: "+err.Error())
+			syncProgress(progress, "checking local source... unavailable")
+		} else {
+			syncProgress(progress, "checking local source... ok")
+		}
+	}
+	syncProgress(progress, "checking remote rsync...")
+	out, stderr, err := runSyncRemoteCheck(ctx, pool, res, "command -v rsync >/dev/null 2>&1 && rsync --version | head -1", timeoutSec)
+	if err == nil {
+		plan.RemoteRsyncOK = true
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = "ok"
+		}
+		syncProgress(progress, "checking remote rsync... "+detail)
+	} else {
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = err.Error()
+		}
+		plan.Warnings = append(plan.Warnings, "remote rsync unavailable: "+detail)
+		syncProgress(progress, "checking remote rsync... unavailable")
+	}
+	if target != "" {
+		syncProgress(progress, "checking remote target...")
+		if err := checkRemoteTargetWritable(ctx, pool, res, plan.RemoteTarget, timeoutSec); err == nil {
+			plan.TargetOK = true
+			plan.WritableOK = true
+			syncProgress(progress, "checking remote target... writable")
+		} else {
+			plan.Warnings = append(plan.Warnings, "remote target not writable: "+err.Error())
+			syncProgress(progress, "checking remote target... not writable")
+		}
+	}
+	if plan.LocalRsyncOK && target != "" && source != "" {
+		args := buildRsyncArgs(res, true, false, nil, nil)
+		args = append(args, source, remoteRsyncSpec(res, plan.RemoteTarget))
+		plan.Command = append([]string{"rsync"}, args...)
+		plan.Recommended = append(plan.Recommended, "aexp sync push --resource "+cliShellQuote(res.Name)+" "+cliShellQuote(source)+" "+cliShellQuote(target))
+	}
+	if plan.RemoteRsyncOK && target != "" {
+		plan.Recommended = append(plan.Recommended, "aexp sync remote-pull --resource "+cliShellQuote(res.Name)+" <rsync-source> "+cliShellQuote(target))
+	}
+	return plan
+}
+
+func syncProgress(enabled bool, msg string) {
+	if enabled {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+}
+
+func printSyncPlan(plan syncPlan) {
+	fmt.Println("AEXP Sync Doctor")
+	fmt.Println()
+	fmt.Printf("resource:     %s\n", plan.Resource)
+	if plan.Source != "" {
+		fmt.Printf("source:       %s\n", plan.Source)
+	}
+	if plan.Target != "" {
+		fmt.Printf("target:       %s\n", plan.Target)
+		fmt.Printf("remote_path:  %s\n", plan.RemoteTarget)
+	}
+	fmt.Printf("local_rsync:  %s\n", boolWord(plan.LocalRsyncOK))
+	fmt.Printf("remote_rsync: %s\n", boolWord(plan.RemoteRsyncOK))
+	if plan.Target != "" {
+		fmt.Printf("target_write: %s\n", boolWord(plan.WritableOK))
+	}
+	if len(plan.Warnings) > 0 {
+		fmt.Println()
+		fmt.Println("warnings:")
+		for _, warning := range plan.Warnings {
+			fmt.Printf("- %s\n", warning)
+		}
+	}
+	if len(plan.Recommended) > 0 {
+		fmt.Println()
+		fmt.Println("recommended:")
+		for _, command := range plan.Recommended {
+			fmt.Println(command)
+		}
+	}
+}
+
+func checkRemoteTargetWritable(ctx context.Context, pool *executor.SSHPool, res *store.Resource, target string, timeoutSec int) error {
+	if target == "" {
+		return fmt.Errorf("remote target is required")
+	}
+	script := "target=" + cliShellQuote(target) + `; if [ -d "$target" ]; then test -w "$target"; else parent=$(dirname "$target"); test -d "$parent" && test -w "$parent"; fi`
+	_, stderr, err := runSyncRemoteCheck(ctx, pool, res, script, timeoutSec)
+	if err != nil {
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("target or parent directory is not writable: %s", detail)
+	}
+	return nil
+}
+
+func runSyncRemoteCheck(ctx context.Context, pool *executor.SSHPool, res *store.Resource, command string, timeoutSec int) (string, string, error) {
+	if timeoutSec <= 0 {
+		timeoutSec = 20
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+	return pool.Exec(checkCtx, res.Host, res.Port, res.User, res.AuthRef, command, res.SocksProxy, res.ProxyCommand)
+}
+
+func checkRemoteRsyncViaExec(ctx context.Context, exec *executor.Executor, res *store.Resource, timeoutSec int) error {
+	result, err := exec.Exec(ctx, executor.ExecRequest{
+		ResourceID: res.ID,
+		Command:    "command -v rsync >/dev/null 2>&1",
+		TimeoutSec: timeoutSec,
+		Actor:      "cli",
+	})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = "rsync not found on remote"
+		}
+		return fmt.Errorf("%s", detail)
+	}
+	return nil
+}
+
+func ensureRemoteDir(ctx context.Context, exec *executor.Executor, res *store.Resource, target string) error {
+	if target == "" {
+		return fmt.Errorf("remote target is required")
+	}
+	result, err := exec.Exec(ctx, executor.ExecRequest{
+		ResourceID: res.ID,
+		Command:    "mkdir -p " + cliShellQuote(target) + " && test -w " + cliShellQuote(target),
+		TimeoutSec: 20,
+		Actor:      "cli",
+	})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("mkdir/test failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+func buildRsyncArgs(res *store.Resource, dryRun bool, deleteExtra bool, excludes []string, extraArgs []string) []string {
+	args := []string{"-avz", "--progress", "-e", rsyncSSHCommand(res)}
+	if dryRun {
+		args = append(args, "--dry-run")
+	}
+	if deleteExtra {
+		args = append(args, "--delete")
+	}
+	for _, pattern := range excludes {
+		args = append(args, "--exclude", pattern)
+	}
+	args = append(args, extraArgs...)
+	return args
+}
+
+func rsyncSSHCommand(res *store.Resource) string {
+	parts := []string{
+		"ssh",
+		"-p", fmt.Sprintf("%d", res.Port),
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no",
+	}
+	if res.AuthRef != "" {
+		parts = append(parts, "-i", expandPath(res.AuthRef))
+	}
+	if res.ProxyCommand != "" {
+		parts = append(parts, "-o", "ProxyCommand="+res.ProxyCommand)
+	} else if res.SocksProxy != "" {
+		parts = append(parts, "-o", "ProxyCommand=nc -X 5 -x "+res.SocksProxy+" %h %p")
+	}
+	return joinShellArgs(parts)
+}
+
+func remoteRsyncSpec(res *store.Resource, remotePath string) string {
+	return res.User + "@" + res.Host + ":" + remotePath
+}
+
+func resolveSyncRemotePath(res *store.Resource, target string) string {
+	if target == "" {
+		return res.RootDir
+	}
+	if strings.Contains(target, ":") {
+		parts := strings.SplitN(target, ":", 2)
+		target = parts[1]
+	}
+	if strings.HasPrefix(target, "/") {
+		return target
+	}
+	return strings.TrimRight(res.RootDir, "/") + "/" + target
+}
+
+func runLocalRsync(ctx context.Context, timeoutSec int, args []string) error {
+	if timeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+	}
+	command := osexec.CommandContext(ctx, "rsync", args...)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("rsync failed: %w", err)
+	}
+	return nil
+}
+
+func joinShellArgs(args []string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, cliShellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
 // --- init ---
 
 func initCmd() *cobra.Command {
@@ -1225,6 +1736,8 @@ elsewhere, register the resource with that root_dir first.
 func runListCmd() *cobra.Command {
 	var status, resource string
 	var asJSON bool
+	var noRefresh bool
+	var refreshTimeoutSec int
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -1246,6 +1759,20 @@ func runListCmd() *cobra.Command {
 				return err
 			}
 
+			cached := map[string]bool{}
+			if !noRefresh {
+				runs, cached = refreshActiveRuns(cmd.Context(), db, runs, refreshTimeoutSec)
+				if status != "" {
+					filtered := runs[:0]
+					for _, r := range runs {
+						if r.Status == status {
+							filtered = append(filtered, r)
+						}
+					}
+					runs = filtered
+				}
+			}
+
 			if asJSON {
 				return printJSON(runs)
 			}
@@ -1256,8 +1783,12 @@ func runListCmd() *cobra.Command {
 				if name == "" {
 					name = "-"
 				}
+				displayStatus := r.Status
+				if cached[r.ID] {
+					displayStatus += " (cached)"
+				}
 				fmt.Printf("%-15s %-25s %-20s %-12s %s\n",
-					r.ID, truncStr(name, 25), r.ResourceID, r.Status, truncStr(r.Command, 60))
+					r.ID, truncStr(name, 25), r.ResourceID, displayStatus, truncStr(r.Command, 60))
 			}
 			return nil
 		},
@@ -1266,8 +1797,44 @@ func runListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&status, "status", "", "Filter by status")
 	cmd.Flags().StringVar(&resource, "resource", "", "Filter by resource name")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&noRefresh, "no-refresh", false, "Do not refresh running/starting runs before listing")
+	cmd.Flags().IntVar(&refreshTimeoutSec, "refresh-timeout", 5, "Timeout per running/starting status refresh in seconds")
 
 	return cmd
+}
+
+func refreshActiveRuns(ctx context.Context, db store.Store, runs []store.Run, timeoutSec int) ([]store.Run, map[string]bool) {
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	needsRefresh := false
+	for _, r := range runs {
+		if r.Status == store.RunStatusRunning || r.Status == store.RunStatusStarting {
+			needsRefresh = true
+			break
+		}
+	}
+	cached := map[string]bool{}
+	if !needsRefresh {
+		return runs, cached
+	}
+	sshPool := executor.NewSSHPool(10 * time.Second)
+	loadSSHKeys(sshPool)
+	exec := executor.NewExecutor(sshPool, db)
+	for i := range runs {
+		if runs[i].Status != store.RunStatusRunning && runs[i].Status != store.RunStatusStarting {
+			continue
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		refreshed, err := exec.CheckRunStatus(checkCtx, runs[i].ID)
+		cancel()
+		if err != nil || refreshed == nil {
+			cached[runs[i].ID] = true
+			continue
+		}
+		runs[i] = *refreshed
+	}
+	return runs, cached
 }
 
 func runStatusCmd() *cobra.Command {
