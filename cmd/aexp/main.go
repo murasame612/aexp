@@ -767,7 +767,8 @@ func syncDoctorCmd() *cobra.Command {
 
 func syncPushCmd() *cobra.Command {
 	var resourceName string
-	var dryRun, deleteExtra bool
+	var dryRun, deleteExtra, noDefaultExcludes bool
+	var profile string
 	var excludes []string
 	var extraArgs []string
 	var timeoutSec int
@@ -782,22 +783,27 @@ func syncPushCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			if _, err := osexec.LookPath("rsync"); err != nil {
-				return fmt.Errorf("local rsync not found: %w", err)
-			}
-			if err := checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20); err != nil {
-				return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
-			}
 			source := expandPath(args[0])
 			target := resolveSyncRemotePath(res, args[1])
+			resolvedExcludes, excludeSources, err := resolveSyncExcludes(source, profile, noDefaultExcludes, excludes)
+			if err != nil {
+				return err
+			}
 			if !dryRun {
+				if _, err := osexec.LookPath("rsync"); err != nil {
+					return fmt.Errorf("local rsync not found: %w", err)
+				}
+				if err := checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20); err != nil {
+					return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
+				}
 				if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
 					return err
 				}
 			}
-			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, excludes, extraArgs)
+			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, resolvedExcludes, extraArgs)
 			rsyncArgs = append(rsyncArgs, source, remoteRsyncSpec(res, target))
 			if dryRun {
+				printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
 				fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
 				return nil
 			}
@@ -807,6 +813,8 @@ func syncPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the rsync command without running it")
 	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().StringVar(&profile, "profile", "code", "Exclude profile: code, code-data, all")
+	cmd.Flags().BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable profile excludes and .aexpignore; explicit --exclude still applies")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
 	cmd.Flags().StringSliceVar(&extraArgs, "rsync-arg", nil, "Extra raw rsync argument, repeatable")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
@@ -831,8 +839,10 @@ func syncPullCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			if _, err := osexec.LookPath("rsync"); err != nil {
-				return fmt.Errorf("local rsync not found: %w", err)
+			if !dryRun {
+				if _, err := osexec.LookPath("rsync"); err != nil {
+					return fmt.Errorf("local rsync not found: %w", err)
+				}
 			}
 			source := resolveSyncRemotePath(res, args[0])
 			target := expandPath(args[1])
@@ -857,7 +867,8 @@ func syncPullCmd() *cobra.Command {
 
 func syncRemotePullCmd() *cobra.Command {
 	var resourceName string
-	var dryRun, deleteExtra bool
+	var dryRun, deleteExtra, noDefaultExcludes bool
+	var profile string
 	var excludes []string
 	var extraArgs []string
 	var timeoutSec int
@@ -873,6 +884,10 @@ func syncRemotePullCmd() *cobra.Command {
 			}
 			defer cleanup()
 			target := resolveSyncRemotePath(res, args[1])
+			resolvedExcludes, excludeSources, err := resolveSyncExcludes(".", profile, noDefaultExcludes, excludes)
+			if err != nil {
+				return err
+			}
 			if !dryRun {
 				if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
 					return err
@@ -885,13 +900,14 @@ func syncRemotePullCmd() *cobra.Command {
 			if deleteExtra {
 				remoteArgs = append(remoteArgs, "--delete")
 			}
-			for _, pattern := range excludes {
+			for _, pattern := range resolvedExcludes {
 				remoteArgs = append(remoteArgs, "--exclude", pattern)
 			}
 			remoteArgs = append(remoteArgs, extraArgs...)
 			remoteArgs = append(remoteArgs, args[0], target)
 			remoteCmd := joinShellArgs(append([]string{"rsync"}, remoteArgs...))
 			if dryRun {
+				printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
 				fmt.Println(remoteCmd)
 				return nil
 			}
@@ -920,6 +936,8 @@ func syncRemotePullCmd() *cobra.Command {
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the remote rsync command without running it")
 	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().StringVar(&profile, "profile", "code", "Exclude profile: code, code-data, all")
+	cmd.Flags().BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable profile excludes and local .aexpignore; explicit --exclude still applies")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
 	cmd.Flags().StringSliceVar(&extraArgs, "rsync-arg", nil, "Extra raw rsync argument, repeatable")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = default exec timeout)")
@@ -1118,6 +1136,138 @@ func ensureRemoteDir(ctx context.Context, exec *executor.Executor, res *store.Re
 		return fmt.Errorf("mkdir/test failed: %s", strings.TrimSpace(result.Stderr))
 	}
 	return nil
+}
+
+func resolveSyncExcludes(source string, profile string, noDefault bool, explicit []string) ([]string, []string, error) {
+	var excludes []string
+	var sources []string
+	if profile == "" {
+		profile = "code"
+	}
+	profile = strings.ToLower(strings.TrimSpace(profile))
+
+	if !noDefault {
+		profileExcludes, err := syncProfileExcludes(profile)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(profileExcludes) > 0 {
+			excludes = append(excludes, profileExcludes...)
+			sources = append(sources, "profile:"+profile)
+		}
+		if profile != "all" && profile != "none" {
+			if ignorePath := syncIgnorePath(source); ignorePath != "" {
+				ignoreExcludes, err := readSyncIgnore(ignorePath)
+				if err != nil {
+					return nil, nil, err
+				}
+				if len(ignoreExcludes) > 0 {
+					excludes = append(excludes, ignoreExcludes...)
+					sources = append(sources, ignorePath)
+				}
+			}
+		}
+	}
+
+	if len(explicit) > 0 {
+		excludes = append(excludes, explicit...)
+		sources = append(sources, "flags")
+	}
+	return dedupeStrings(excludes), sources, nil
+}
+
+func syncProfileExcludes(profile string) ([]string, error) {
+	switch profile {
+	case "all", "none":
+		return nil, nil
+	case "code", "code-data":
+		return append([]string(nil), defaultSyncExcludes...), nil
+	default:
+		return nil, fmt.Errorf("unknown sync profile %q (expected code, code-data, or all)", profile)
+	}
+}
+
+var defaultSyncExcludes = []string{
+	".venv/",
+	"__pycache__/",
+	"*.pyc",
+	".ipynb_checkpoints/",
+	".DS_Store",
+	".aexp/",
+	"logs/",
+	"wandb/",
+	"tensorboard/",
+	"runs/detect/",
+	"runs/train/",
+	"runs/val/",
+	"runs/predict/",
+	"runs/**/weights/",
+}
+
+func syncIgnorePath(source string) string {
+	if source == "" || strings.Contains(source, ":") {
+		return ""
+	}
+	path := expandPath(source)
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	if !info.IsDir() {
+		path = filepath.Dir(path)
+	}
+	ignorePath := filepath.Join(path, ".aexpignore")
+	if _, err := os.Stat(ignorePath); err != nil {
+		return ""
+	}
+	return ignorePath
+}
+
+func readSyncIgnore(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read .aexpignore: %w", err)
+	}
+	var excludes []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		excludes = append(excludes, line)
+	}
+	return excludes, nil
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func printSyncDryRunExcludes(profile string, excludes []string, sources []string) {
+	if profile == "" {
+		profile = "code"
+	}
+	fmt.Printf("# aexp sync profile: %s\n", profile)
+	if len(sources) > 0 {
+		fmt.Printf("# aexp sync exclude sources: %s\n", strings.Join(sources, ", "))
+	}
+	fmt.Println("# aexp sync excludes:")
+	if len(excludes) == 0 {
+		fmt.Println("#   (none)")
+		return
+	}
+	for _, pattern := range excludes {
+		fmt.Printf("#   %s\n", pattern)
+	}
 }
 
 func buildRsyncArgs(res *store.Resource, dryRun bool, deleteExtra bool, excludes []string, extraArgs []string) []string {
