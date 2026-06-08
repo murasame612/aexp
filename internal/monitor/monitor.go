@@ -183,8 +183,12 @@ func (m *Manager) pollLoop(ctx context.Context, r *store.Resource) {
 
 func (m *Manager) poll(ctx context.Context, r *store.Resource) {
 	snap, err := m.PollResource(ctx, r)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		m.logger.Warn("poll failed", "resource", r.Name, "error", err)
+		m.pool.RemoveByHost(r.Host, r.Port)
 		if r.Status != store.ResourceStatusUnreachable {
 			r.Status = store.ResourceStatusUnreachable
 			m.store.UpdateResource(ctx, r)

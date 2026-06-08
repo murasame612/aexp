@@ -506,12 +506,18 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 		update.Tags = existing.Tags
 	}
 	if !hasField("status") {
-		update.Status = existing.Status
+		update.Status = store.ResourceStatusUnknown
 	}
 
 	if err := s.store.UpdateResource(r.Context(), &update); err != nil {
 		writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
 		return
+	}
+	if s.executor != nil && s.executor.Pool() != nil {
+		s.executor.Pool().RemoveByHost(existing.Host, existing.Port)
+		if existing.Host != update.Host || existing.Port != update.Port {
+			s.executor.Pool().RemoveByHost(update.Host, update.Port)
+		}
 	}
 	s.monitor.RemoveResource(id)
 	s.monitor.AddResource(&update)
@@ -635,11 +641,24 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit == 0 {
+	if limit <= 0 {
 		limit = 200
 	}
+	if limit > 10000 {
+		limit = 10000
+	}
 
-	lines, total, remote := s.fastLogLines(r.Context(), id, source, offset, limit)
+	var lines []store.LogLine
+	var total int
+	var remote bool
+	tailMode := parseBoolQuery(r.URL.Query().Get("tail"))
+	if tailMode && offset == 0 {
+		lines, total, remote = s.remoteLogLines(r.Context(), id, source, limit)
+	}
+	if !remote {
+		lines, total, remote = s.fastLogLines(r.Context(), id, source, offset, limit)
+	}
+	firstLine, lastLine := logLineBounds(lines)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"run_id":      id,
 		"source":      source,
@@ -648,6 +667,10 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		"limit":       limit,
 		"lines":       lines,
 		"remote":      remote,
+		"tail":        tailMode,
+		"first_line":  firstLine,
+		"last_line":   lastLine,
+		"truncated":   firstLine > 1 && total > len(lines),
 	})
 }
 
@@ -661,26 +684,30 @@ func (s *Server) fastLogLines(ctx context.Context, runID string, source string, 
 		return lines, count, false
 	}
 
-	run, err := s.store.GetRun(ctx, runID)
-	if err != nil || run == nil {
+	remoteLines, total, ok := s.remoteLogLines(ctx, runID, source, limit)
+	if !ok {
 		return lines, count, false
 	}
-	if run.Status != store.RunStatusRunning && run.Status != store.RunStatusStarting {
-		return lines, count, false
+	s.cacheRemoteLogLines(ctx, runID, source, remoteLines, total)
+	return remoteLines, total, true
+}
+
+func (s *Server) remoteLogLines(ctx context.Context, runID string, source string, limit int) ([]store.LogLine, int, bool) {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return nil, 0, false
 	}
 	resource, err := s.store.GetResource(ctx, run.ResourceID)
 	if err != nil || resource == nil || resource.Status == store.ResourceStatusUnreachable {
-		return lines, count, false
+		return nil, 0, false
 	}
 
-	remoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	remoteCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	remoteLines, err := s.executor.GetLogSnapshot(remoteCtx, runID, source, limit)
 	if err != nil {
-		return lines, count, false
+		return nil, 0, false
 	}
-	s.cacheRemoteLogLines(ctx, runID, source, remoteLines)
-
 	cached := make([]store.LogLine, 0, len(remoteLines))
 	for _, line := range remoteLines {
 		cached = append(cached, store.LogLine{
@@ -690,7 +717,36 @@ func (s *Server) fastLogLines(ctx context.Context, runID string, source string, 
 			Content: line.Content,
 		})
 	}
-	return cached, len(cached), true
+	total := 0
+	if len(cached) > 0 {
+		total = cached[len(cached)-1].LineNo
+	}
+	return cached, total, true
+}
+
+func logLineBounds(lines []store.LogLine) (int, int) {
+	if len(lines) == 0 {
+		return 0, 0
+	}
+	return lines[0].LineNo, lines[len(lines)-1].LineNo
+}
+
+func parseBoolQuery(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFalseQuery(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
@@ -1033,6 +1089,10 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		source = "stdout"
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.logger.Error("ws upgrade", "error", err)
@@ -1040,20 +1100,21 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Send initial snapshot
-	lastLines, _ := s.executor.GetLogSnapshot(r.Context(), id, "stdout", 200)
-	for _, line := range lastLines {
-		conn.WriteJSON(map[string]interface{}{
-			"type":    "log.line",
-			"run_id":  id,
-			"source":  line.Source,
-			"line_no": line.LineNo,
-			"content": line.Content,
-		})
+	if !isFalseQuery(r.URL.Query().Get("snapshot")) {
+		lastLines, _ := s.executor.GetLogSnapshot(r.Context(), id, source, 200)
+		for _, line := range lastLines {
+			conn.WriteJSON(map[string]interface{}{
+				"type":    "log.line",
+				"run_id":  id,
+				"source":  line.Source,
+				"line_no": line.LineNo,
+				"content": line.Content,
+			})
+		}
 	}
 
 	// Stream new lines
-	logCh, err := s.executor.TailLogs(r.Context(), id, "stdout", 0)
+	logCh, err := s.executor.TailLogs(r.Context(), id, source, 0)
 	if err != nil {
 		conn.WriteJSON(map[string]string{"type": "error", "message": err.Error()})
 		return
@@ -1164,8 +1225,11 @@ func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *Server) cacheRemoteLogLines(ctx context.Context, runID string, source string, lines []executor.LogLine) {
+func (s *Server) cacheRemoteLogLines(ctx context.Context, runID string, source string, lines []store.LogLine, total int) {
 	if len(lines) == 0 {
+		return
+	}
+	if lines[0].LineNo != 1 || total != len(lines) {
 		return
 	}
 	count, err := s.store.CountLogLines(ctx, runID, source)

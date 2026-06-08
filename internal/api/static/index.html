@@ -899,7 +899,7 @@
 
     <script>
         const API = '/api/v1';
-        let ws = null;
+        let logSockets = [];
         let resourcesById = new Map();
         let allRuns = [];
         let allExecEvents = [];
@@ -1016,6 +1016,10 @@
                 'exec.noRecent': 'No recent exec events',
                 'exec.noEvents': 'No exec events',
                 'exec.noMatching': 'No matching exec events',
+                'logs.lines': '{count} lines',
+                'logs.tailRange': 'showing lines {first}-{last} of {total}',
+                'logs.stderrHint': 'progress bars and warnings often use stderr',
+                'logs.loadMore': 'Load 5000 lines',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1128,6 +1132,10 @@
                 'exec.noRecent': '没有最近执行',
                 'exec.noEvents': '没有执行事件',
                 'exec.noMatching': '没有匹配的执行事件',
+                'logs.lines': '{count} 行',
+                'logs.tailRange': '正在显示第 {first}-{last} 行，共 {total} 行',
+                'logs.stderrHint': '训练进度条和警告经常写到 stderr',
+                'logs.loadMore': '加载 5000 行',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1228,6 +1236,13 @@
             const t = getToken();
             return t ? '?token=' + encodeURIComponent(t) : '';
         }
+        function wsQuery(params) {
+            const q = new URLSearchParams(params || {});
+            const token = getToken();
+            if (token) q.set('token', token);
+            const s = q.toString();
+            return s ? '?' + s : '';
+        }
 
         // --- Fetch helpers ---
         async function fetchJSON(url) {
@@ -1246,6 +1261,40 @@
         function asObject(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
         function asText(v) { return v == null ? '' : String(v); }
         function logLines(logs) { return asArray(asObject(logs).lines); }
+        function logLineNumber(line, fallback) {
+            const n = Number(asObject(line).line_no);
+            return Number.isFinite(n) && n > 0 ? n : fallback;
+        }
+        function logMeta(logs, lines) {
+            const obj = asObject(logs);
+            const total = Number(obj.total_lines) || lines.length;
+            const first = Number(obj.first_line) || (lines.length ? logLineNumber(lines[0], 1) : 0);
+            const last = Number(obj.last_line) || (lines.length ? logLineNumber(lines[lines.length - 1], lines.length) : 0);
+            const truncated = Boolean(obj.truncated) || (first > 1 && total > lines.length);
+            const label = truncated
+                ? t('logs.tailRange', { first, last, total })
+                : t('logs.lines', { count: total || lines.length });
+            return { total, first, last, truncated, label };
+        }
+        function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
+            const lines = logLines(logs);
+            if (source === 'stderr' && lines.length === 0 && !forceShow) return '';
+            const meta = logMeta(logs, lines);
+            const hint = source === 'stderr'
+                ? `<span class="text-ink-muted font-normal ml-2">${escHTML(t('logs.stderrHint'))}</span>`
+                : '';
+            const loadMore = meta.truncated
+                ? `<button type="button" class="btn-secondary text-xs" onclick="loadMoreLogLines('${escAttr(runId)}','${escAttr(source)}')">${escHTML(t('logs.loadMore'))}</button>`
+                : '';
+            return `
+                <div class="mb-5">
+                    <div class="flex items-center justify-between gap-3 mb-2">
+                        <h3 class="text-sm font-medium font-heading">${escHTML(source)} <span class="text-ink-muted font-normal" id="log-meta-${escAttr(source)}">(${escHTML(meta.label)})</span>${hint}</h3>
+                        ${loadMore}
+                    </div>
+                    <div class="log-pane" id="log-pane-${escAttr(source)}" style="${escAttr(colorStyle || '')}">${lines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
+                </div>`;
+        }
         function tryParseJSON(str, fb) { try { return JSON.parse(str || 'null') || fb; } catch { return fb; } }
 
         async function loadServerInfo() {
@@ -1781,15 +1830,13 @@
             const run = await fetchJSON('/runs/' + id);
             if (!run) return;
             const [logsRaw, errLogsRaw, marksRaw] = await Promise.all([
-                fetchJSON('/runs/' + id + '/logs?source=stdout&limit=100'),
-                fetchJSON('/runs/' + id + '/logs?source=stderr&limit=50'),
+                fetchJSON('/runs/' + id + '/logs?source=stdout&limit=1000&tail=true'),
+                fetchJSON('/runs/' + id + '/logs?source=stderr&limit=1000&tail=true'),
                 fetchJSON('/runs/' + id + '/marks?limit=20')
             ]);
             const logs = asObject(logsRaw);
             const errLogs = asObject(errLogsRaw);
             const marks = asArray(marksRaw);
-            const outLines = logLines(logs);
-            const errLines = logLines(errLogs);
             const resLabel = resourceLabel(run.resource_id);
             const isFavorite = bookmarkedRunIds.has(run.id);
 
@@ -1808,39 +1855,49 @@
                     <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
                 </div>
                 ${renderRunMarksInline(marks)}
-                <div class="mb-5">
-                    <h3 class="text-sm font-medium font-heading mb-2">stdout <span class="text-ink-muted font-normal">(${logs.total_lines || 0} lines)</span></h3>
-                    <div class="log-pane" id="log-pane">${outLines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
-                </div>
-                ${errLines.length > 0 ? `
-                <div class="mb-5">
-                    <h3 class="text-sm font-medium font-heading mb-2">stderr</h3>
-                    <div class="log-pane" style="color:#e8a090">${errLines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
-                </div>` : ''}
+                ${renderLogBlock(run.id, 'stdout', logs, '', true)}
+                ${renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running')}
                 ${run.status === 'running' ? '<button onclick="cancelRun(\'' + run.id + '\')" class="btn-danger">' + escHTML(t('runs.cancelAction')) + '</button>' : ''}
             `;
             document.getElementById('run-detail').classList.remove('hidden');
-            const lp = document.getElementById('log-pane');
+            const lp = document.getElementById('log-pane-stdout');
             if (lp) lp.scrollTop = lp.scrollHeight;
             if (run.status === 'running') connectWS(id);
         }
 
+        async function loadMoreLogLines(runId, source) {
+            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=' + encodeURIComponent(source) + '&limit=5000&tail=true'));
+            const pane = document.getElementById('log-pane-' + source);
+            if (!pane) return;
+            const lines = logLines(logs);
+            pane.textContent = lines.map(l => asText(asObject(l).content)).join('\n');
+            const meta = logMeta(logs, lines);
+            const metaEl = document.getElementById('log-meta-' + source);
+            if (metaEl) metaEl.textContent = '(' + meta.label + ')';
+            pane.scrollTop = pane.scrollHeight;
+        }
+
         function closeDetail() {
             document.getElementById('run-detail').classList.add('hidden');
-            if (ws) { ws.close(); ws = null; }
+            logSockets.forEach(sock => sock.close());
+            logSockets = [];
         }
 
         function connectWS(runId) {
-            if (ws) ws.close();
+            logSockets.forEach(sock => sock.close());
+            logSockets = [];
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + authQuery());
-            ws.onmessage = (e) => {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'log.line') {
-                    const lp = document.getElementById('log-pane');
-                    if (lp) { lp.textContent += '\n' + msg.content; lp.scrollTop = lp.scrollHeight; }
-                }
-            };
+            ['stdout', 'stderr'].forEach(source => {
+                const sock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ source, snapshot: 'false' }));
+                sock.onmessage = (e) => {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'log.line') {
+                        const lp = document.getElementById('log-pane-' + (msg.source || source));
+                        if (lp) { lp.textContent += '\n' + msg.content; lp.scrollTop = lp.scrollHeight; }
+                    }
+                };
+                logSockets.push(sock);
+            });
         }
 
         async function cancelRun(id) {

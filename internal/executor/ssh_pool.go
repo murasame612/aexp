@@ -90,7 +90,7 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 
 	// Dial order: proxyCommand > socksProxy > direct
 	if proxyCommand != "" {
-		conn, dialErr := p.dialViaProxyCommand(proxyCommand, host, port)
+		conn, dialErr := p.dialViaProxyCommand(ctx, proxyCommand, host, port)
 		if dialErr != nil {
 			return nil, fmt.Errorf("proxy command dial: %w", dialErr)
 		}
@@ -116,10 +116,17 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 		}
 		client = ssh.NewClient(sshConn, chans, reqs)
 	} else {
-		client, err = ssh.Dial("tcp", addr, config)
-		if err != nil {
-			return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+		dialer := net.Dialer{Timeout: p.timeout}
+		conn, dialErr := dialer.DialContext(ctx, "tcp", addr)
+		if dialErr != nil {
+			return nil, fmt.Errorf("ssh dial %s: %w", addr, dialErr)
 		}
+		sshConn, chans, reqs, handshakeErr := ssh.NewClientConn(conn, addr, config)
+		if handshakeErr != nil {
+			conn.Close()
+			return nil, fmt.Errorf("ssh handshake %s: %w", addr, handshakeErr)
+		}
+		client = ssh.NewClient(sshConn, chans, reqs)
 	}
 
 	p.conns[connKey] = client
@@ -132,11 +139,11 @@ func sshConnKey(host string, port int, user string, keyPath string, socksProxy s
 
 // dialViaProxyCommand runs an SSH ProxyCommand and returns the connection.
 // Replaces %h with host and %p with port in the command template.
-func (p *SSHPool) dialViaProxyCommand(tmpl string, host string, port int) (net.Conn, error) {
+func (p *SSHPool) dialViaProxyCommand(ctx context.Context, tmpl string, host string, port int) (net.Conn, error) {
 	cmdStr := strings.ReplaceAll(tmpl, "%h", host)
 	cmdStr = strings.ReplaceAll(cmdStr, "%p", fmt.Sprintf("%d", port))
 
-	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
@@ -248,7 +255,7 @@ func isAlive(client *ssh.Client) bool {
 
 // Exec runs a command and returns stdout+stderr as strings.
 func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (string, string, error) {
-	session, err := p.newSession(host, port, user, keyPath, socksProxy, proxyCommand)
+	session, err := p.newSessionContext(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return "", "", err
 	}
@@ -293,7 +300,7 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 
 // ExecStream runs a command and streams stdout lines to a channel.
 func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (<-chan string, error) {
-	session, err := p.newSession(host, port, user, keyPath, socksProxy, proxyCommand)
+	session, err := p.newSessionContext(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +321,7 @@ func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user st
 		defer close(ch)
 		defer session.Close()
 		scanner := bufio.NewScanner(stdout)
+		scanner.Split(splitLogTokens)
 		for scanner.Scan() {
 			select {
 			case ch <- scanner.Text():
@@ -328,8 +336,28 @@ func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user st
 	return ch, nil
 }
 
+func splitLogTokens(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, dropTrailingCR(data[:i]), nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), dropTrailingCR(data), nil
+	}
+	return 0, nil, nil
+}
+
+func dropTrailingCR(data []byte) []byte {
+	return bytes.TrimRight(data, "\r")
+}
+
 func (p *SSHPool) newSession(host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*ssh.Session, error) {
 	ctx := context.Background()
+	return p.newSessionContext(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
+}
+
+func (p *SSHPool) newSessionContext(ctx context.Context, host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*ssh.Session, error) {
 	client, err := p.Get(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
 	if err != nil {
 		return nil, err
