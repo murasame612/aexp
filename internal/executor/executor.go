@@ -36,6 +36,11 @@ type SubmitRequest struct {
 	CreatedBy     string            `json:"created_by"`
 }
 
+// SubmitOptions controls optional submit behavior.
+type SubmitOptions struct {
+	OnCreated func(*store.Run)
+}
+
 // Executor manages experiment runs on remote resources.
 type Executor struct {
 	pool  *SSHPool
@@ -64,6 +69,11 @@ func (e *Executor) execStream(ctx context.Context, r *store.Resource, cmd string
 
 // Submit creates and starts a new run on a resource.
 func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, error) {
+	return e.SubmitWithOptions(ctx, req, SubmitOptions{})
+}
+
+// SubmitWithOptions creates a run record, invokes OnCreated, then starts it remotely.
+func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opts SubmitOptions) (*store.Run, error) {
 	resource, err := e.store.GetResource(ctx, req.ResourceID)
 	if err != nil {
 		return nil, fmt.Errorf("get resource: %w", err)
@@ -97,10 +107,7 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 
 	// GPU slot lock (skip if --force, or if this run explicitly needs no GPU).
 	if !req.Force && gpuIndex != store.GPUIndexNone {
-		activeRuns, err := e.store.ListRuns(ctx, store.RunFilter{
-			ResourceID: req.ResourceID,
-			Status:     store.RunStatusRunning,
-		})
+		activeRuns, _, err := e.RefreshActiveRuns(ctx, req.ResourceID, 3*time.Second)
 		if err != nil {
 			return nil, fmt.Errorf("check active runs: %w", err)
 		}
@@ -208,6 +215,9 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 
 	// Write agent event immediately (before attempting SSH)
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "starting"})
+	if opts.OnCreated != nil {
+		opts.OnCreated(run)
+	}
 
 	// Ensure wrapper script is deployed
 	if err := e.ensureWrapper(ctx, resource); err != nil {
@@ -260,6 +270,52 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "running"})
 
 	return run, nil
+}
+
+// RefreshActiveRuns refreshes starting/running runs for a resource, or all resources if resourceID is empty.
+func (e *Executor) RefreshActiveRuns(ctx context.Context, resourceID string, timeout time.Duration) ([]store.Run, map[string]bool, error) {
+	runs, err := e.listActiveRuns(ctx, resourceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return e.RefreshRuns(ctx, runs, timeout)
+}
+
+// RefreshRuns refreshes any starting/running runs in the provided slice.
+func (e *Executor) RefreshRuns(ctx context.Context, runs []store.Run, timeout time.Duration) ([]store.Run, map[string]bool, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	cached := map[string]bool{}
+	for i := range runs {
+		if runs[i].Status != store.RunStatusRunning && runs[i].Status != store.RunStatusStarting {
+			continue
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, timeout)
+		refreshed, err := e.CheckRunStatus(checkCtx, runs[i].ID)
+		cancel()
+		if err != nil || refreshed == nil {
+			cached[runs[i].ID] = true
+			continue
+		}
+		runs[i] = *refreshed
+	}
+	return runs, cached, nil
+}
+
+func (e *Executor) listActiveRuns(ctx context.Context, resourceID string) ([]store.Run, error) {
+	var out []store.Run
+	for _, status := range []string{store.RunStatusStarting, store.RunStatusRunning} {
+		runs, err := e.store.ListRuns(ctx, store.RunFilter{
+			ResourceID: resourceID,
+			Status:     status,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, runs...)
+	}
+	return out, nil
 }
 
 // CheckRunStatus checks the actual status of a run on the remote resource.
@@ -756,15 +812,22 @@ func (e *Executor) updateRunStatus(ctx context.Context, run *store.Run, status s
 	run.Status = status
 	now := sql.NullTime{Time: time.Now(), Valid: true}
 	run.FinishedAt = now
-	e.store.UpdateRun(ctx, run)
+	if err := e.store.UpdateRun(ctx, run); err != nil && ctx.Err() != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = e.store.UpdateRun(persistCtx, run)
+	}
 }
 
 func (e *Executor) checkResourceIdle(ctx context.Context, r *store.Resource) {
-	runs, _ := e.store.ListRuns(ctx, store.RunFilter{
-		ResourceID: r.ID,
-		Status:     store.RunStatusRunning,
-	})
-	if len(runs) == 0 {
+	runs, _, _ := e.RefreshActiveRuns(ctx, r.ID, 2*time.Second)
+	active := 0
+	for _, run := range runs {
+		if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+			active++
+		}
+	}
+	if active == 0 {
 		r.Status = store.ResourceStatusIdle
 		e.store.UpdateResource(ctx, r)
 	}

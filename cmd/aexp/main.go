@@ -1785,6 +1785,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 	cmd.AddCommand(runSubmitCmd())
 	cmd.AddCommand(runListCmd())
 	cmd.AddCommand(runStatusCmd())
+	cmd.AddCommand(runRefreshCmd())
 	cmd.AddCommand(runLogsCmd())
 	cmd.AddCommand(runCancelCmd())
 	cmd.AddCommand(runMarkCmd())
@@ -1798,6 +1799,7 @@ func runSubmitCmd() *cobra.Command {
 	var gpuIndex int
 	var shellMode, force, noGPU bool
 	var logPaths, artifactPaths, metricPaths []string
+	var launchTimeoutSec int
 
 	cmd := &cobra.Command{
 		Use:   "submit [flags] -- <program> [args...]",
@@ -1814,12 +1816,12 @@ elsewhere, register the resource with that root_dir first.
   Shell mode (--shell): full shell interpretation
     aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'
 
-  Setup task (tracked, async, but not experiment evidence):
-    aexp run submit --resource mu --kind setup --no-gpu --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'`,
+  Setup task (tracked, async, but not experiment evidence; defaults to no GPU):
+    aexp run submit --resource mu --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var submitReq executor.SubmitRequest
-			if noGPU {
+			if noGPU || (kind == store.RunKindSetup && !cmd.Flags().Changed("gpu-index")) {
 				gpuIndex = store.GPUIndexNone
 			}
 
@@ -1863,12 +1865,29 @@ elsewhere, register the resource with that root_dir first.
 
 			exec := executor.NewExecutor(sshPool, db)
 
-			run, err := exec.Submit(cmd.Context(), submitReq)
+			launchCtx := cmd.Context()
+			var cancel context.CancelFunc
+			if launchTimeoutSec > 0 {
+				launchCtx, cancel = context.WithTimeout(cmd.Context(), time.Duration(launchTimeoutSec)*time.Second)
+				defer cancel()
+			}
+			createdID := ""
+			run, err := exec.SubmitWithOptions(launchCtx, submitReq, executor.SubmitOptions{
+				OnCreated: func(run *store.Run) {
+					createdID = run.ID
+					fmt.Printf("Created run %s on %s\n", run.ID, resource)
+					fmt.Printf("Logs:   aexp run logs %s --tail 100\n", run.ID)
+					fmt.Printf("Status: aexp run status %s --short\n", run.ID)
+				},
+			})
 			if err != nil {
+				if createdID != "" {
+					return fmt.Errorf("launch failed for run %s: %w", createdID, err)
+				}
 				return err
 			}
 
-			fmt.Printf("Submitted run %s on %s\n", run.ID, resource)
+			fmt.Printf("Launched run %s on %s\n", run.ID, resource)
 			fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
 			return nil
 		},
@@ -1887,6 +1906,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
+	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
 
 	return cmd
 }
@@ -1962,37 +1982,11 @@ func runListCmd() *cobra.Command {
 }
 
 func refreshActiveRuns(ctx context.Context, db store.Store, runs []store.Run, timeoutSec int) ([]store.Run, map[string]bool) {
-	if timeoutSec <= 0 {
-		timeoutSec = 5
-	}
-	needsRefresh := false
-	for _, r := range runs {
-		if r.Status == store.RunStatusRunning || r.Status == store.RunStatusStarting {
-			needsRefresh = true
-			break
-		}
-	}
-	cached := map[string]bool{}
-	if !needsRefresh {
-		return runs, cached
-	}
 	sshPool := executor.NewSSHPool(10 * time.Second)
 	loadSSHKeys(sshPool)
 	exec := executor.NewExecutor(sshPool, db)
-	for i := range runs {
-		if runs[i].Status != store.RunStatusRunning && runs[i].Status != store.RunStatusStarting {
-			continue
-		}
-		checkCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-		refreshed, err := exec.CheckRunStatus(checkCtx, runs[i].ID)
-		cancel()
-		if err != nil || refreshed == nil {
-			cached[runs[i].ID] = true
-			continue
-		}
-		runs[i] = *refreshed
-	}
-	return runs, cached
+	refreshed, cached, _ := exec.RefreshRuns(ctx, runs, time.Duration(timeoutSec)*time.Second)
+	return refreshed, cached
 }
 
 func runStatusCmd() *cobra.Command {
@@ -2075,6 +2069,67 @@ func runStatusCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&short, "short", false, "Show compact status and output paths")
+	return cmd
+}
+
+func runRefreshCmd() *cobra.Command {
+	var resourceName string
+	var timeoutSec int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "refresh [run_id]",
+		Short: "Refresh running/starting run status from remote",
+		Args:  cobra.RangeArgs(0, 1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			sshPool := executor.NewSSHPool(10 * time.Second)
+			loadSSHKeys(sshPool)
+			exec := executor.NewExecutor(sshPool, db)
+
+			if len(args) == 1 {
+				run, err := exec.CheckRunStatus(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				if asJSON {
+					return printJSON(run)
+				}
+				fmt.Printf("%s  %s  gpu=%s\n", run.ID, run.Status, displayRunGPU(run.GPUIndex))
+				return nil
+			}
+
+			resourceID := ""
+			if resourceName != "" {
+				res, err := db.GetResourceByName(cmd.Context(), resourceName)
+				if err != nil || res == nil {
+					return fmt.Errorf("resource %s not found", resourceName)
+				}
+				resourceID = res.ID
+			}
+			runs, cached, err := exec.RefreshActiveRuns(cmd.Context(), resourceID, time.Duration(timeoutSec)*time.Second)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(runs)
+			}
+			fmt.Printf("%-15s %-20s %-10s %-8s\n", "RUN_ID", "RESOURCE", "STATUS", "GPU")
+			for _, run := range runs {
+				status := run.Status
+				if cached[run.ID] {
+					status += " (cached)"
+				}
+				fmt.Printf("%-15s %-20s %-10s %-8s\n", run.ID, run.ResourceID, status, displayRunGPU(run.GPUIndex))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Refresh active runs for a resource")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 5, "Timeout per running/starting status refresh in seconds")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -2178,11 +2233,11 @@ func tryJSONStringSlice(raw string) []string {
 func runLogsCmd() *cobra.Command {
 	var lastN int
 	var source string
-	var noFollow bool
+	var follow, noFollow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [run_id]",
-		Short: "Tail run logs",
+		Short: "Show a run log snapshot, or follow with --follow",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := openDB()
@@ -2207,7 +2262,7 @@ func runLogsCmd() *cobra.Command {
 				source = "stdout"
 			}
 
-			if run.Status != store.RunStatusRunning || noFollow {
+			if !follow || noFollow || run.Status != store.RunStatusRunning {
 				// One-shot read
 				lines, err := exec.GetLogSnapshot(cmd.Context(), args[0], source, lastN)
 				if err != nil {
@@ -2232,10 +2287,11 @@ func runLogsCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&lastN, "last", 200, "Number of last lines to show")
-	cmd.Flags().IntVar(&lastN, "tail", 200, "Number of last lines to show")
+	cmd.Flags().IntVar(&lastN, "last", 100, "Number of last lines to show")
+	cmd.Flags().IntVar(&lastN, "tail", 100, "Number of last lines to show")
 	cmd.Flags().StringVar(&source, "source", "stdout", "Log source: stdout or stderr")
-	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print a snapshot and exit instead of following running logs")
+	cmd.Flags().BoolVar(&follow, "follow", false, "Follow running logs until interrupted")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Deprecated: snapshot mode is the default")
 	return cmd
 }
 

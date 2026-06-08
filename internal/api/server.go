@@ -171,6 +171,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resources, _ := s.store.ListResources(ctx)
 	runs, _ := s.store.ListRuns(ctx, store.RunFilter{})
+	runs, _, _ = s.executor.RefreshRuns(ctx, runs, 2*time.Second)
 
 	running := 0
 	for _, run := range runs {
@@ -591,6 +592,18 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
 		return
 	}
+	if !isFalseQuery(r.URL.Query().Get("refresh")) {
+		runs, _, _ = s.executor.RefreshRuns(r.Context(), runs, 2*time.Second)
+		if filter.Status != "" {
+			filtered := runs[:0]
+			for _, run := range runs {
+				if run.Status == filter.Status {
+					filtered = append(filtered, run)
+				}
+			}
+			runs = filtered
+		}
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -620,6 +633,11 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
 		return
+	}
+	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+		if refreshed, err := s.executor.CheckRunStatus(r.Context(), id); err == nil && refreshed != nil {
+			run = refreshed
+		}
 	}
 	writeJSON(w, http.StatusOK, run)
 }
