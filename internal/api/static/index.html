@@ -268,6 +268,15 @@
             background: #faf9f5;
             padding: 10px 12px;
         }
+        .event-card-clickable {
+            cursor: zoom-in;
+            transition: border-color 140ms ease-out, transform 140ms ease-out, box-shadow 140ms ease-out;
+        }
+        .event-card-clickable:hover {
+            border-color: #c96545;
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(25, 24, 23, 0.08);
+        }
         .event-card-label {
             color: #5f5b53;
             font-size: 11px;
@@ -326,6 +335,42 @@
             color: #7a766d;
             font-size: 13px;
             padding: 10px 0 2px;
+        }
+        .metric-chart-modal-card {
+            width: min(960px, calc(100vw - 48px));
+            max-height: min(780px, calc(100vh - 48px));
+        }
+        .metric-chart-svg {
+            width: 100%;
+            height: 420px;
+            display: block;
+            background: #fffdf8;
+            border: 1px solid #e8e5dc;
+            border-radius: 0.875rem;
+        }
+        .metric-chart-meta {
+            color: #7a766d;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+        .metric-chart-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+            margin-top: 12px;
+        }
+        .metric-chart-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #5f5b53;
+            font-size: 12px;
+        }
+        .metric-chart-legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            flex: 0 0 auto;
         }
 
         /* Modal overlay */
@@ -706,6 +751,22 @@
                     <button onclick="closeDetail()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
                 </div>
                 <div id="detail-content" class="px-8 py-6"></div>
+            </div>
+        </div>
+
+        <!-- Metric Chart Modal -->
+        <div id="metric-chart-modal" class="hidden fixed inset-0 modal-bg flex items-center justify-center p-6 z-[55]" onclick="if(event.target===this)closeMetricChart()">
+            <div class="metric-chart-modal-card bg-surface rounded-card overflow-y-auto shadow-soft border border-border">
+                <div class="sticky top-0 bg-surface flex justify-between items-center px-8 py-5 border-b border-border">
+                    <div>
+                        <h2 class="text-lg font-semibold font-heading" id="metric-chart-title">Metric</h2>
+                        <div class="metric-chart-meta" id="metric-chart-subtitle"></div>
+                    </div>
+                    <button onclick="closeMetricChart()" class="text-ink-muted hover:text-ink text-xl leading-none">&times;</button>
+                </div>
+                <div class="px-8 py-6">
+                    <div id="metric-chart-body"></div>
+                </div>
             </div>
         </div>
 
@@ -1657,6 +1718,32 @@
             const parts = [ev.split, ev.stage, ev.name || ev.metric || ev.key || ev.label].map(asText).filter(Boolean);
             return parts.join('/') || fallback || ev.type || 'event';
         }
+        function metricPathParts(name) {
+            return asText(name).split('/').map(p => p.trim()).filter(Boolean);
+        }
+        function metricBaseName(name) {
+            const parts = metricPathParts(name);
+            if (parts.length >= 3) return parts.slice(1).join('/');
+            return asText(name);
+        }
+        function metricSeriesLabel(name) {
+            const parts = metricPathParts(name);
+            if (parts.length >= 3) return parts[0];
+            return asText(name);
+        }
+        function metricDisplayName(name) {
+            return asText(name)
+                .replace(/\//g, ' · ')
+                .replace(/_/g, ' ')
+                .replace(/\(B\)/g, '')
+                .trim() || asText(name);
+        }
+        function metricPriority(name) {
+            const n = metricBaseName(name).toLowerCase();
+            if (/(map|auc|acc|f1|precision|recall|mae|mse|rmse|r2|bleu|rouge|perplexity)/.test(n)) return 0;
+            if (/(loss|error|grad|lr|token|throughput|speed)/.test(n)) return 10;
+            return 50;
+        }
         function eventStepLabel(ev) {
             const bits = [];
             if (ev.epoch != null) bits.push('epoch ' + ev.epoch);
@@ -1686,6 +1773,29 @@
                 return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && eventName(ev) === name && numberValue(ev.value) != null;
             }).map(ev => numberValue(ev.value)).slice(-24);
         }
+        function metricPoints(events, name) {
+            return events.filter(ev => {
+                const t = asText(ev.type).toLowerCase();
+                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && eventName(ev) === name && numberValue(ev.value) != null;
+            }).map((ev, idx) => ({
+                x: numberValue(ev.epoch ?? ev.step ?? ev.iter) ?? idx + 1,
+                y: numberValue(ev.value),
+                meta: eventStepLabel(ev),
+            }));
+        }
+        function comparableMetricSeries(events, name) {
+            const base = metricBaseName(name);
+            const names = Array.from(new Set(events.filter(ev => {
+                const t = asText(ev.type).toLowerCase();
+                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
+            }).map(ev => eventName(ev)).filter(n => metricBaseName(n) === base)));
+            const picked = names.length > 1 ? names : [name];
+            return picked.map(n => ({
+                name: n,
+                label: names.length > 1 ? metricSeriesLabel(n) : metricDisplayName(n),
+                points: metricPoints(events, n),
+            })).filter(s => s.points.length > 0);
+        }
         function sparkline(values) {
             values = asArray(values).filter(v => numberValue(v) != null).map(Number);
             if (values.length < 2) return '';
@@ -1698,6 +1808,78 @@
                 return x.toFixed(1) + ',' + y.toFixed(1);
             }).join(' ');
             return `<svg class="event-sparkline" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="#c96545" stroke-width="2" points="${escAttr(pts)}"/></svg>`;
+        }
+        function niceTicks(min, max, count) {
+            if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+            if (min === max) {
+                const pad = Math.abs(min || 1) * 0.1;
+                min -= pad;
+                max += pad;
+            }
+            const ticks = [];
+            const step = (max - min) / Math.max(1, count - 1);
+            for (let i = 0; i < count; i++) ticks.push(min + step * i);
+            return ticks;
+        }
+        const METRIC_CHART_COLORS = ['#c96545', '#346486', '#35644a', '#8a6d28', '#7d5aa6', '#5f5b53'];
+        function renderMetricChartSVG(series) {
+            series = asArray(series).map((s, idx) => ({
+                ...s,
+                color: METRIC_CHART_COLORS[idx % METRIC_CHART_COLORS.length],
+                points: asArray(s.points).filter(p => numberValue(p.x) != null && numberValue(p.y) != null),
+            })).filter(s => s.points.length >= 2);
+            if (!series.length) return `<div class="event-empty">${escHTML(t('events.noEvents'))}</div>`;
+            const width = 860, height = 420;
+            const pad = { left: 68, right: 24, top: 28, bottom: 54 };
+            const allPoints = series.flatMap(s => s.points);
+            const xs = allPoints.map(p => Number(p.x));
+            const ys = allPoints.map(p => Number(p.y));
+            const minX = Math.min(...xs), maxX = Math.max(...xs);
+            let minY = Math.min(...ys), maxY = Math.max(...ys);
+            const yPad = (maxY - minY || Math.abs(maxY || 1)) * 0.08;
+            minY -= yPad;
+            maxY += yPad;
+            const plotW = width - pad.left - pad.right;
+            const plotH = height - pad.top - pad.bottom;
+            const xScale = x => pad.left + ((x - minX) / (maxX - minX || 1)) * plotW;
+            const yScale = y => pad.top + plotH - ((y - minY) / (maxY - minY || 1)) * plotH;
+            const yTicks = niceTicks(minY, maxY, 6);
+            const xTicks = niceTicks(minX, maxX, 6);
+            const grid = [
+                ...yTicks.map(v => `<line x1="${pad.left}" y1="${yScale(v).toFixed(1)}" x2="${width - pad.right}" y2="${yScale(v).toFixed(1)}" stroke="#eee9df" />`),
+                ...xTicks.map(v => `<line x1="${xScale(v).toFixed(1)}" y1="${pad.top}" x2="${xScale(v).toFixed(1)}" y2="${height - pad.bottom}" stroke="#f3efe7" />`),
+            ].join('');
+            const labels = [
+                ...yTicks.map(v => `<text x="${pad.left - 10}" y="${(yScale(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#7a766d">${escHTML(formatEventValue(v))}</text>`),
+                ...xTicks.map(v => `<text x="${xScale(v).toFixed(1)}" y="${height - 24}" text-anchor="middle" font-size="11" fill="#7a766d">${escHTML(formatEventValue(v))}</text>`),
+            ].join('');
+            const paths = series.map(s => {
+                const pathData = s.points.map((p, i) => `${i ? 'L' : 'M'} ${xScale(p.x).toFixed(1)} ${yScale(p.y).toFixed(1)}`).join(' ');
+                const last = s.points[s.points.length - 1];
+                return `<path d="${escAttr(pathData)}" fill="none" stroke="${escAttr(s.color)}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+                    <circle cx="${xScale(last.x).toFixed(1)}" cy="${yScale(last.y).toFixed(1)}" r="4" fill="${escAttr(s.color)}" />`;
+            }).join('');
+            const legend = `<div class="metric-chart-legend">${series.map(s => `<span class="metric-chart-legend-item"><span class="metric-chart-legend-swatch" style="background:${escAttr(s.color)}"></span>${escHTML(s.label)}</span>`).join('')}</div>`;
+            return `<svg class="metric-chart-svg" viewBox="0 0 ${width} ${height}" role="img">
+                ${grid}
+                <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="#c9c2b6" />
+                <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" stroke="#c9c2b6" />
+                ${labels}
+                <text x="${(pad.left + plotW / 2).toFixed(1)}" y="${height - 8}" text-anchor="middle" font-size="12" fill="#5f5b53">epoch / step</text>
+                ${paths}
+            </svg>${legend}`;
+        }
+        function openMetricChart(name) {
+            const events = parseEventLines(currentEventLines);
+            const series = comparableMetricSeries(events, name);
+            const pointCount = series.reduce((sum, s) => sum + s.points.length, 0);
+            document.getElementById('metric-chart-title').textContent = metricDisplayName(metricBaseName(name));
+            document.getElementById('metric-chart-subtitle').textContent = series.length + ' series · ' + pointCount + ' points';
+            document.getElementById('metric-chart-body').innerHTML = renderMetricChartSVG(series);
+            document.getElementById('metric-chart-modal').classList.remove('hidden');
+        }
+        function closeMetricChart() {
+            document.getElementById('metric-chart-modal').classList.add('hidden');
         }
         function renderEventDashboardHTML(runId, eventPath, rawLines) {
             const events = parseEventLines(rawLines);
@@ -1719,7 +1901,7 @@
             const metrics = latestByName(events, ev => {
                 const t = asText(ev.type).toLowerCase();
                 return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
-            }).slice(-12);
+            }).sort((a, b) => metricPriority(a.name) - metricPriority(b.name)).slice(0, 12);
             const params = latestByName(events, ev => {
                 const t = asText(ev.type).toLowerCase();
                 return t === 'param' || t === 'params' || t === 'hparam' || t === 'config' || t === 'model';
@@ -1747,8 +1929,9 @@
                 <div class="event-section-title">${escHTML(t('events.metrics'))}</div>
                 <div class="event-grid">${metrics.map(({ name, ev }) => {
                     const series = metricSeries(events, name);
-                    return `<div class="event-card">
-                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(name)}</div>
+                    const openArg = escAttr(JSON.stringify(name));
+                    return `<div class="event-card event-card-clickable" role="button" tabindex="0" onclick="openMetricChart(${openArg})" onkeydown="if(event.key==='Enter'||event.key===' ')openMetricChart(${openArg})">
+                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(metricDisplayName(name))}</div>
                         <div class="event-card-value">${escHTML(formatEventValue(ev.value))}</div>
                         ${sparkline(series)}
                         <div class="event-card-meta">${escHTML(eventStepLabel(ev) || asText(ev.unit || ''))}</div>
@@ -1795,7 +1978,7 @@
         function renderRunEventsBlock(runId, eventPath, logs) {
             const lines = logLines(logs).map(l => asText(asObject(l).content));
             currentUIEventsPath = eventPath;
-            currentEventLines = lines.slice(-LIVE_LOG_MAX_LINES);
+            currentEventLines = lines.slice(-EVENT_LOG_MAX_LINES);
             return `<div id="run-events-detail">${renderEventDashboardHTML(runId, eventPath, currentEventLines)}</div>
                 <details class="raw-log-streams">
                     <summary>${escHTML(t('events.raw'))}</summary>
@@ -2466,7 +2649,7 @@
             const eventPath = uiEventsPath(run);
             const preferredLogPath = eventPath || preferredRunLogPath(run);
             const logPromise = preferredLogPath
-                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=1000&tail=true')
+                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=5000&tail=true')
                 : Promise.all([
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
@@ -2510,9 +2693,10 @@
         }
 
         async function loadMoreLogFile(runId, logPath) {
-            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?path=' + encodeURIComponent(logPath) + '&limit=1000&tail=true'));
+            const limit = logPath === currentUIEventsPath ? EVENT_LOG_MAX_LINES : LIVE_LOG_MAX_LINES;
+            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?path=' + encodeURIComponent(logPath) + '&limit=' + encodeURIComponent(String(limit)) + '&tail=true'));
             if (logPath === currentUIEventsPath) {
-                currentEventLines = logLines(logs).map(l => asText(asObject(l).content)).slice(-LIVE_LOG_MAX_LINES);
+                currentEventLines = logLines(logs).map(l => asText(asObject(l).content)).slice(-EVENT_LOG_MAX_LINES);
                 scheduleEventDashboardRender(runId, logPath);
             }
             const pane = document.getElementById(logPath === currentUIEventsPath ? 'log-pane-events' : 'log-pane-agent');
@@ -2554,6 +2738,7 @@
         }
 
         const LIVE_LOG_MAX_LINES = 1000;
+        const EVENT_LOG_MAX_LINES = 5000;
         function trimLogPane(pane, maxLines) {
             const count = Number(pane.dataset.lines || 0);
             if (count <= maxLines) return;
@@ -2562,12 +2747,12 @@
             pane.dataset.lines = String(lines.length);
         }
 
-        function appendPlainLogLine(pane, content) {
+        function appendPlainLogLine(pane, content, maxLines) {
             if (!pane) return;
             if (pane.textContent) pane.appendChild(document.createTextNode('\n'));
             pane.appendChild(document.createTextNode(asText(content)));
             pane.dataset.lines = String((Number(pane.dataset.lines || 0) || 0) + 1);
-            trimLogPane(pane, LIVE_LOG_MAX_LINES);
+            trimLogPane(pane, maxLines || LIVE_LOG_MAX_LINES);
             pane.scrollTop = pane.scrollHeight;
         }
 
@@ -2617,10 +2802,10 @@
                         const content = asText(msg.content);
                         if (logPath === currentUIEventsPath) {
                             currentEventLines.push(content);
-                            if (currentEventLines.length > LIVE_LOG_MAX_LINES) {
-                                currentEventLines = currentEventLines.slice(-LIVE_LOG_MAX_LINES);
+                            if (currentEventLines.length > EVENT_LOG_MAX_LINES) {
+                                currentEventLines = currentEventLines.slice(-EVENT_LOG_MAX_LINES);
                             }
-                            appendPlainLogLine(document.getElementById('log-pane-events'), content);
+                            appendPlainLogLine(document.getElementById('log-pane-events'), content, EVENT_LOG_MAX_LINES);
                             scheduleEventDashboardRender(runId, logPath);
                         } else {
                             appendPlainLogLine(document.getElementById('log-pane-agent'), content);
