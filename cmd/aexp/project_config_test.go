@@ -112,6 +112,7 @@ func TestProjectInitDryRun(t *testing.T) {
 		"command: python -m pip install -r requirements.txt",
 		"train:",
 		"command: bash scripts/train_fusion.sh configs/experiments/fusion.yaml",
+		"aexp event metric train/loss 0.23 --epoch 1",
 		"aexp project doctor",
 	} {
 		if !strings.Contains(text, want) {

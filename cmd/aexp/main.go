@@ -56,6 +56,7 @@ Agent workflow:
 	root.AddCommand(
 		agentCmd(),
 		doctorCmd(),
+		eventCmd(),
 		projectCmd(),
 		syncCmd(),
 		serveCmd(),
@@ -64,6 +65,10 @@ Agent workflow:
 		runCmd(),
 		execCmd(),
 	)
+
+	if filepath.Base(os.Args[0]) == "aexp-event" {
+		root.SetArgs(append([]string{"event"}, os.Args[1:]...))
+	}
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -865,6 +870,11 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 	fmt.Fprintf(&b, "setup:\n")
 	fmt.Fprintf(&b, "  command: %s\n", cfg.SetupCmd)
 	fmt.Fprintf(&b, "  kind: setup\n\n")
+	fmt.Fprintf(&b, "# Optional structured UI events inside scripts:\n")
+	fmt.Fprintf(&b, "#   aexp event metric train/loss 0.23 --epoch 1\n")
+	fmt.Fprintf(&b, "#   aexp event progress train 1 --total 100\n")
+	fmt.Fprintf(&b, "#   aexp-event note \"finished validation\"\n")
+	fmt.Fprintf(&b, "# Python scripts can also import: from aexp_events import metric, progress, param, note\n")
 	fmt.Fprintf(&b, "train:\n")
 	if strings.Contains(cfg.TrainCmd, "\n") {
 		fmt.Fprintf(&b, "  command: |\n")
@@ -2419,6 +2429,223 @@ func joinShellArgs(args []string) string {
 		parts = append(parts, cliShellQuote(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+// --- event ---
+
+type eventOptions struct {
+	path   string
+	strict bool
+	fields []string
+}
+
+func eventCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "event",
+		Aliases: []string{"events"},
+		Short:   "Emit structured UI events for an aexp run",
+		Long: `Emit structured JSONL events to $AEXP_UI_EVENTS.
+
+This is intended for training/setup scripts running inside an aexp run:
+
+  aexp event metric train/loss 0.23 --epoch 3
+  aexp event progress train 30 --total 100
+  aexp event note "finished validation"
+
+The same command also works as aexp-event when the binary is symlinked with
+that name.`,
+	}
+	cmd.AddCommand(eventMetricCmd())
+	cmd.AddCommand(eventProgressCmd())
+	cmd.AddCommand(eventParamCmd())
+	cmd.AddCommand(eventNoteCmd())
+	return cmd
+}
+
+func eventMetricCmd() *cobra.Command {
+	var opts eventOptions
+	var epoch, step string
+	cmd := &cobra.Command{
+		Use:   "metric <name> <value>",
+		Short: "Emit a numeric metric event",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			value, err := parseEventNumber(args[1])
+			if err != nil {
+				return fmt.Errorf("metric value must be numeric: %w", err)
+			}
+			event, err := eventFromFields(opts.fields)
+			if err != nil {
+				return err
+			}
+			event["type"] = "metric"
+			event["name"] = args[0]
+			event["value"] = value
+			if epoch != "" {
+				v, err := parseEventNumber(epoch)
+				if err != nil {
+					return fmt.Errorf("--epoch must be numeric: %w", err)
+				}
+				event["epoch"] = v
+			}
+			if step != "" {
+				v, err := parseEventNumber(step)
+				if err != nil {
+					return fmt.Errorf("--step must be numeric: %w", err)
+				}
+				event["step"] = v
+			}
+			return emitStructuredEvent(opts, event)
+		},
+	}
+	addEventFlags(cmd, &opts)
+	cmd.Flags().StringVar(&epoch, "epoch", "", "Epoch value")
+	cmd.Flags().StringVar(&step, "step", "", "Step value")
+	return cmd
+}
+
+func eventProgressCmd() *cobra.Command {
+	var opts eventOptions
+	var total string
+	cmd := &cobra.Command{
+		Use:   "progress <name> <current>",
+		Short: "Emit a progress event",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			current, err := parseEventNumber(args[1])
+			if err != nil {
+				return fmt.Errorf("current must be numeric: %w", err)
+			}
+			event, err := eventFromFields(opts.fields)
+			if err != nil {
+				return err
+			}
+			event["type"] = "progress"
+			event["name"] = args[0]
+			event["current"] = current
+			if total != "" {
+				v, err := parseEventNumber(total)
+				if err != nil {
+					return fmt.Errorf("--total must be numeric: %w", err)
+				}
+				event["total"] = v
+			}
+			return emitStructuredEvent(opts, event)
+		},
+	}
+	addEventFlags(cmd, &opts)
+	cmd.Flags().StringVar(&total, "total", "", "Total progress value")
+	return cmd
+}
+
+func eventParamCmd() *cobra.Command {
+	var opts eventOptions
+	cmd := &cobra.Command{
+		Use:   "param <name> <value>",
+		Short: "Emit a run parameter event",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			event, err := eventFromFields(opts.fields)
+			if err != nil {
+				return err
+			}
+			event["type"] = "param"
+			event["name"] = args[0]
+			event["value"] = parseEventValue(args[1])
+			return emitStructuredEvent(opts, event)
+		},
+	}
+	addEventFlags(cmd, &opts)
+	return cmd
+}
+
+func eventNoteCmd() *cobra.Command {
+	var opts eventOptions
+	cmd := &cobra.Command{
+		Use:   "note <text>",
+		Short: "Emit a note event",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			event, err := eventFromFields(opts.fields)
+			if err != nil {
+				return err
+			}
+			event["type"] = "note"
+			event["text"] = args[0]
+			return emitStructuredEvent(opts, event)
+		},
+	}
+	addEventFlags(cmd, &opts)
+	return cmd
+}
+
+func addEventFlags(cmd *cobra.Command, opts *eventOptions) {
+	cmd.Flags().StringVar(&opts.path, "path", "", "Event JSONL path (default: $AEXP_UI_EVENTS)")
+	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Fail if no event path is available")
+	cmd.Flags().StringArrayVar(&opts.fields, "field", nil, "Extra field as key=value; may be repeated")
+}
+
+func eventFromFields(fields []string) (map[string]interface{}, error) {
+	event := make(map[string]interface{}, len(fields)+4)
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--field must be key=value, got %q", field)
+		}
+		event[key] = parseEventValue(value)
+	}
+	return event, nil
+}
+
+func emitStructuredEvent(opts eventOptions, event map[string]interface{}) error {
+	if _, ok := event["time"]; !ok {
+		event["time"] = float64(time.Now().UnixNano()) / 1e9
+	}
+	path := opts.path
+	if path == "" {
+		path = os.Getenv("AEXP_UI_EVENTS")
+	}
+	if path == "" {
+		if opts.strict {
+			return fmt.Errorf("AEXP_UI_EVENTS is not set; pass --path or run inside aexp run with UI events enabled")
+		}
+		fmt.Fprintln(os.Stderr, "warning: AEXP_UI_EVENTS is not set; event ignored")
+		return nil
+	}
+	if path == "-" {
+		enc := json.NewEncoder(os.Stdout)
+		return enc.Encode(event)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create event directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open event file: %w", err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	return enc.Encode(event)
+}
+
+func parseEventNumber(value string) (float64, error) {
+	return strconv.ParseFloat(value, 64)
+}
+
+func parseEventValue(value string) interface{} {
+	switch strings.ToLower(value) {
+	case "true":
+		return true
+	case "false":
+		return false
+	case "null":
+		return nil
+	}
+	if n, err := strconv.ParseFloat(value, 64); err == nil {
+		return n
+	}
+	return value
 }
 
 // --- init ---
