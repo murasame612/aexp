@@ -282,9 +282,21 @@ type doctorReport struct {
 	Cwd                      string                `json:"cwd"`
 	CondaEnv                 string                `json:"conda_env"`
 	Project                  *store.ProjectProfile `json:"project,omitempty"`
+	ProjectConfig            string                `json:"project_config,omitempty"`
 	Checks                   []doctorCheck         `json:"checks"`
 	RecommendedSubmitCommand string                `json:"recommended_submit_command"`
+	Recommended              []string              `json:"recommended,omitempty"`
 	RecommendedFixes         []string              `json:"recommended_fixes,omitempty"`
+	Recipes                  []doctorRecipe        `json:"recipes,omitempty"`
+}
+
+type doctorRecipe struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	Evidence    string `json:"evidence"`
+	CommandOK   bool   `json:"command_ok"`
+	Selected    bool   `json:"selected,omitempty"`
+	Recommended string `json:"recommended,omitempty"`
 }
 
 func doctorCmd() *cobra.Command {
@@ -514,6 +526,9 @@ func boolDetail(ok bool, okText, failText string) string {
 func printDoctorReport(report doctorReport) {
 	fmt.Println("AEXP Doctor")
 	fmt.Println()
+	if report.ProjectConfig != "" {
+		fmt.Printf("project:  %s\n", report.ProjectConfig)
+	}
 	fmt.Printf("resource: %s\n", report.Resource)
 	fmt.Printf("cwd:      %s\n", report.Cwd)
 	if report.CondaEnv != "" {
@@ -546,23 +561,40 @@ func printDoctorReport(report doctorReport) {
 		}
 		fmt.Println()
 	}
+	if len(report.Recommended) > 0 {
+		fmt.Println("recommended:")
+		for _, command := range report.Recommended {
+			fmt.Println(command)
+		}
+		return
+	}
 	fmt.Println("recommended submit command:")
 	fmt.Println(report.RecommendedSubmitCommand)
 }
 
 func applyProjectDoctorConfigRecommendations(report *doctorReport, cfg *projectFileConfig, recipeName string) {
+	report.ProjectConfig = cfg.Path
 	if recipeName == "" {
 		recipeName = defaultProjectRecipeName(cfg)
 	}
 	if recipeName == "" {
 		report.RecommendedSubmitCommand = "aexp project run <recipe> --dry-run"
+		report.Recommended = []string{"aexp project run <recipe> --dry-run"}
+		report.RecommendedFixes = append(report.RecommendedFixes, "no project recipes found; add train/setup recipes to "+cliShellQuote(cfg.Path))
+		report.Recipes = projectDoctorRecipeReports(cfg, "")
+		applyProjectDoctorConfigIssues(report, cfg)
 		return
 	}
 	if _, ok := cfg.Commands[recipeName]; !ok {
 		report.RecommendedFixes = append(report.RecommendedFixes, "recipe "+cliShellQuote(recipeName)+" not found in "+cliShellQuote(cfg.Path))
+		report.Recipes = projectDoctorRecipeReports(cfg, recipeName)
+		applyProjectDoctorConfigIssues(report, cfg)
 		return
 	}
 	report.RecommendedSubmitCommand = joinNonEmpty(" ", "aexp project run", cliShellQuote(recipeName), projectConfigFlagForRecommendation(cfg.Path))
+	report.Recipes = projectDoctorRecipeReports(cfg, recipeName)
+	report.Recommended = projectDoctorRecommendedCommands(cfg, recipeName)
+	applyProjectDoctorConfigIssues(report, cfg)
 }
 
 func printProjectDoctorRecipes(cfg *projectFileConfig, selected string) {
@@ -595,11 +627,77 @@ func printProjectDoctorRecipes(cfg *projectFileConfig, selected string) {
 			fmt.Println("    warning: missing command")
 		}
 	}
-	if selected != "" {
-		fmt.Println()
-		fmt.Println("recommended project command:")
-		fmt.Println(joinNonEmpty(" ", "aexp project run", cliShellQuote(selected), projectConfigFlagForRecommendation(cfg.Path), "--dry-run"))
+}
+
+func projectDoctorRecipeReports(cfg *projectFileConfig, selected string) []doctorRecipe {
+	names := sortedProjectRecipeNames(cfg)
+	recipes := make([]doctorRecipe, 0, len(names))
+	for _, name := range names {
+		entry := cfg.Commands[name]
+		kind := entry.Kind
+		if kind == "" {
+			kind = store.RunKindFormal
+		}
+		recipes = append(recipes, doctorRecipe{
+			Name:        name,
+			Kind:        kind,
+			Evidence:    projectKindEvidenceLabel(kind),
+			CommandOK:   strings.TrimSpace(entry.Command) != "",
+			Selected:    name == selected,
+			Recommended: joinNonEmpty(" ", "aexp project run", cliShellQuote(name), projectConfigFlagForRecommendation(cfg.Path), "--dry-run"),
+		})
 	}
+	return recipes
+}
+
+func projectDoctorRecommendedCommands(cfg *projectFileConfig, selected string) []string {
+	var recommended []string
+	if cfg.Sync.Source != "" || cfg.Sync.Target != "" || cfg.Cwd != "" {
+		recommended = append(recommended, joinNonEmpty(" ", "aexp project sync", projectConfigFlagForRecommendation(cfg.Path), "--dry-run"))
+	}
+	if _, ok := cfg.Commands["setup"]; ok {
+		recommended = append(recommended, joinNonEmpty(" ", "aexp project run", "setup", projectConfigFlagForRecommendation(cfg.Path), "--dry-run"))
+	}
+	if selected != "" {
+		recommended = append(recommended,
+			joinNonEmpty(" ", "aexp project run", cliShellQuote(selected), projectConfigFlagForRecommendation(cfg.Path), "--dry-run"),
+			joinNonEmpty(" ", "aexp project run", cliShellQuote(selected), projectConfigFlagForRecommendation(cfg.Path)),
+		)
+	}
+	return dedupeStrings(recommended)
+}
+
+func applyProjectDoctorConfigIssues(report *doctorReport, cfg *projectFileConfig) {
+	if cfg.Resource == "" {
+		report.RecommendedFixes = append(report.RecommendedFixes, "set resource: in "+cliShellQuote(cfg.Path)+" or pass --resource")
+	}
+	if cfg.Cwd == "" {
+		report.RecommendedFixes = append(report.RecommendedFixes, "set cwd: in "+cliShellQuote(cfg.Path)+" so project recipes run in the intended directory")
+	}
+	if len(cfg.Commands) == 0 {
+		report.RecommendedFixes = append(report.RecommendedFixes, "add at least one recipe such as train: {command, kind: formal}")
+	}
+	for _, recipe := range report.Recipes {
+		if !recipe.CommandOK {
+			report.RecommendedFixes = append(report.RecommendedFixes, "recipe "+cliShellQuote(recipe.Name)+" is missing command")
+		}
+	}
+	if !doctorCheckPassed(report, "cwd exists") && (cfg.Sync.Target != "" || cfg.Cwd != "") {
+		report.RecommendedFixes = append(report.RecommendedFixes,
+			"cwd missing on remote; use: "+joinNonEmpty(" ", "aexp project sync", projectConfigFlagForRecommendation(cfg.Path), "--dry-run"),
+			"cwd missing on remote; then: "+joinNonEmpty(" ", "aexp project sync", projectConfigFlagForRecommendation(cfg.Path)),
+		)
+	}
+	report.RecommendedFixes = dedupeStrings(report.RecommendedFixes)
+}
+
+func doctorCheckPassed(report *doctorReport, name string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check.OK || check.Severity == "warn"
+		}
+	}
+	return false
 }
 
 func defaultProjectRecipeName(cfg *projectFileConfig) string {

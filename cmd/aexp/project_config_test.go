@@ -142,6 +142,90 @@ func TestProjectInitWritesAndRefusesOverwrite(t *testing.T) {
 	})
 }
 
+func TestProjectDoctorConfigRecommendations(t *testing.T) {
+	cfg := &projectFileConfig{
+		Path:     filepath.Join(t.TempDir(), ".aexp.yaml"),
+		Resource: "mu",
+		Cwd:      "/remote/project",
+		Commands: map[string]projectFileCommand{
+			"setup": {Command: "python -m pip install -r requirements.txt", Kind: store.RunKindSetup},
+			"train": {Command: "python train.py", Kind: store.RunKindFormal},
+		},
+		Sync: projectFileSync{
+			Source:  "./",
+			Target:  "/remote/project",
+			Profile: "code",
+		},
+	}
+	report := doctorReport{
+		Checks: []doctorCheck{
+			{Name: "cwd exists", OK: true, Severity: "ok"},
+		},
+	}
+
+	applyProjectDoctorConfigRecommendations(&report, cfg, "")
+
+	if report.ProjectConfig != cfg.Path {
+		t.Fatalf("project config = %q, want %q", report.ProjectConfig, cfg.Path)
+	}
+	if report.RecommendedSubmitCommand != "aexp project run 'train'" {
+		t.Fatalf("recommended submit = %q", report.RecommendedSubmitCommand)
+	}
+	for _, want := range []string{
+		"aexp project sync --dry-run",
+		"aexp project run setup --dry-run",
+		"aexp project run 'train' --dry-run",
+		"aexp project run 'train'",
+	} {
+		if !containsString(report.Recommended, want) {
+			t.Fatalf("recommended missing %q: %#v", want, report.Recommended)
+		}
+	}
+	var setup, train doctorRecipe
+	for _, recipe := range report.Recipes {
+		switch recipe.Name {
+		case "setup":
+			setup = recipe
+		case "train":
+			train = recipe
+		}
+	}
+	if setup.Kind != store.RunKindSetup || setup.Evidence != "tooling only, not experiment evidence" {
+		t.Fatalf("unexpected setup recipe: %#v", setup)
+	}
+	if train.Kind != store.RunKindFormal || !train.Selected || train.Evidence != "experiment evidence" {
+		t.Fatalf("unexpected train recipe: %#v", train)
+	}
+}
+
+func TestProjectDoctorConfigFixesMissingRemoteCWD(t *testing.T) {
+	cfg := &projectFileConfig{
+		Path:     filepath.Join(t.TempDir(), ".aexp.yaml"),
+		Resource: "mu",
+		Cwd:      "/remote/project",
+		Commands: map[string]projectFileCommand{
+			"train": {Command: "python train.py", Kind: store.RunKindFormal},
+		},
+		Sync: projectFileSync{Target: "/remote/project"},
+	}
+	report := doctorReport{
+		Checks: []doctorCheck{
+			{Name: "cwd exists", OK: false, Severity: "fail"},
+		},
+	}
+
+	applyProjectDoctorConfigRecommendations(&report, cfg, "train")
+
+	for _, want := range []string{
+		"cwd missing on remote; use: aexp project sync --dry-run",
+		"cwd missing on remote; then: aexp project sync",
+	} {
+		if !containsString(report.RecommendedFixes, want) {
+			t.Fatalf("fixes missing %q: %#v", want, report.RecommendedFixes)
+		}
+	}
+}
+
 func runProjectInitForTest(args ...string) (string, error) {
 	cmd := projectInitCmd()
 	cmd.SilenceUsage = true
@@ -187,4 +271,13 @@ func captureStdout(fn func() error) (string, error) {
 		runErr = closeErr
 	}
 	return string(out), runErr
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
