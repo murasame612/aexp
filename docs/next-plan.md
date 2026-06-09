@@ -292,6 +292,7 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - `aexp run list` active run 自动刷新与 cached 标注：已实现。
 - GPU lock 前 active run 刷新：已实现。
 - finished run cancel 拒绝：已实现，并有 executor 单测覆盖。
+- `aexp exec` 本地 API fast path：已实现，默认尝试 `aexp serve` 复用 SSH pool，不可达时 fallback 直连，支持 `--direct`。
 - `.aexp.yaml` 多行 `command: |`：已实现。
 - `project run --dry-run` 清晰展开：已实现。
 - `setup` 默认 no-gpu：已实现。
@@ -299,4 +300,4 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - 通用 events dashboard：已实现基础版本。
 - 通用 metric group charts：已实现基础版本。
 
-优先继续：daemon exec、`aexp-event` helper、project doctor 下一步命令生成器、project profile cache。
+优先继续：`aexp-event` helper、project doctor 下一步命令生成器、project profile cache、resource 控制通道状态。

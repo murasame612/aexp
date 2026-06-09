@@ -66,3 +66,46 @@ func TestExecViaLocalAPIFallsBackOnUnauthorized(t *testing.T) {
 		t.Fatalf("expected nil result on fallback, got %#v", result)
 	}
 }
+
+func TestExecViaLocalAPIFallsBackWhenUnavailable(t *testing.T) {
+	result, usedAPI, err := execViaLocalAPI(t.Context(), "http://127.0.0.1:1/api/v1", executor.ExecRequest{
+		ResourceID: "res_1",
+		Command:    "hostname",
+		TimeoutSec: 1,
+	})
+	if err != nil {
+		t.Fatalf("execViaLocalAPI error: %v", err)
+	}
+	if usedAPI {
+		t.Fatal("expected unreachable local API to fall back")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on fallback, got %#v", result)
+	}
+}
+
+func TestExecViaLocalAPIReturnsServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "EXEC_FAILED",
+			"details": "remote command failed",
+		})
+	}))
+	defer srv.Close()
+
+	result, usedAPI, err := execViaLocalAPI(t.Context(), srv.URL+"/api/v1", executor.ExecRequest{
+		ResourceID: "res_1",
+		Command:    "hostname",
+		TimeoutSec: 1,
+	})
+	if err == nil || err.Error() != "local aexp API exec failed: remote command failed" {
+		t.Fatalf("execViaLocalAPI error = %v", err)
+	}
+	if !usedAPI {
+		t.Fatal("expected API business error to stay on API path")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on API error, got %#v", result)
+	}
+}
