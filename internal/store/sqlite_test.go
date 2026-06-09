@@ -79,13 +79,14 @@ func TestRunCRUD(t *testing.T) {
 	s.CreateResource(ctx, &Resource{ID: "rsrc_r01", Name: "res1", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle})
 
 	run := &Run{
-		ID:         "run_test001",
-		ResourceID: "rsrc_r01",
-		Name:       "test-run",
-		Status:     RunStatusCreated,
-		Command:    "python train.py",
-		Cwd:        "/ws/project",
-		CondaEnv:   "tslib",
+		ID:           "run_test001",
+		ResourceID:   "rsrc_r01",
+		Name:         "test-run",
+		Status:       RunStatusCreated,
+		Command:      "python train.py",
+		Cwd:          "/ws/project",
+		CondaEnv:     "tslib",
+		UIEventsPath: "aexp-events.jsonl",
 	}
 
 	if err := s.CreateRun(ctx, run); err != nil {
@@ -96,18 +97,28 @@ func TestRunCRUD(t *testing.T) {
 	if got == nil || got.Command != "python train.py" {
 		t.Error("GetRun failed")
 	}
+	if got.UIEventsPath != "aexp-events.jsonl" {
+		t.Errorf("ui_events_path = %q, want %q", got.UIEventsPath, "aexp-events.jsonl")
+	}
 
 	runs, _ := s.ListRuns(ctx, RunFilter{ResourceID: "rsrc_r01"})
 	if len(runs) != 1 {
 		t.Errorf("len(runs) = %d, want 1", len(runs))
 	}
+	if runs[0].UIEventsPath != "aexp-events.jsonl" {
+		t.Errorf("list ui_events_path = %q, want %q", runs[0].UIEventsPath, "aexp-events.jsonl")
+	}
 
 	run.Status = RunStatusRunning
+	run.UIEventsPath = "events/train.jsonl"
 	run.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	s.UpdateRun(ctx, run)
 	got2, _ := s.GetRun(ctx, "run_test001")
 	if got2.Status != RunStatusRunning {
 		t.Errorf("status = %q, want %q", got2.Status, RunStatusRunning)
+	}
+	if got2.UIEventsPath != "events/train.jsonl" {
+		t.Errorf("updated ui_events_path = %q, want %q", got2.UIEventsPath, "events/train.jsonl")
 	}
 }
 

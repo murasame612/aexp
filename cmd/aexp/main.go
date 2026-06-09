@@ -86,7 +86,7 @@ func serveCmd() *cobra.Command {
 			logPath = expandPath(logPath)
 
 			if daemon && os.Getenv("AEXP_DAEMON_CHILD") == "" {
-				return startServeDaemon(logPath)
+				return startServeDaemon(logPath, host, port)
 			}
 
 			// Ensure directory exists
@@ -142,7 +142,7 @@ func serveCmd() *cobra.Command {
 	return cmd
 }
 
-func startServeDaemon(logPath string) error {
+func startServeDaemon(logPath string, host string, port int) error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
@@ -161,9 +161,38 @@ func startServeDaemon(logPath string) error {
 		return fmt.Errorf("start daemon: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "aexp server started in background (pid %d)\n", cmd.Process.Pid)
-	fmt.Fprintf(os.Stderr, "logs: %s\n", logPath)
-	return nil
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	addr := net.JoinHostPort(daemonHealthHost(host), fmt.Sprintf("%d", port))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-waitCh:
+			return fmt.Errorf("daemon exited before it became reachable: %w; logs: %s", err, logPath)
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			fmt.Fprintf(os.Stderr, "aexp server started in background (pid %d)\n", cmd.Process.Pid)
+			fmt.Fprintf(os.Stderr, "health: tcp://%s ok\n", addr)
+			fmt.Fprintf(os.Stderr, "logs: %s\n", logPath)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("daemon did not become reachable at %s within 5s; logs: %s", addr, logPath)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func daemonHealthHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 func stripFlag(args []string, flag string) []string {
@@ -1820,8 +1849,9 @@ elsewhere, register the resource with that root_dir first.
   Setup task (tracked, async, but not experiment evidence; defaults to no GPU):
     aexp run submit --resource mu --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'
 
-  Structured UI events (generic JSONL dashboard; also exported as $AEXP_UI_EVENTS):
-    aexp run submit --resource mu --ui-events aexp-events.jsonl -- python train.py`,
+  Structured UI events (generic JSONL dashboard; defaults to .aexp/events/<run_id>.jsonl):
+    aexp run submit --resource mu -- python train.py
+    python can import: from aexp_events import emit, metric, progress, param, note`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var submitReq executor.SubmitRequest
@@ -1883,8 +1913,8 @@ elsewhere, register the resource with that root_dir first.
 					fmt.Printf("Created run %s on %s\n", run.ID, resource)
 					fmt.Printf("Logs:   aexp run logs %s --tail 100\n", run.ID)
 					fmt.Printf("Status: aexp run status %s --short\n", run.ID)
-					if uiEventsPath != "" {
-						fmt.Printf("Events: %s\n", uiEventsPath)
+					if run.UIEventsPath != "" {
+						fmt.Printf("Events: %s\n", run.UIEventsPath)
 					}
 				},
 			})
@@ -1914,7 +1944,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
-	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (relative to cwd or absolute under resource root)")
+	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (default .aexp/events/<run_id>.jsonl; set off to disable)")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
 
 	return cmd

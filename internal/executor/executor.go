@@ -161,6 +161,7 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 			condaEnv = ""
 		}
 	}
+	req.UIEventsPath = normalizeUIEventsPath(req.UIEventsPath, runID, req.Cwd != "" || projectProfile != nil, remoteRunDir)
 
 	// Build env vars (GPU env must be injected before command)
 	envVars := copyMap(req.EnvVars)
@@ -579,6 +580,9 @@ func (e *Executor) resolveRunLogFile(ctx context.Context, runID string, logPath 
 		remotePath = path.Clean(cleanPath)
 	} else {
 		base := strings.TrimSpace(run.Cwd)
+		if strings.TrimSpace(run.ResolvedCwd) != "" {
+			base = strings.TrimSpace(run.ResolvedCwd)
+		}
 		if base == "" {
 			base = run.RemoteRunDir
 		}
@@ -1062,6 +1066,14 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 		}
 		lines = append(lines, fmt.Sprintf("cd %s", shellQuote(resolved)))
 	}
+	if req.UIEventsPath != "" {
+		lines = append(lines, `mkdir -p "$(dirname -- "$AEXP_UI_EVENTS")"`)
+		lines = append(lines, `: > "$AEXP_UI_EVENTS"`)
+		lines = append(lines, `cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`)
+		lines = append(lines, aexpEventsPythonHelper())
+		lines = append(lines, `PY`)
+		lines = append(lines, `export PYTHONPATH="$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`)
+	}
 
 	// The actual command
 	commandLine := runCommandLine(req)
@@ -1137,6 +1149,69 @@ func shellQuote(s string) string {
 // shellEscape is kept for backward compatibility with tmux session names etc.
 func shellEscape(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func normalizeUIEventsPath(value string, runID string, hasWorkingDir bool, remoteRunDir string) string {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
+	case "none", "off", "false", "disable", "disabled":
+		return ""
+	case "":
+		if !hasWorkingDir {
+			return path.Join(remoteRunDir, "events.jsonl")
+		}
+		return path.Join(".aexp", "events", runID+".jsonl")
+	default:
+		return value
+	}
+}
+
+func aexpEventsPythonHelper() string {
+	return `import json
+import os
+import time
+from pathlib import Path
+
+
+def _event_path():
+    path = os.environ.get("AEXP_UI_EVENTS", "")
+    if not path:
+        return None
+    return Path(path)
+
+
+def emit(event=None, **fields):
+    data = {}
+    if isinstance(event, dict):
+        data.update(event)
+    elif event is not None:
+        data["type"] = str(event)
+    data.update(fields)
+    data.setdefault("time", time.time())
+    path = _event_path()
+    if path is None:
+        return data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return data
+
+
+def metric(name, value, **fields):
+    return emit(type="metric", name=name, value=value, **fields)
+
+
+def progress(name, current=None, total=None, **fields):
+    return emit(type="progress", name=name, current=current, total=total, **fields)
+
+
+def param(name, value, **fields):
+    return emit(type="param", name=name, value=value, **fields)
+
+
+def note(text, **fields):
+    return emit(type="note", text=text, **fields)
+`
 }
 
 func copyMap(m map[string]string) map[string]string {
