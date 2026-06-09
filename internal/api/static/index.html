@@ -64,12 +64,20 @@
 
         /* Status pills */
         .pill {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 24px;
+            min-width: 44px;
             padding: 2px 10px;
             border-radius: 9999px;
             font-size: 12px;
             font-weight: 600;
-            line-height: 1.6;
+            line-height: 1.2;
+            white-space: nowrap;
+            word-break: keep-all;
+            text-align: center;
+            vertical-align: middle;
         }
         .pill-running     { background: #e6f0e8; color: #35644a; }
         .pill-succeeded   { background: #e3edf6; color: #346486; }
@@ -1443,7 +1451,7 @@
                         <span class="font-medium text-sm">${r.name || r.id}</span>
                         <div class="flex gap-2 flex-wrap justify-end">
                             ${runKindPill(kind)}
-                            <span class="pill pill-running">${escHTML(statusLabel('running'))}</span>
+                            ${runStatusPill('running')}
                         </div>
                     </div>
                     <div class="text-xs text-ink-secondary font-mono mt-1">${cmd.substring(0, 70)}${cmd.length > 70 ? '...' : ''}</div>
@@ -1584,8 +1592,8 @@
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>${escHTML(r.name || '-')}</td>
                         <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
-                        <td>${runKindPill(kind)}</td>
-                        <td><span class="pill pill-${r.status || 'unknown'}">${escHTML(statusLabel(r.status))}</span></td>
+                        <td class="whitespace-nowrap">${runKindPill(kind)}</td>
+                        <td class="whitespace-nowrap">${runStatusPill(r.status)}</td>
                         <td class="tabular-nums text-xs">${escHTML(runGPULabel(r.gpu_index))}</td>
                         <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
                         <td><button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button></td>
@@ -1617,7 +1625,7 @@
                         <div class="font-medium font-heading text-sm truncate">${escHTML(title)}</div>
                         <div class="text-xs text-ink-muted">${escHTML(updated)} · ${escHTML(resourceLabel(run.resource_id))} · <span class="font-mono">${escHTML(runId)}</span></div>
                     </div>
-                    <span class="pill pill-${escAttr(run.status || 'unknown')}">${escHTML(statusLabel(run.status || 'missing'))}</span>
+                    ${runStatusPill(run.status || 'missing')}
                 </div>
                 <div class="detail-code mb-3">${escHTML(command || '—')}</div>
                 <textarea class="favorite-note" id="favorite-note-${escAttr(runId)}" placeholder="${escAttr(t('favorites.notePlaceholder'))}">${escHTML(bookmark.note || '')}</textarea>
@@ -1656,6 +1664,11 @@
         function statusLabel(status) {
             const key = 'status.' + (status || 'unknown');
             return t(key) === key ? (status || '-') : t(key);
+        }
+
+        function runStatusPill(status) {
+            status = asText(status || 'unknown').toLowerCase();
+            return `<span class="pill pill-${escAttr(status)}">${escHTML(statusLabel(status))}</span>`;
         }
 
         function runKindLabel(kind) {
@@ -1890,7 +1903,7 @@
                 </div>
                 <div class="detail-grid">
                     <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${escHTML(run.id)}</div></div>
-                    <div><div class="detail-label">${escHTML(t('table.status'))}</div><div class="detail-value"><span class="pill pill-${run.status}">${escHTML(statusLabel(run.status))}</span></div></div>
+                    <div><div class="detail-label">${escHTML(t('table.status'))}</div><div class="detail-value">${runStatusPill(run.status)}</div></div>
                     <div><div class="detail-label">${escHTML(t('table.kind'))}</div><div class="detail-value">${runKindPill(run.kind || 'formal')}</div></div>
                     <div><div class="detail-label">${escHTML(t('table.gpu'))}</div><div class="detail-value">${escHTML(runGPULabel(run.gpu_index))}</div></div>
                     <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
