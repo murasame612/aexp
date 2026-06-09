@@ -188,10 +188,10 @@
             font-size: 12px;
             line-height: 1.7;
             max-height: 400px;
-            overflow-y: auto;
+            overflow: auto;
             padding: 16px;
-            white-space: pre-wrap;
-            word-break: break-all;
+            white-space: pre;
+            word-break: normal;
         }
         .log-source {
             color: #e8a090;
@@ -212,6 +212,40 @@
             font-size: 13px;
             font-weight: 500;
             margin-bottom: 10px;
+        }
+        .metric-summary {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.875rem;
+            background: #fffdf8;
+            padding: 14px 16px;
+            margin-bottom: 16px;
+        }
+        .metric-summary table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .metric-summary th,
+        .metric-summary td {
+            padding: 7px 8px;
+            border-bottom: 1px solid #e8e5dc;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .metric-summary th:first-child,
+        .metric-summary td:first-child {
+            text-align: left;
+        }
+        .metric-summary tr:last-child td {
+            border-bottom: none;
+        }
+        .metric-summary .metric-highlight {
+            color: #c96545;
+            font-weight: 700;
+        }
+        .metric-summary tbody tr:first-child td {
+            background: #fff4e8;
         }
 
         /* Modal overlay */
@@ -1163,6 +1197,7 @@
                 'logs.combinedClean': 'Clean merged log',
                 'logs.rawStreams': 'Raw stdout / stderr',
                 'logs.filteredProgress': 'hidden {count} progress refresh lines',
+                'logs.metricSummary': 'Metric summary',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1290,6 +1325,7 @@
                 'logs.combinedClean': '干净合并日志',
                 'logs.rawStreams': '原始 stdout / stderr',
                 'logs.filteredProgress': '已隐藏 {count} 行进度刷新',
+                'logs.metricSummary': '指标摘要',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1439,11 +1475,61 @@
             text = asText(text).trim();
             if (!text) return false;
             if (/(Traceback|Error|ERROR|Exception|WARNING|RuntimeError|failed|失败)/i.test(text)) return false;
-            if (/(Epoch|Class|Images|Instances|Box|mAP|precision|recall|loss|metrics)/i.test(text)) return false;
             const hasProgressBar = /\d+%\|/.test(text) || /\|\s*\d+\/\d+\s*\[/.test(text);
             const hasSpeed = /(\bit\/s\b|\bs\/it\b|<\d{2}:\d{2}|ETA|\?it\/s)/i.test(text);
             const compactCounter = /^\s*\d+\/\d+\s*(\[|$)/.test(text);
+            if (hasProgressBar || (hasSpeed && /(\d+%|\d+\/\d+)/.test(text)) || compactCounter) return true;
+            if (/(Epoch|Class|Images|Instances|Box|mAP|precision|recall|loss|metrics)/i.test(text)) return false;
             return hasProgressBar || (hasSpeed && /(\d+%|\d+\/\d+)/.test(text)) || compactCounter;
+        }
+        function extractMetricRows(stdoutLogs, stderrLogs) {
+            const rows = [];
+            const seen = new Set();
+            const allLines = [...logLines(stdoutLogs), ...logLines(stderrLogs)];
+            allLines.forEach(line => {
+                const text = asText(asObject(line).content).trim().replace(/\s+/g, ' ');
+                const m = text.match(/^all\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*$/i);
+                if (!m) return;
+                const key = m.slice(1).join('|');
+                if (seen.has(key)) return;
+                seen.add(key);
+                rows.push({
+                    className: 'all',
+                    images: m[1],
+                    instances: m[2],
+                    precision: m[3],
+                    recall: m[4],
+                    map50: m[5],
+                    map5095: m[6],
+                });
+            });
+            return rows;
+        }
+        function renderMetricSummary(stdoutLogs, stderrLogs) {
+            const rows = extractMetricRows(stdoutLogs, stderrLogs);
+            if (!rows.length) return '';
+            const visibleRows = rows.slice(-8).reverse();
+            return `<div class="metric-summary">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                    <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.metricSummary'))}</h3>
+                </div>
+                <div class="table-scroll">
+                    <table>
+                        <thead><tr>
+                            <th>Class</th><th>Images</th><th>Instances</th><th>P</th><th>R</th><th>mAP50</th><th>mAP50-95</th>
+                        </tr></thead>
+                        <tbody>${visibleRows.map(row => `<tr>
+                            <td>${escHTML(row.className)}</td>
+                            <td>${escHTML(row.images)}</td>
+                            <td>${escHTML(row.instances)}</td>
+                            <td>${escHTML(row.precision)}</td>
+                            <td>${escHTML(row.recall)}</td>
+                            <td class="metric-highlight">${escHTML(row.map50)}</td>
+                            <td class="metric-highlight">${escHTML(row.map5095)}</td>
+                        </tr>`).join('')}</tbody>
+                    </table>
+                </div>
+            </div>`;
         }
         function combinedLogLines(stdoutLogs, stderrLogs) {
             const rows = [];
@@ -2147,7 +2233,7 @@
                 const errLogs = asObject(errLogsRaw);
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
-                    el.innerHTML = renderCombinedLogBlock(logs, errLogs) + `
+                    el.innerHTML = renderMetricSummary(logs, errLogs) + renderCombinedLogBlock(logs, errLogs) + `
                         <details class="raw-log-streams">
                             <summary>${escHTML(t('logs.rawStreams'))}</summary>
                             ${renderLogBlock(run.id, 'stdout', logs, '', true)}
