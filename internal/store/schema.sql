@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS runs (
     log_paths_json      TEXT DEFAULT '[]',
     artifact_paths_json TEXT DEFAULT '[]',
     metric_paths_json   TEXT DEFAULT '[]',
+    ui_events_path      TEXT DEFAULT '',
     tmux_session        TEXT DEFAULT '',
     remote_run_dir      TEXT DEFAULT '',
     exit_code           INTEGER,

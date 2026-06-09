@@ -33,6 +33,7 @@ type SubmitRequest struct {
 	LogPaths      []string          `json:"log_paths"`
 	ArtifactPaths []string          `json:"artifact_paths"`
 	MetricPaths   []string          `json:"metric_paths"`
+	UIEventsPath  string            `json:"ui_events_path"`
 	EnvVars       map[string]string `json:"env_vars"`
 	CreatedBy     string            `json:"created_by"`
 }
@@ -166,6 +167,10 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	if gpuIndex >= 0 {
 		envVars["CUDA_VISIBLE_DEVICES"] = fmt.Sprintf("%d", gpuIndex)
 	}
+	envVars["AEXP_RUN_DIR"] = remoteRunDir
+	if req.UIEventsPath != "" {
+		envVars["AEXP_UI_EVENTS"] = req.UIEventsPath
+	}
 
 	// Build command.sh content
 	commandScript := buildCommandScript(req, condaEnv, resource.CondaBase, resource.CondaInit, resource.RootDir, envVars, projectProfile)
@@ -200,6 +205,7 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		LogPathsJSON:      string(logPathsJSON),
 		ArtifactPathsJSON: string(artifactPathsJSON),
 		MetricPathsJSON:   string(metricPathsJSON),
+		UIEventsPath:      req.UIEventsPath,
 		TmuxSession:       tmuxSession,
 		RemoteRunDir:      remoteRunDir,
 		CreatedBy:         req.CreatedBy,

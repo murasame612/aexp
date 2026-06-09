@@ -49,6 +49,7 @@ type Run struct {
 	LogPathsJSON      string        `json:"log_paths_json"`
 	ArtifactPathsJSON string        `json:"artifact_paths_json"`
 	MetricPathsJSON   string        `json:"metric_paths_json"`
+	UIEventsPath      string        `json:"ui_events_path"`
 	TmuxSession       string        `json:"tmux_session"`
 	RemoteRunDir      string        `json:"remote_run_dir"`
 	ExitCode          sql.NullInt64 `json:"exit_code"`

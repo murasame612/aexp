@@ -220,6 +220,114 @@
             margin: 0 0 12px;
         }
 
+        /* Structured run events */
+        .event-dashboard {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.875rem;
+            background: #fffdf8;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .event-dashboard-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .event-dashboard-title {
+            font-family: 'Poppins', Arial, sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: #191817;
+        }
+        .event-dashboard-path {
+            color: #7a766d;
+            font-family: 'Menlo', monospace;
+            font-size: 11px;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .event-section-title {
+            color: #5f5b53;
+            font-size: 12px;
+            font-weight: 600;
+            margin: 14px 0 8px;
+        }
+        .event-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        .event-card {
+            min-width: 0;
+            border: 1px solid #e8e5dc;
+            border-radius: 0.75rem;
+            background: #faf9f5;
+            padding: 10px 12px;
+        }
+        .event-card-label {
+            color: #5f5b53;
+            font-size: 11px;
+            line-height: 1.3;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .event-card-value {
+            margin-top: 4px;
+            color: #191817;
+            font-family: 'Menlo', monospace;
+            font-size: 17px;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        .event-card-meta {
+            margin-top: 4px;
+            color: #7a766d;
+            font-size: 11px;
+            min-height: 16px;
+        }
+        .event-progress-track {
+            height: 7px;
+            margin-top: 8px;
+            background: #d8d3c8;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+        .event-progress-fill {
+            height: 100%;
+            background: #c96545;
+            border-radius: 999px;
+            transition: width 220ms ease-out;
+        }
+        .event-sparkline {
+            width: 100%;
+            height: 28px;
+            margin-top: 6px;
+            display: block;
+        }
+        .event-timeline {
+            display: grid;
+            gap: 8px;
+        }
+        .event-note {
+            border-left: 3px solid #c96545;
+            padding: 7px 10px;
+            background: #faf9f5;
+            border-radius: 0 0.5rem 0.5rem 0;
+            color: #5f5b53;
+            font-size: 12px;
+            overflow-wrap: anywhere;
+        }
+        .event-empty {
+            color: #7a766d;
+            font-size: 13px;
+            padding: 10px 0 2px;
+        }
+
         /* Modal overlay */
         .modal-bg {
             background: rgba(25, 24, 23, 0.45);
@@ -1045,6 +1153,9 @@
         let logSockets = [];
         let currentDetailRunId = '';
         let liveLogFollowing = false;
+        let currentUIEventsPath = '';
+        let currentEventLines = [];
+        let eventRenderScheduled = false;
         let resourcesById = new Map();
         let allRuns = [];
         let allExecEvents = [];
@@ -1175,6 +1286,13 @@
                 'logs.loadRaw': 'Load raw stdout / stderr',
                 'logs.followLive': 'Resume tail',
                 'logs.stopLive': 'Pause tail',
+                'events.dashboard': 'Run Events',
+                'events.noEvents': 'No structured events yet',
+                'events.progress': 'Progress',
+                'events.metrics': 'Metrics',
+                'events.params': 'Parameters',
+                'events.timeline': 'Timeline',
+                'events.raw': 'Raw event stream',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1306,6 +1424,13 @@
                 'logs.loadRaw': '加载原始 stdout / stderr',
                 'logs.followLive': '继续 tail',
                 'logs.stopLive': '暂停 tail',
+                'events.dashboard': '运行事件',
+                'events.noEvents': '还没有结构化事件',
+                'events.progress': '进度',
+                'events.metrics': '指标',
+                'events.params': '参数',
+                'events.timeline': '时间线',
+                'events.raw': '原始事件流',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1501,6 +1626,181 @@
                     </div>
                     <div class="log-pane" id="log-pane-agent" data-log-path="${escAttr(logPath)}" data-lines="${escAttr(String(lines.length))}">${lines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
                 </div>`;
+        }
+        function uiEventsPath(run) {
+            return asText(asObject(run).ui_events_path).trim();
+        }
+        function eventLineContent(line) {
+            if (line && typeof line === 'object' && 'content' in line) return asText(line.content);
+            return asText(line);
+        }
+        function parseEventLines(lines) {
+            return asArray(lines).map((line, idx) => {
+                const raw = eventLineContent(line).trim();
+                if (!raw) return null;
+                try {
+                    const obj = asObject(JSON.parse(raw));
+                    obj._raw = raw;
+                    obj._line = idx + 1;
+                    obj.type = asText(obj.type || obj.event || 'note').toLowerCase();
+                    return obj;
+                } catch {
+                    return { type: 'note', text: raw, _raw: raw, _line: idx + 1 };
+                }
+            }).filter(Boolean);
+        }
+        function numberValue(v) {
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+        }
+        function eventName(ev, fallback) {
+            const parts = [ev.split, ev.stage, ev.name || ev.metric || ev.key || ev.label].map(asText).filter(Boolean);
+            return parts.join('/') || fallback || ev.type || 'event';
+        }
+        function eventStepLabel(ev) {
+            const bits = [];
+            if (ev.epoch != null) bits.push('epoch ' + ev.epoch);
+            if (ev.step != null) bits.push('step ' + ev.step);
+            if (ev.iter != null && ev.step == null) bits.push('iter ' + ev.iter);
+            return bits.join(' · ');
+        }
+        function formatEventValue(v) {
+            const n = numberValue(v);
+            if (n == null) return asText(v || '—');
+            const av = Math.abs(n);
+            if (av !== 0 && (av >= 10000 || av < 0.001)) return n.toExponential(3);
+            if (Number.isInteger(n)) return String(n);
+            return String(Number(n.toPrecision(5)));
+        }
+        function latestByName(events, predicate) {
+            const m = new Map();
+            events.forEach(ev => {
+                if (!predicate(ev)) return;
+                m.set(eventName(ev), ev);
+            });
+            return Array.from(m.entries()).map(([name, ev]) => ({ name, ev }));
+        }
+        function metricSeries(events, name) {
+            return events.filter(ev => {
+                const t = asText(ev.type).toLowerCase();
+                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && eventName(ev) === name && numberValue(ev.value) != null;
+            }).map(ev => numberValue(ev.value)).slice(-24);
+        }
+        function sparkline(values) {
+            values = asArray(values).filter(v => numberValue(v) != null).map(Number);
+            if (values.length < 2) return '';
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const span = max - min || 1;
+            const pts = values.map((v, i) => {
+                const x = values.length === 1 ? 0 : (i / (values.length - 1)) * 100;
+                const y = 26 - ((v - min) / span) * 22;
+                return x.toFixed(1) + ',' + y.toFixed(1);
+            }).join(' ');
+            return `<svg class="event-sparkline" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="#c96545" stroke-width="2" points="${escAttr(pts)}"/></svg>`;
+        }
+        function renderEventDashboardHTML(runId, eventPath, rawLines) {
+            const events = parseEventLines(rawLines);
+            if (!events.length) {
+                return `<div class="event-dashboard" id="run-events-dashboard">
+                    <div class="event-dashboard-head">
+                        <div>
+                            <div class="event-dashboard-title">${escHTML(t('events.dashboard'))}</div>
+                            <div class="event-dashboard-path">${escHTML(eventPath)}</div>
+                        </div>
+                    </div>
+                    <div class="event-empty">${escHTML(t('events.noEvents'))}</div>
+                </div>`;
+            }
+            const progress = latestByName(events, ev => {
+                const t = asText(ev.type).toLowerCase();
+                return t === 'progress' || ev.current != null || ev.total != null;
+            }).slice(-6);
+            const metrics = latestByName(events, ev => {
+                const t = asText(ev.type).toLowerCase();
+                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
+            }).slice(-12);
+            const params = latestByName(events, ev => {
+                const t = asText(ev.type).toLowerCase();
+                return t === 'param' || t === 'params' || t === 'hparam' || t === 'config' || t === 'model';
+            }).slice(-10);
+            const timeline = events.filter(ev => {
+                const t = asText(ev.type).toLowerCase();
+                return ['note', 'phase', 'summary', 'error', 'warning', 'checkpoint'].includes(t) || ev.text || ev.message;
+            }).slice(-12);
+            const progressHTML = progress.length ? `
+                <div class="event-section-title">${escHTML(t('events.progress'))}</div>
+                <div class="event-grid">${progress.map(({ name, ev }) => {
+                    const current = numberValue(ev.current ?? ev.step ?? ev.iter ?? ev.epoch);
+                    const total = numberValue(ev.total ?? ev.steps ?? ev.iters ?? ev.epochs);
+                    const pct = total && current != null ? Math.max(0, Math.min(100, current / total * 100)) : null;
+                    const value = pct == null ? formatEventValue(ev.value ?? current ?? ev.status ?? '') : pct.toFixed(0) + '%';
+                    const meta = [current != null && total ? `${formatEventValue(current)}/${formatEventValue(total)}` : '', eventStepLabel(ev)].filter(Boolean).join(' · ');
+                    return `<div class="event-card">
+                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(name)}</div>
+                        <div class="event-card-value">${escHTML(value)}</div>
+                        ${pct == null ? '' : `<div class="event-progress-track"><div class="event-progress-fill" style="width:${escAttr(pct.toFixed(1))}%"></div></div>`}
+                        <div class="event-card-meta">${escHTML(meta || asText(ev.status || ''))}</div>
+                    </div>`;
+                }).join('')}</div>` : '';
+            const metricsHTML = metrics.length ? `
+                <div class="event-section-title">${escHTML(t('events.metrics'))}</div>
+                <div class="event-grid">${metrics.map(({ name, ev }) => {
+                    const series = metricSeries(events, name);
+                    return `<div class="event-card">
+                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(name)}</div>
+                        <div class="event-card-value">${escHTML(formatEventValue(ev.value))}</div>
+                        ${sparkline(series)}
+                        <div class="event-card-meta">${escHTML(eventStepLabel(ev) || asText(ev.unit || ''))}</div>
+                    </div>`;
+                }).join('')}</div>` : '';
+            const paramsHTML = params.length ? `
+                <div class="event-section-title">${escHTML(t('events.params'))}</div>
+                <div class="event-grid">${params.map(({ name, ev }) => {
+                    const value = ev.value ?? ev.params ?? ev.config ?? ev.text ?? ev.message ?? '—';
+                    const text = typeof value === 'object' ? JSON.stringify(value) : asText(value);
+                    return `<div class="event-card">
+                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(name)}</div>
+                        <div class="event-card-value" style="font-size:13px">${escHTML(text)}</div>
+                        <div class="event-card-meta">${escHTML(eventStepLabel(ev))}</div>
+                    </div>`;
+                }).join('')}</div>` : '';
+            const timelineHTML = timeline.length ? `
+                <div class="event-section-title">${escHTML(t('events.timeline'))}</div>
+                <div class="event-timeline">${timeline.map(ev => {
+                    const label = eventName(ev, ev.type);
+                    const text = ev.text ?? ev.message ?? ev.value ?? ev.status ?? ev._raw;
+                    return `<div class="event-note"><strong>${escHTML(label)}</strong>${text ? ' · ' + escHTML(asText(text)) : ''}</div>`;
+                }).join('')}</div>` : '';
+            return `<div class="event-dashboard" id="run-events-dashboard">
+                <div class="event-dashboard-head">
+                    <div>
+                        <div class="event-dashboard-title">${escHTML(t('events.dashboard'))}</div>
+                        <div class="event-dashboard-path">${escHTML(eventPath)} · ${escHTML(t('logs.lines', { count: events.length }))}</div>
+                    </div>
+                </div>
+                ${progressHTML || metricsHTML || paramsHTML || timelineHTML ? progressHTML + metricsHTML + paramsHTML + timelineHTML : '<div class="event-empty">' + escHTML(t('events.noEvents')) + '</div>'}
+            </div>`;
+        }
+        function scheduleEventDashboardRender(runId, eventPath) {
+            if (eventRenderScheduled) return;
+            eventRenderScheduled = true;
+            requestAnimationFrame(() => {
+                eventRenderScheduled = false;
+                if (currentDetailRunId !== runId || currentUIEventsPath !== eventPath) return;
+                const el = document.getElementById('run-events-detail');
+                if (el) el.innerHTML = renderEventDashboardHTML(runId, eventPath, currentEventLines);
+            });
+        }
+        function renderRunEventsBlock(runId, eventPath, logs) {
+            const lines = logLines(logs).map(l => asText(asObject(l).content));
+            currentUIEventsPath = eventPath;
+            currentEventLines = lines.slice(-LIVE_LOG_MAX_LINES);
+            return `<div id="run-events-detail">${renderEventDashboardHTML(runId, eventPath, currentEventLines)}</div>
+                <details class="raw-log-streams">
+                    <summary>${escHTML(t('events.raw'))}</summary>
+                    <div class="log-pane" id="log-pane-events" data-log-path="${escAttr(eventPath)}" data-lines="${escAttr(String(currentEventLines.length))}">${currentEventLines.map(escHTML).join('\n')}</div>
+                </details>`;
         }
         function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
             const lines = logLines(logs);
@@ -2111,6 +2411,9 @@
             logSockets.forEach(sock => sock.close());
             logSockets = [];
             liveLogFollowing = false;
+            currentUIEventsPath = '';
+            currentEventLines = [];
+            eventRenderScheduled = false;
             currentDetailRunId = id || '';
             document.getElementById('detail-title').textContent = id || t('runs.detail');
             document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('state.loading')) + '</div>';
@@ -2160,9 +2463,10 @@
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
             });
 
-            const preferredLogPath = preferredRunLogPath(run);
+            const eventPath = uiEventsPath(run);
+            const preferredLogPath = eventPath || preferredRunLogPath(run);
             const logPromise = preferredLogPath
-                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=300&tail=true')
+                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=1000&tail=true')
                 : Promise.all([
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
@@ -2171,7 +2475,9 @@
                 if (currentDetailRunId !== id) return;
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
-                    const logHTML = preferredLogPath
+                    const logHTML = eventPath
+                        ? renderRunEventsBlock(run.id, eventPath, asObject(result))
+                        : preferredLogPath
                         ? renderAgentLogBlock(run.id, preferredLogPath, asObject(result))
                         : renderCombinedLogBlock(asObject(result[0]), asObject(result[1]));
                     el.innerHTML = logHTML + `
@@ -2181,7 +2487,7 @@
                         </div>
                         <div id="raw-log-streams"></div>`;
                 }
-                const lp = document.getElementById('log-pane-agent') || document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
+                const lp = document.getElementById('log-pane-events') || document.getElementById('log-pane-agent') || document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
                 if (run.status === 'running') startLiveLogs(run.id, preferredLogPath);
             }).catch(() => {
@@ -2205,7 +2511,11 @@
 
         async function loadMoreLogFile(runId, logPath) {
             const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?path=' + encodeURIComponent(logPath) + '&limit=1000&tail=true'));
-            const pane = document.getElementById('log-pane-agent');
+            if (logPath === currentUIEventsPath) {
+                currentEventLines = logLines(logs).map(l => asText(asObject(l).content)).slice(-LIVE_LOG_MAX_LINES);
+                scheduleEventDashboardRender(runId, logPath);
+            }
+            const pane = document.getElementById(logPath === currentUIEventsPath ? 'log-pane-events' : 'log-pane-agent');
             if (!pane) return;
             const lines = logLines(logs);
             pane.textContent = lines.map(l => asText(asObject(l).content)).join('\n');
@@ -2238,6 +2548,9 @@
             logSockets = [];
             liveLogFollowing = false;
             currentDetailRunId = '';
+            currentUIEventsPath = '';
+            currentEventLines = [];
+            eventRenderScheduled = false;
         }
 
         const LIVE_LOG_MAX_LINES = 1000;
@@ -2301,7 +2614,17 @@
                     if (!liveLogFollowing || currentDetailRunId !== runId) return;
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'log.line') {
-                        appendPlainLogLine(document.getElementById('log-pane-agent'), asText(msg.content));
+                        const content = asText(msg.content);
+                        if (logPath === currentUIEventsPath) {
+                            currentEventLines.push(content);
+                            if (currentEventLines.length > LIVE_LOG_MAX_LINES) {
+                                currentEventLines = currentEventLines.slice(-LIVE_LOG_MAX_LINES);
+                            }
+                            appendPlainLogLine(document.getElementById('log-pane-events'), content);
+                            scheduleEventDashboardRender(runId, logPath);
+                        } else {
+                            appendPlainLogLine(document.getElementById('log-pane-agent'), content);
+                        }
                     }
                 };
                 logSockets.push(sock);

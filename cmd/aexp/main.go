@@ -1796,7 +1796,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 }
 
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv, projectEnv, kind string
+	var resource, name, cwd, condaEnv, projectEnv, kind, uiEventsPath string
 	var gpuIndex int
 	var shellMode, force, noGPU bool
 	var logPaths, artifactPaths, metricPaths []string
@@ -1818,7 +1818,10 @@ elsewhere, register the resource with that root_dir first.
     aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'
 
   Setup task (tracked, async, but not experiment evidence; defaults to no GPU):
-    aexp run submit --resource mu --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'`,
+    aexp run submit --resource mu --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'
+
+  Structured UI events (generic JSONL dashboard; also exported as $AEXP_UI_EVENTS):
+    aexp run submit --resource mu --ui-events aexp-events.jsonl -- python train.py`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var submitReq executor.SubmitRequest
@@ -1851,6 +1854,7 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.LogPaths = logPaths
 			submitReq.ArtifactPaths = artifactPaths
 			submitReq.MetricPaths = metricPaths
+			submitReq.UIEventsPath = uiEventsPath
 
 			db := openDB()
 			defer db.Close()
@@ -1879,6 +1883,9 @@ elsewhere, register the resource with that root_dir first.
 					fmt.Printf("Created run %s on %s\n", run.ID, resource)
 					fmt.Printf("Logs:   aexp run logs %s --tail 100\n", run.ID)
 					fmt.Printf("Status: aexp run status %s --short\n", run.ID)
+					if uiEventsPath != "" {
+						fmt.Printf("Events: %s\n", uiEventsPath)
+					}
 				},
 			})
 			if err != nil {
@@ -1907,6 +1914,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
+	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (relative to cwd or absolute under resource root)")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
 
 	return cmd
@@ -2158,6 +2166,7 @@ func shortRunStatus(db store.Store, ctx context.Context, run *store.Run) map[str
 		"stdout":          strings.TrimRight(run.RemoteRunDir, "/") + "/logs/stdout.log",
 		"stderr":          strings.TrimRight(run.RemoteRunDir, "/") + "/logs/stderr.log",
 		"metrics":         tryJSONStringSlice(run.MetricPathsJSON),
+		"ui_events":       run.UIEventsPath,
 	}
 	if run.ExitCode.Valid {
 		out["exit_code"] = run.ExitCode.Int64
@@ -2206,6 +2215,9 @@ func printShortRunStatus(db store.Store, ctx context.Context, run *store.Run) {
 	fmt.Printf("stderr: %s\n", status["stderr"])
 	if metrics := tryJSONStringSlice(run.MetricPathsJSON); len(metrics) > 0 {
 		fmt.Printf("metrics:%s\n", strings.Join(metrics, ","))
+	}
+	if run.UIEventsPath != "" {
+		fmt.Printf("ui_events:%s\n", run.UIEventsPath)
 	}
 }
 
