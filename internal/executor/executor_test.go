@@ -1,9 +1,23 @@
 package executor
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ziwu/aexp/internal/store"
 )
+
+func newExecutorTestStore(t *testing.T) *store.SQLite {
+	t.Helper()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 func TestNormalizeUIEventsPath(t *testing.T) {
 	if got := normalizeUIEventsPath("", "run_abc", true, "/workspace/.aexp/runs/run_abc"); got != ".aexp/events/run_abc.jsonl" {
@@ -41,5 +55,43 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("command script missing %q\n%s", want, script)
 		}
+	}
+}
+
+func TestCancelFinishedRunIsRejected(t *testing.T) {
+	ctx := context.Background()
+	db := newExecutorTestStore(t)
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_cancel",
+		Name:    "cancel-resource",
+		Type:    store.ResourceTypeSSH,
+		Host:    "127.0.0.1",
+		Port:    22,
+		User:    "nobody",
+		RootDir: "/workspace",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_done",
+		ResourceID: "rsrc_cancel",
+		Status:     store.RunStatusSucceeded,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	exec := NewExecutor(NewSSHPool(0), db)
+	err := exec.Cancel(ctx, "run_done")
+	if err == nil || !strings.Contains(err.Error(), "already finished") {
+		t.Fatalf("Cancel finished run error = %v, want already finished", err)
+	}
+	got, err := db.GetRun(ctx, "run_done")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != store.RunStatusSucceeded {
+		t.Fatalf("status changed to %q", got.Status)
 	}
 }
