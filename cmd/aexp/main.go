@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2440,15 +2441,20 @@ func runMarksCmd() *cobra.Command {
 // --- exec ---
 
 func execCmd() *cobra.Command {
-	var resourceName, cwd, projectEnv, condaEnv string
+	var resourceName, cwd, projectEnv, condaEnv, apiURL string
 	var timeout int
-	var asJSON, shellMode, dryRun, force bool
+	var asJSON, shellMode, dryRun, force, direct bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [flags] -- <command>",
 		Short: "Run a one-shot command on a resource (no Run created)",
 		Long: `Execute a command on a registered resource for inspection/ops.
 Does NOT create a Run — use 'run submit' for experiment tasks.
+
+By default, exec first tries the local aexp API (127.0.0.1:8080) so a running
+aexp serve process can reuse its warm SSH pool. If no local API is reachable,
+exec falls back to direct SSH execution in this CLI process. Use --direct to
+skip the local API path.
 
 If the command matches a known long-running pattern (training, etc.),
 a warning is printed and execution is refused unless --force is set.
@@ -2523,12 +2529,7 @@ Examples:
 				return fmt.Errorf("resource %s not found", resourceName)
 			}
 
-			sshPool := executor.NewSSHPool(10 * time.Second)
-			loadSSHKeys(sshPool)
-
-			exec := executor.NewExecutor(sshPool, db)
-
-			result, err := exec.Exec(cmd.Context(), executor.ExecRequest{
+			req := executor.ExecRequest{
 				ResourceID: res.ID,
 				Command:    command,
 				Cwd:        cwd,
@@ -2536,25 +2537,30 @@ Examples:
 				CondaEnv:   condaEnv,
 				TimeoutSec: timeout,
 				Actor:      "cli",
-			})
-			if err != nil {
-				return err
 			}
 
-			if asJSON {
-				return printJSON(result)
+			var result *executor.ExecResult
+			if !direct {
+				apiResult, usedAPI, apiErr := execViaLocalAPI(cmd.Context(), apiURL, req)
+				if usedAPI {
+					if apiErr != nil {
+						return apiErr
+					}
+					result = apiResult
+				}
+			}
+			if result == nil {
+				sshPool := executor.NewSSHPool(10 * time.Second)
+				loadSSHKeys(sshPool)
+				exec := executor.NewExecutor(sshPool, db)
+				directResult, err := exec.Exec(cmd.Context(), req)
+				if err != nil {
+					return err
+				}
+				result = directResult
 			}
 
-			if result.Stdout != "" {
-				fmt.Print(result.Stdout)
-			}
-			if result.Stderr != "" {
-				fmt.Fprint(os.Stderr, result.Stderr)
-			}
-			if result.ExitCode != 0 {
-				return fmt.Errorf("exit code %d", result.ExitCode)
-			}
-			return nil
+			return printExecResult(result, asJSON)
 		},
 	}
 
@@ -2567,12 +2573,105 @@ Examples:
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Join command arguments as a raw remote shell string")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview command and long-running check without executing")
 	cmd.Flags().BoolVar(&force, "force", false, "Execute even if long-running pattern detected")
+	cmd.Flags().BoolVar(&direct, "direct", false, "Skip local aexp API fast path and execute from this CLI process")
+	cmd.Flags().StringVar(&apiURL, "api", defaultLocalAPIURL(), "Local aexp API base URL for exec fast path")
 	_ = cmd.MarkFlagRequired("resource")
 
 	cmd.AddCommand(execHistoryCmd())
 	cmd.AddCommand(execShowCmd())
 
 	return cmd
+}
+
+func execViaLocalAPI(ctx context.Context, apiURL string, req executor.ExecRequest) (*executor.ExecResult, bool, error) {
+	apiURL = strings.TrimRight(apiURL, "/")
+	if apiURL == "" {
+		return nil, false, nil
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, true, err
+	}
+
+	timeoutSec := req.TimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 30
+	}
+	apiCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec+10)*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(apiCtx, http.MethodPost, apiURL+"/exec", bytes.NewReader(body))
+	if err != nil {
+		return nil, true, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		if isLocalAPIUnavailable(err) {
+			return nil, false, nil
+		}
+		return nil, true, fmt.Errorf("local aexp API exec failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil, false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiErr struct {
+			Error   string `json:"error"`
+			Details string `json:"details"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		if apiErr.Details != "" {
+			return nil, true, fmt.Errorf("local aexp API exec failed: %s", apiErr.Details)
+		}
+		if apiErr.Error != "" {
+			return nil, true, fmt.Errorf("local aexp API exec failed: %s", apiErr.Error)
+		}
+		return nil, true, fmt.Errorf("local aexp API exec failed: HTTP %d", resp.StatusCode)
+	}
+
+	var result executor.ExecResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, true, fmt.Errorf("decode local aexp API exec result: %w", err)
+	}
+	return &result, true, nil
+}
+
+func printExecResult(result *executor.ExecResult, asJSON bool) error {
+	if asJSON {
+		return printJSON(result)
+	}
+	if result.Stdout != "" {
+		fmt.Print(result.Stdout)
+	}
+	if result.Stderr != "" {
+		fmt.Fprint(os.Stderr, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("exit code %d", result.ExitCode)
+	}
+	return nil
+}
+
+func defaultLocalAPIURL() string {
+	if v := strings.TrimRight(os.Getenv("AEXP_API_URL"), "/"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:8080/api/v1"
+}
+
+func isLocalAPIUnavailable(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connect: connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "Client.Timeout exceeded") ||
+		strings.Contains(msg, "context deadline exceeded")
 }
 
 func execHistoryCmd() *cobra.Command {

@@ -1036,8 +1036,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract actor from token (simplified: use "api" for now)
-	req.Actor = "api"
+	if req.Actor == "" {
+		req.Actor = "api"
+	}
 
 	result, err := s.executor.Exec(r.Context(), req)
 	if err != nil {
