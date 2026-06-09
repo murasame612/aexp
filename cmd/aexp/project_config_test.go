@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ziwu/aexp/internal/store"
@@ -68,4 +70,120 @@ sync:
 	if got := cfg.Sync.Excludes; len(got) != 1 || got[0] != "dataset/raw/" {
 		t.Fatalf("unexpected sync excludes: %#v", got)
 	}
+}
+
+func TestProjectInitDryRun(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "configs", "experiments"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("torch\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "train_fusion.sh"), []byte("#!/usr/bin/env bash\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "configs", "experiments", "fusion.yaml"), []byte("epochs: 10\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var text string
+	withWorkingDir(t, dir, func() {
+		out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project", "--dry-run")
+		if err != nil {
+			t.Fatalf("project init dry-run failed: %v\n%s", err, out)
+		}
+		text = out
+	})
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"target: " + filepath.Join(resolvedDir, ".aexp.yaml"),
+		"resource: mu",
+		"cwd: /remote/project",
+		"sync:",
+		"target: /remote/project",
+		"setup:",
+		"command: python -m pip install -r requirements.txt",
+		"train:",
+		"command: bash scripts/train_fusion.sh configs/experiments/fusion.yaml",
+		"aexp project doctor",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestProjectInitWritesAndRefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir, func() {
+		if out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project"); err != nil {
+			t.Fatalf("project init failed: %v\n%s", err, out)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(dir, ".aexp.yaml")); err != nil {
+		t.Fatalf("expected .aexp.yaml: %v", err)
+	}
+	withWorkingDir(t, dir, func() {
+		out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project")
+		if err == nil {
+			t.Fatalf("expected overwrite refusal, got success:\n%s", out)
+		}
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("expected overwrite warning, got err=%v out=%s", err, out)
+		}
+	})
+}
+
+func runProjectInitForTest(args ...string) (string, error) {
+	cmd := projectInitCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func withWorkingDir(t *testing.T, dir string, fn func()) {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(old); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	fn()
+}
+
+func captureStdout(fn func() error) (string, error) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	os.Stdout = w
+	runErr := fn()
+	closeErr := w.Close()
+	os.Stdout = old
+	out, readErr := io.ReadAll(r)
+	if readErr != nil {
+		return "", readErr
+	}
+	if closeErr != nil && runErr == nil {
+		runErr = closeErr
+	}
+	return string(out), runErr
 }

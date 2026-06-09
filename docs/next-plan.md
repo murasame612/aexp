@@ -285,6 +285,7 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 
 ## 当前完成状态
 
+- `aexp project init`：已实现，支持 dry-run、覆盖保护、requirements/pyproject/uv/train scripts/configs 初始猜测。
 - `aexp project run <recipe>`：已实现。
 - `aexp project sync`：已实现基础版本。
 - `.aexp.yaml` 多行 `command: |`：已实现。
@@ -294,4 +295,4 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - 通用 events dashboard：已实现基础版本。
 - 通用 metric group charts：已实现基础版本。
 
-优先继续：`project init`、run 状态一致性、daemon exec、`aexp-event` helper。
+优先继续：run 状态一致性、daemon exec、`aexp-event` helper、project doctor 下一步命令生成器。

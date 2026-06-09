@@ -669,6 +669,7 @@ resource + cwd + environment strategy + result/log globs.`,
 	}
 	cmd.AddCommand(projectDetectCmd())
 	cmd.AddCommand(projectDoctorCmd())
+	cmd.AddCommand(projectInitCmd())
 	cmd.AddCommand(projectRunCmd())
 	cmd.AddCommand(projectSyncCmd())
 	return cmd
@@ -707,6 +708,217 @@ type projectFileSync struct {
 	DeleteExtra       bool
 	NoDefaultExcludes bool
 	TimeoutSec        int
+}
+
+func projectInitCmd() *cobra.Command {
+	var resourceName, cwd, envStrategy, condaEnv, outputPath string
+	var defaultGPU int
+	var force, dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create a project .aexp.yaml recipe file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if envStrategy == "" {
+				envStrategy = executor.ProjectEnvAuto
+			}
+			if envStrategy != executor.ProjectEnvAuto && envStrategy != executor.ProjectEnvRaw {
+				return fmt.Errorf("--env must be auto or raw")
+			}
+			localDir, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get current directory: %w", err)
+			}
+			if outputPath == "" {
+				outputPath = filepath.Join(localDir, ".aexp.yaml")
+			} else {
+				outputPath = expandPath(outputPath)
+				if !filepath.IsAbs(outputPath) {
+					outputPath = filepath.Join(localDir, outputPath)
+				}
+			}
+			if cwd == "" {
+				cwd = localDir
+			}
+			guess := guessProjectInit(localDir)
+			content := renderProjectInitConfig(projectInitConfig{
+				Resource:    resourceName,
+				Cwd:         cwd,
+				Env:         envStrategy,
+				CondaEnv:    condaEnv,
+				DefaultGPU:  defaultGPU,
+				SetupCmd:    guess.SetupCmd,
+				TrainCmd:    guess.TrainCmd,
+				Logs:        guess.Logs,
+				Metrics:     guess.Metrics,
+				SyncProfile: guess.SyncProfile,
+			})
+			if dryRun {
+				fmt.Printf("target: %s\n", outputPath)
+				fmt.Println(content)
+				printProjectInitNextSteps()
+				return nil
+			}
+			if _, err := os.Stat(outputPath); err == nil && !force {
+				return fmt.Errorf("%s already exists; pass --force to overwrite", outputPath)
+			} else if err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("check output file: %w", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+				return fmt.Errorf("create output directory: %w", err)
+			}
+			if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
+				return fmt.Errorf("write project config: %w", err)
+			}
+			fmt.Printf("Created %s\n", outputPath)
+			printProjectInitNextSteps()
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Default resource name")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Remote project working directory (default: current directory)")
+	cmd.Flags().StringVar(&envStrategy, "env", executor.ProjectEnvAuto, "Runtime env strategy: auto or raw")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Default conda environment")
+	cmd.Flags().IntVar(&defaultGPU, "default-gpu", 0, "Default GPU index for formal recipes")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Output config path (default: .aexp.yaml)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the config without writing it")
+	return cmd
+}
+
+type projectInitConfig struct {
+	Resource    string
+	Cwd         string
+	Env         string
+	CondaEnv    string
+	DefaultGPU  int
+	SetupCmd    string
+	TrainCmd    string
+	Logs        []string
+	Metrics     []string
+	SyncProfile string
+}
+
+type projectInitGuess struct {
+	SetupCmd    string
+	TrainCmd    string
+	Logs        []string
+	Metrics     []string
+	SyncProfile string
+}
+
+func guessProjectInit(dir string) projectInitGuess {
+	guess := projectInitGuess{
+		SetupCmd:    "python -m pip install -r requirements.txt",
+		TrainCmd:    "python train.py",
+		Logs:        []string{"logs/**/*.log"},
+		Metrics:     []string{"runs/**/*.csv", "results/**/*.json"},
+		SyncProfile: "code",
+	}
+	if fileExists(filepath.Join(dir, "pyproject.toml")) && !fileExists(filepath.Join(dir, "requirements.txt")) {
+		guess.SetupCmd = "python -m pip install -e ."
+	}
+	if fileExists(filepath.Join(dir, "uv.lock")) || fileExists(filepath.Join(dir, "pyproject.toml")) && fileContains(filepath.Join(dir, "pyproject.toml"), "[tool.uv") {
+		guess.SetupCmd = "uv sync"
+	}
+	if candidate := firstExistingGlob(dir, "scripts/train*.sh"); candidate != "" {
+		guess.TrainCmd = "bash " + filepath.ToSlash(candidate)
+	} else if candidate := firstExistingGlob(dir, "scripts/train*.py"); candidate != "" {
+		guess.TrainCmd = "python " + filepath.ToSlash(candidate)
+	} else if fileExists(filepath.Join(dir, "main.py")) {
+		guess.TrainCmd = "python main.py"
+	}
+	if candidate := firstExistingGlob(dir, "configs/experiments/*.yaml"); candidate != "" {
+		if strings.HasPrefix(guess.TrainCmd, "bash ") {
+			guess.TrainCmd += " " + filepath.ToSlash(candidate)
+		} else {
+			guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
+		}
+	} else if candidate := firstExistingGlob(dir, "configs/*.yaml"); candidate != "" {
+		if strings.HasPrefix(guess.TrainCmd, "bash ") {
+			guess.TrainCmd += " " + filepath.ToSlash(candidate)
+		} else {
+			guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
+		}
+	}
+	if dirExists(filepath.Join(dir, "wandb")) {
+		guess.Metrics = append(guess.Metrics, "wandb/**/*.json")
+	}
+	return guess
+}
+
+func renderProjectInitConfig(cfg projectInitConfig) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource: %s\n", cfg.Resource)
+	fmt.Fprintf(&b, "cwd: %s\n", cfg.Cwd)
+	fmt.Fprintf(&b, "env: %s\n", cfg.Env)
+	if cfg.CondaEnv != "" {
+		fmt.Fprintf(&b, "conda_env: %s\n", cfg.CondaEnv)
+	}
+	fmt.Fprintf(&b, "default_gpu: %d\n\n", cfg.DefaultGPU)
+	writeYAMLList(&b, "logs", cfg.Logs)
+	writeYAMLList(&b, "metrics", cfg.Metrics)
+	fmt.Fprintf(&b, "\nsync:\n")
+	fmt.Fprintf(&b, "  source: ./\n")
+	fmt.Fprintf(&b, "  target: %s\n", cfg.Cwd)
+	fmt.Fprintf(&b, "  profile: %s\n\n", firstNonEmpty(cfg.SyncProfile, "code"))
+	fmt.Fprintf(&b, "setup:\n")
+	fmt.Fprintf(&b, "  command: %s\n", cfg.SetupCmd)
+	fmt.Fprintf(&b, "  kind: setup\n\n")
+	fmt.Fprintf(&b, "train:\n")
+	if strings.Contains(cfg.TrainCmd, "\n") {
+		fmt.Fprintf(&b, "  command: |\n")
+		for _, line := range strings.Split(cfg.TrainCmd, "\n") {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+	} else {
+		fmt.Fprintf(&b, "  command: %s\n", cfg.TrainCmd)
+	}
+	fmt.Fprintf(&b, "  kind: formal\n")
+	return b.String()
+}
+
+func writeYAMLList(b *strings.Builder, key string, values []string) {
+	fmt.Fprintf(b, "%s:\n", key)
+	for _, value := range values {
+		fmt.Fprintf(b, "  - %s\n", value)
+	}
+}
+
+func printProjectInitNextSteps() {
+	fmt.Println()
+	fmt.Println("Next:")
+	fmt.Println("  aexp project doctor")
+	fmt.Println("  aexp project run setup --dry-run")
+	fmt.Println("  aexp project run train --dry-run")
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func fileContains(path string, needle string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), needle)
+}
+
+func firstExistingGlob(baseDir string, pattern string) string {
+	matches, err := filepath.Glob(filepath.Join(baseDir, filepath.FromSlash(pattern)))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	rel, err := filepath.Rel(baseDir, matches[0])
+	if err != nil {
+		return matches[0]
+	}
+	return rel
 }
 
 func projectRunCmd() *cobra.Command {
@@ -924,7 +1136,7 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 		}
 		key, value, ok := strings.Cut(trimmed, ":")
 		if !ok {
-			return nil, fmt.Errorf("%s:%d: expected key: value", resolved, lineNo+1)
+			return nil, fmt.Errorf("%s:%d: expected key: value", resolved, lineNo)
 		}
 		key = strings.TrimSpace(key)
 		value = cleanProjectConfigValue(value)
