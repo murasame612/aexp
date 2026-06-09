@@ -12,6 +12,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -544,6 +545,103 @@ func printDoctorReport(report doctorReport) {
 	fmt.Println(report.RecommendedSubmitCommand)
 }
 
+func applyProjectDoctorConfigRecommendations(report *doctorReport, cfg *projectFileConfig, recipeName string) {
+	if recipeName == "" {
+		recipeName = defaultProjectRecipeName(cfg)
+	}
+	if recipeName == "" {
+		report.RecommendedSubmitCommand = "aexp project run <recipe> --dry-run"
+		return
+	}
+	if _, ok := cfg.Commands[recipeName]; !ok {
+		report.RecommendedFixes = append(report.RecommendedFixes, "recipe "+cliShellQuote(recipeName)+" not found in "+cliShellQuote(cfg.Path))
+		return
+	}
+	report.RecommendedSubmitCommand = joinNonEmpty(" ", "aexp project run", cliShellQuote(recipeName), projectConfigFlagForRecommendation(cfg.Path))
+}
+
+func printProjectDoctorRecipes(cfg *projectFileConfig, selected string) {
+	fmt.Println()
+	fmt.Println("project recipes:")
+	names := sortedProjectRecipeNames(cfg)
+	if len(names) == 0 {
+		fmt.Println("  none")
+		fmt.Println("  add a recipe such as:")
+		fmt.Println("    train:")
+		fmt.Println("      command: bash scripts/train.sh configs/experiment.yaml")
+		fmt.Println("      kind: formal")
+		return
+	}
+	if selected == "" {
+		selected = defaultProjectRecipeName(cfg)
+	}
+	for _, name := range names {
+		entry := cfg.Commands[name]
+		kind := entry.Kind
+		if kind == "" {
+			kind = store.RunKindFormal
+		}
+		marker := " "
+		if name == selected {
+			marker = "*"
+		}
+		fmt.Printf("%s %s: kind=%s, %s\n", marker, name, kind, projectKindEvidenceLabel(kind))
+		if strings.TrimSpace(entry.Command) == "" {
+			fmt.Println("    warning: missing command")
+		}
+	}
+	if selected != "" {
+		fmt.Println()
+		fmt.Println("recommended project command:")
+		fmt.Println(joinNonEmpty(" ", "aexp project run", cliShellQuote(selected), projectConfigFlagForRecommendation(cfg.Path), "--dry-run"))
+	}
+}
+
+func defaultProjectRecipeName(cfg *projectFileConfig) string {
+	for _, name := range []string{"train", "formal", "run"} {
+		if _, ok := cfg.Commands[name]; ok {
+			return name
+		}
+	}
+	names := sortedProjectRecipeNames(cfg)
+	for _, name := range names {
+		kind := cfg.Commands[name].Kind
+		if kind != store.RunKindSetup && kind != store.RunKindSmoke {
+			return name
+		}
+	}
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+func sortedProjectRecipeNames(cfg *projectFileConfig) []string {
+	names := make([]string, 0, len(cfg.Commands))
+	for name := range cfg.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func projectConfigFlagForRecommendation(path string) string {
+	if filepath.Base(path) == ".aexp.yaml" {
+		return ""
+	}
+	return "--config " + cliShellQuote(path)
+}
+
+func joinNonEmpty(sep string, values ...string) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return strings.Join(out, sep)
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -809,7 +907,10 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 	}
 	section := ""
 	listKey := ""
-	for lineNo, raw := range strings.Split(string(data), "\n") {
+	lines := strings.Split(string(data), "\n")
+	for i := 0; i < len(lines); i++ {
+		lineNo := i + 1
+		raw := lines[i]
 		line := stripProjectConfigComment(raw)
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -827,6 +928,9 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 		}
 		key = strings.TrimSpace(key)
 		value = cleanProjectConfigValue(value)
+		if isProjectBlockScalar(value) {
+			value, i = collectProjectBlockScalar(lines, i+1, indent)
+		}
 		if indent == 0 {
 			section = ""
 			listKey = ""
@@ -843,12 +947,12 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 				continue
 			}
 			if err := setProjectConfigScalar(cfg, "", key, value); err != nil {
-				return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo+1, err)
+				return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo, err)
 			}
 			continue
 		}
 		if section == "" {
-			return nil, fmt.Errorf("%s:%d: nested field without a section", resolved, lineNo+1)
+			return nil, fmt.Errorf("%s:%d: nested field without a section", resolved, lineNo)
 		}
 		listKey = ""
 		if value == "" {
@@ -856,7 +960,7 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 			continue
 		}
 		if err := setProjectConfigScalar(cfg, section, key, value); err != nil {
-			return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo+1, err)
+			return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo, err)
 		}
 	}
 	if cfg.Sync.Profile == "" {
@@ -1031,6 +1135,46 @@ func cleanProjectConfigValue(value string) string {
 	return value
 }
 
+func isProjectBlockScalar(value string) bool {
+	return value == "|" || value == "|-" || value == "|+"
+}
+
+func collectProjectBlockScalar(lines []string, start int, parentIndent int) (string, int) {
+	blockIndent := -1
+	end := start
+	for end < len(lines) {
+		raw := lines[end]
+		if strings.TrimSpace(raw) == "" {
+			end++
+			continue
+		}
+		indent := leadingSpaces(raw)
+		if indent <= parentIndent {
+			break
+		}
+		if blockIndent == -1 || indent < blockIndent {
+			blockIndent = indent
+		}
+		end++
+	}
+	if blockIndent == -1 {
+		return "", start - 1
+	}
+	out := make([]string, 0, end-start)
+	for _, raw := range lines[start:end] {
+		if strings.TrimSpace(raw) == "" {
+			out = append(out, "")
+			continue
+		}
+		if len(raw) >= blockIndent {
+			out = append(out, raw[blockIndent:])
+		} else {
+			out = append(out, strings.TrimLeft(raw, " "))
+		}
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n"), end - 1
+}
+
 func leadingSpaces(s string) int {
 	count := 0
 	for _, r := range s {
@@ -1095,9 +1239,60 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 		args = append(args, "--artifact-paths", p)
 	}
 	args = append(args, "--shell", "--", req.Args[len(req.Args)-1])
-	fmt.Printf("config: %s\n", configPath)
-	fmt.Printf("command: %s\n", commandName)
+	fmt.Println("Project run plan")
+	fmt.Println()
+	fmt.Printf("config:   %s\n", configPath)
+	fmt.Printf("recipe:   %s\n", commandName)
+	fmt.Printf("kind:     %s (%s)\n", req.Kind, projectKindEvidenceLabel(req.Kind))
+	fmt.Printf("resource: %s\n", resourceName)
+	fmt.Printf("cwd:      %s\n", req.Cwd)
+	fmt.Printf("env:      %s\n", req.ProjectEnv)
+	if req.CondaEnv != "" {
+		fmt.Printf("conda:    %s\n", req.CondaEnv)
+	}
+	fmt.Printf("gpu:      %s\n", runGPULabelText(req.GPUIndex))
+	printStringList("logs", req.LogPaths)
+	printStringList("metrics", req.MetricPaths)
+	printStringList("artifacts", req.ArtifactPaths)
+	fmt.Println("command:")
+	printIndentedBlock(req.Args[len(req.Args)-1], "  ")
+	fmt.Println()
+	fmt.Println("expanded submit command:")
 	fmt.Println(joinShellArgs(args))
+}
+
+func projectKindEvidenceLabel(kind string) string {
+	switch kind {
+	case store.RunKindSetup:
+		return "tooling only, not experiment evidence"
+	case store.RunKindSmoke:
+		return "smoke check, not experiment evidence"
+	case store.RunKindPilot:
+		return "pilot run"
+	default:
+		return "experiment evidence"
+	}
+}
+
+func runGPULabelText(gpuIndex int) string {
+	switch gpuIndex {
+	case store.GPUIndexNone:
+		return "none"
+	case store.GPUIndexAll:
+		return "all"
+	default:
+		return fmt.Sprintf("%d", gpuIndex)
+	}
+}
+
+func printIndentedBlock(value string, prefix string) {
+	if strings.TrimSpace(value) == "" {
+		fmt.Println(prefix + "-")
+		return
+	}
+	for _, line := range strings.Split(value, "\n") {
+		fmt.Println(prefix + line)
+	}
 }
 
 func submitConfiguredRun(ctx context.Context, resourceName string, submitReq executor.SubmitRequest, launchTimeoutSec int) error {
@@ -1231,7 +1426,7 @@ func projectDetectCmd() *cobra.Command {
 }
 
 func projectDoctorCmd() *cobra.Command {
-	var resourceName, cwd, condaEnv string
+	var resourceName, cwd, condaEnv, configPath, recipeName string
 	var gpuIndex int
 	var asJSON bool
 
@@ -1239,6 +1434,35 @@ func projectDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Validate a project profile and print the next submit command",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, cfgErr := loadProjectFileConfig(configPath)
+			if cfgErr != nil && configPath != "" {
+				return cfgErr
+			}
+			if cfg != nil {
+				if resourceName == "" {
+					resourceName = cfg.Resource
+				}
+				if cwd == "" {
+					cwd = cfg.Cwd
+				}
+				if condaEnv == "" {
+					condaEnv = cfg.CondaEnv
+				}
+				if !cmd.Flags().Changed("gpu-index") {
+					if cfg.DefaultGPU != nil {
+						gpuIndex = *cfg.DefaultGPU
+					}
+					if recipeName != "" {
+						if entry, ok := cfg.Commands[recipeName]; ok && entry.GPUIndex != nil {
+							gpuIndex = *entry.GPUIndex
+						}
+					}
+				}
+			}
+			if resourceName == "" {
+				return fmt.Errorf("resource is required: set resource: in .aexp.yaml or pass --resource")
+			}
+
 			db := openDB()
 			defer db.Close()
 
@@ -1256,6 +1480,9 @@ func projectDoctorCmd() *cobra.Command {
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			loadSSHKeys(sshPool)
 			report := runDoctorChecks(cmd.Context(), sshPool, res, cwd, condaEnv, gpuIndex)
+			if cfg != nil {
+				applyProjectDoctorConfigRecommendations(&report, cfg, recipeName)
+			}
 			if report.Project != nil {
 				if err := db.SaveProjectProfile(cmd.Context(), report.Project); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", err)
@@ -1265,6 +1492,9 @@ func projectDoctorCmd() *cobra.Command {
 				return printJSON(report)
 			}
 			printDoctorReport(report)
+			if cfg != nil {
+				printProjectDoctorRecipes(cfg, recipeName)
+			}
 			for _, check := range report.Checks {
 				if !check.OK && check.Severity != "warn" {
 					return fmt.Errorf("project doctor failed: %s", check.Name)
@@ -1276,9 +1506,10 @@ func projectDoctorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Project working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment override for auto detection")
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml when present)")
+	cmd.Flags().StringVar(&recipeName, "recipe", "", "Project recipe to validate in the recommendation")
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", 0, "GPU index used in the recommended submit command")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
-	_ = cmd.MarkFlagRequired("resource")
 	return cmd
 }
 

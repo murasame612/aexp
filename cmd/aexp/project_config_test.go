@@ -27,6 +27,12 @@ train:
 setup:
   command: python -m pip install -r requirements.txt
   kind: setup
+eval:
+  command: |
+    mkdir -p logs
+    python eval.py \
+      --config configs/eval.yaml
+quick: python quick.py
 sync:
   source: ./
   target: /home/ziwu/project
@@ -52,6 +58,12 @@ sync:
 	}
 	if got := cfg.Commands["setup"].Kind; got != store.RunKindSetup {
 		t.Fatalf("unexpected setup kind: %q", got)
+	}
+	if got := cfg.Commands["eval"].Command; got != "mkdir -p logs\npython eval.py \\\n  --config configs/eval.yaml" {
+		t.Fatalf("unexpected multiline command: %q", got)
+	}
+	if got := cfg.Commands["quick"].Command; got != "python quick.py" {
+		t.Fatalf("unexpected shorthand command: %q", got)
 	}
 	if got := cfg.Sync.Excludes; len(got) != 1 || got[0] != "dataset/raw/" {
 		t.Fatalf("unexpected sync excludes: %#v", got)
