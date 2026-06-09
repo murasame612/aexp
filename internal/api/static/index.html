@@ -797,16 +797,41 @@
         .link-btn { font-size: 12px; color: #5f5b53; }
         .link-btn:hover { color: #c96545; }
 
-        /* Detail grid */
+        /* Run detail */
+        .detail-card {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.875rem;
+            background: #fffdf8;
+            padding: 18px;
+            margin-bottom: 18px;
+        }
+        .detail-card-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .detail-card-title {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .detail-card-title .mono {
+            color: #5f5b53;
+            font-size: 12px;
+        }
         .detail-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 12px 24px;
             font-size: 14px;
-            margin-bottom: 24px;
         }
         .detail-label { color: #5f5b53; font-size: 13px; }
-        .detail-value { color: #191817; }
+        .detail-value { color: #191817; overflow-wrap: anywhere; }
+        .detail-wide { grid-column: 1 / -1; }
         .detail-code {
             grid-column: 1 / -1;
             background: #f0ede5;
@@ -816,6 +841,56 @@
             font-size: 12px;
             word-break: break-all;
             color: #191817;
+        }
+        .agent-findings-panel {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.875rem;
+            background: #fffdf8;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        .agent-findings-panel.important {
+            border: 2px solid #c96545;
+            background: #fff7f1;
+            box-shadow: 0 0 0 4px rgba(201, 101, 69, 0.12);
+        }
+        .agent-findings-panel.empty {
+            background: transparent;
+            border-style: dashed;
+            padding: 12px 14px;
+        }
+        .agent-findings-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .agent-findings-title {
+            font-family: 'Poppins', Arial, sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: #191817;
+        }
+        .agent-findings-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            background: #c96545;
+            color: #fffdf8;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+            padding: 6px 9px;
+            white-space: nowrap;
+        }
+        .agent-findings-empty {
+            color: #7a766d;
+            font-size: 13px;
+        }
+        .agent-findings-panel.important .mark-card {
+            border-color: rgba(201, 101, 69, 0.35);
+            background: #fffdf8;
         }
         .mark-card {
             border: 1px solid #d8d3c8;
@@ -1040,6 +1115,7 @@
                 'marks.noRecent': 'No agent findings yet',
                 'marks.noMarks': 'No run marks',
                 'marks.noAttached': 'No findings attached to this run',
+                'marks.important': 'Important',
                 'favorites.noFavorites': 'No favorite runs yet',
                 'favorites.missingRun': 'Missing run',
                 'favorites.notePlaceholder': 'Add a small human note...',
@@ -1162,6 +1238,7 @@
                 'marks.noRecent': '还没有 Agent 发现',
                 'marks.noMarks': '没有实验标记',
                 'marks.noAttached': '这个实验还没有关联发现',
+                'marks.important': '重要',
                 'favorites.noFavorites': '还没有收藏实验',
                 'favorites.missingRun': '实验不存在',
                 'favorites.notePlaceholder': '添加一条人工小标注...',
@@ -1508,13 +1585,18 @@
         function renderRunMarksInline(marks) {
             const arr = asArray(marks);
             if (!arr.length) {
-                return `<div class="mb-5">
-                    <h3 class="text-sm font-medium font-heading mb-2">${escHTML(t('sections.agentFindings'))}</h3>
-                    <div class="empty-state" style="padding:10px 0">${escHTML(t('marks.noAttached'))}</div>
+                return `<div class="agent-findings-panel empty">
+                    <div class="agent-findings-head" style="margin-bottom:4px">
+                        <div class="agent-findings-title">${escHTML(t('sections.agentFindings'))}</div>
+                    </div>
+                    <div class="agent-findings-empty">${escHTML(t('marks.noAttached'))}</div>
                 </div>`;
             }
-            return `<div class="mb-5">
-                <h3 class="text-sm font-medium font-heading mb-2">${escHTML(t('sections.agentFindings'))}</h3>
+            return `<div class="agent-findings-panel important">
+                <div class="agent-findings-head">
+                    <div class="agent-findings-title">${escHTML(t('sections.agentFindings'))}</div>
+                    <span class="agent-findings-badge">${escHTML(t('marks.important'))} · ${arr.length}</span>
+                </div>
                 ${arr.map(m => runMarkCardHTML(asObject(m), true)).join('')}
             </div>`;
         }
@@ -1916,19 +1998,23 @@
 
             document.getElementById('detail-title').textContent = run.name || run.id;
             document.getElementById('detail-content').innerHTML = `
-                <div class="flex justify-end mb-4">
-                    <button class="btn-secondary text-sm" onclick="toggleRunBookmark('${escAttr(run.id)}')">${escHTML(isFavorite ? t('runs.removeFavorite') : t('runs.addFavorite'))}</button>
-                </div>
-                <div class="detail-grid">
-                    <div><div class="detail-label">ID</div><div class="detail-value font-mono text-sm">${escHTML(run.id)}</div></div>
-                    <div><div class="detail-label">${escHTML(t('table.status'))}</div><div class="detail-value">${runStatusPill(run.status)}</div></div>
-                    <div><div class="detail-label">${escHTML(t('table.kind'))}</div><div class="detail-value">${runKindPill(run.kind || 'formal')}</div></div>
-                    <div><div class="detail-label">${escHTML(t('table.gpu'))}</div><div class="detail-value">${escHTML(runGPULabel(run.gpu_index))}</div></div>
-                    <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
-                    <div><div class="detail-label">Conda</div><div class="detail-value">${escHTML(run.conda_env || '—')}</div></div>
-                    <div class="detail-code">${escHTML(asText(run.command))}</div>
-                    <div><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${escHTML(run.cwd || '—')}</div></div>
-                    <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
+                <div class="detail-card">
+                    <div class="detail-card-head">
+                        <div class="detail-card-title">
+                            ${runStatusPill(run.status)}
+                            ${runKindPill(run.kind || 'formal')}
+                            <span class="mono">${escHTML(run.id)}</span>
+                        </div>
+                        <button class="btn-secondary text-sm" onclick="toggleRunBookmark('${escAttr(run.id)}')">${escHTML(isFavorite ? t('runs.removeFavorite') : t('runs.addFavorite'))}</button>
+                    </div>
+                    <div class="detail-grid">
+                        <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
+                        <div><div class="detail-label">${escHTML(t('table.gpu'))}</div><div class="detail-value">${escHTML(runGPULabel(run.gpu_index))}</div></div>
+                        <div><div class="detail-label">Conda</div><div class="detail-value">${escHTML(run.conda_env || '—')}</div></div>
+                        <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
+                        <div class="detail-code">${escHTML(asText(run.command))}</div>
+                        <div class="detail-wide"><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${escHTML(run.cwd || '—')}</div></div>
+                    </div>
                 </div>
                 <div id="run-marks-detail"><div class="empty-state" style="padding:10px 0">${escHTML(t('state.loading'))}</div></div>
                 <div id="run-logs-detail"><div class="empty-state" style="padding:10px 0">${escHTML(t('state.loading'))}</div></div>
