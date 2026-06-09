@@ -109,6 +109,17 @@
         .pill-pilot       { background: #f1e8d0; color: #7a5d1a; }
         .pill-formal      { background: #e3edf6; color: #346486; }
         .pill-ablation    { background: #e6f0e8; color: #35644a; }
+        .pill-finding     { background: #c96545; color: #fffdf8; min-width: 0; }
+        .card.has-findings {
+            border-color: #c96545;
+            box-shadow: 0 0 0 3px rgba(201, 101, 69, 0.12), 0 8px 24px rgba(20, 20, 19, 0.06);
+        }
+        .data-table tr.has-findings td {
+            background: #fff7f1;
+        }
+        .data-table tr.has-findings td:first-child {
+            border-left: 4px solid #c96545;
+        }
 
         /* Progress bars */
         .meter-track {
@@ -181,6 +192,26 @@
             padding: 16px;
             white-space: pre-wrap;
             word-break: break-all;
+        }
+        .log-source {
+            color: #e8a090;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+        .log-muted-note {
+            color: #7a766d;
+            font-size: 12px;
+        }
+        .raw-log-streams {
+            margin-top: 12px;
+            margin-bottom: 20px;
+        }
+        .raw-log-streams summary {
+            cursor: pointer;
+            color: #5f5b53;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 10px;
         }
 
         /* Modal overlay */
@@ -1116,6 +1147,7 @@
                 'marks.noMarks': 'No run marks',
                 'marks.noAttached': 'No findings attached to this run',
                 'marks.important': 'Important',
+                'marks.hasFindings': 'Agent findings',
                 'favorites.noFavorites': 'No favorite runs yet',
                 'favorites.missingRun': 'Missing run',
                 'favorites.notePlaceholder': 'Add a small human note...',
@@ -1128,6 +1160,9 @@
                 'logs.tailRange': 'showing lines {first}-{last} of {total}',
                 'logs.stderrHint': 'progress bars and warnings often use stderr',
                 'logs.loadMore': 'Load 5000 lines',
+                'logs.combinedClean': 'Clean merged log',
+                'logs.rawStreams': 'Raw stdout / stderr',
+                'logs.filteredProgress': 'hidden {count} progress refresh lines',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1239,6 +1274,7 @@
                 'marks.noMarks': '没有实验标记',
                 'marks.noAttached': '这个实验还没有关联发现',
                 'marks.important': '重要',
+                'marks.hasFindings': 'Agent 发现',
                 'favorites.noFavorites': '还没有收藏实验',
                 'favorites.missingRun': '实验不存在',
                 'favorites.notePlaceholder': '添加一条人工小标注...',
@@ -1251,6 +1287,9 @@
                 'logs.tailRange': '正在显示第 {first}-{last} 行，共 {total} 行',
                 'logs.stderrHint': '训练进度条和警告经常写到 stderr',
                 'logs.loadMore': '加载 5000 行',
+                'logs.combinedClean': '干净合并日志',
+                'logs.rawStreams': '原始 stdout / stderr',
+                'logs.filteredProgress': '已隐藏 {count} 行进度刷新',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1396,6 +1435,57 @@
                 : t('logs.lines', { count: total || lines.length });
             return { total, first, last, truncated, label };
         }
+        function isProgressRefreshLine(text) {
+            text = asText(text).trim();
+            if (!text) return false;
+            if (/(Traceback|Error|ERROR|Exception|WARNING|RuntimeError|failed|失败)/i.test(text)) return false;
+            if (/(Epoch|Class|Images|Instances|Box|mAP|precision|recall|loss|metrics)/i.test(text)) return false;
+            const hasProgressBar = /\d+%\|/.test(text) || /\|\s*\d+\/\d+\s*\[/.test(text);
+            const hasSpeed = /(\bit\/s\b|\bs\/it\b|<\d{2}:\d{2}|ETA|\?it\/s)/i.test(text);
+            const compactCounter = /^\s*\d+\/\d+\s*(\[|$)/.test(text);
+            return hasProgressBar || (hasSpeed && /(\d+%|\d+\/\d+)/.test(text)) || compactCounter;
+        }
+        function combinedLogLines(stdoutLogs, stderrLogs) {
+            const rows = [];
+            logLines(stdoutLogs).forEach((line, idx) => rows.push({
+                source: 'stdout',
+                order: logLineNumber(line, idx + 1) * 2,
+                content: asText(asObject(line).content)
+            }));
+            logLines(stderrLogs).forEach((line, idx) => rows.push({
+                source: 'stderr',
+                order: logLineNumber(line, idx + 1) * 2 + 1,
+                content: asText(asObject(line).content)
+            }));
+            rows.sort((a, b) => a.order - b.order);
+            let hidden = 0;
+            const visible = [];
+            rows.forEach(row => {
+                if (row.source === 'stderr' && isProgressRefreshLine(row.content)) {
+                    hidden++;
+                    return;
+                }
+                visible.push(row);
+            });
+            return { visible, hidden };
+        }
+        function renderCombinedLogBlock(stdoutLogs, stderrLogs) {
+            const merged = combinedLogLines(stdoutLogs, stderrLogs);
+            const note = merged.hidden > 0
+                ? `<span class="log-muted-note">${escHTML(t('logs.filteredProgress', { count: merged.hidden }))}</span>`
+                : '';
+            const body = merged.visible.map(row =>
+                `<span class="log-source">${escHTML(row.source)}</span>${escHTML(row.content)}`
+            ).join('\n');
+            return `
+                <div class="mb-4">
+                    <div class="flex items-center justify-between gap-3 mb-2">
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.combinedClean'))}</h3>
+                        ${note}
+                    </div>
+                    <div class="log-pane" id="log-pane-combined">${body}</div>
+                </div>`;
+        }
         function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
             const lines = logLines(logs);
             if (source === 'stderr' && lines.length === 0 && !forceShow) return '';
@@ -1439,7 +1529,7 @@
                 fetchJSON('/resources'),
                 fetchJSON('/runs?limit=30'),
                 fetchJSON('/exec-events?limit=500'),
-                fetchJSON('/run-marks?limit=20'),
+                fetchJSON('/run-marks?limit=500'),
                 fetchJSON('/run-bookmarks?limit=200')
             ]);
 
@@ -1540,18 +1630,32 @@
                 r = asObject(r);
                 const cmd = asText(r.command);
                 const kind = asText(r.kind || 'formal');
+                const findingCount = runMarkCount(r.id);
                 return `
-                <div class="card card-clickable cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''}" onclick="showRunDetail('${r.id}')">
+                <div class="card card-clickable cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
                     <div class="flex justify-between items-start mb-1">
                         <span class="font-medium text-sm">${r.name || r.id}</span>
                         <div class="flex gap-2 flex-wrap justify-end">
                             ${runKindPill(kind)}
                             ${runStatusPill('running')}
+                            ${findingBadge(findingCount)}
                         </div>
                     </div>
                     <div class="text-xs text-ink-secondary font-mono mt-1">${cmd.substring(0, 70)}${cmd.length > 70 ? '...' : ''}</div>
                 </div>`;
             }).join('');
+        }
+
+        function runMarksForRun(runId) {
+            return allRunMarks.filter(m => asObject(m).run_id === runId);
+        }
+
+        function runMarkCount(runId) {
+            return runMarksForRun(runId).length;
+        }
+
+        function findingBadge(count) {
+            return count > 0 ? `<span class="pill pill-finding">${escHTML(t('marks.hasFindings'))} · ${count}</span>` : '';
         }
 
         function renderRunMarks(targetId, marks, emptyText) {
@@ -1688,9 +1792,15 @@
                     const resLabel = resourceLabel(r.resource_id);
                     const fav = bookmarkedRunIds.has(r.id);
                     const kind = asText(r.kind || 'formal');
-                    return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''}" onclick="showRunDetail('${r.id}')">
+                    const findingCount = runMarkCount(r.id);
+                    return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
                         <td class="mono">${escHTML(r.id || '-')}</td>
-                        <td>${escHTML(r.name || '-')}</td>
+                        <td>
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span>${escHTML(r.name || '-')}</span>
+                                ${findingBadge(findingCount)}
+                            </div>
+                        </td>
                         <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
                         <td class="whitespace-nowrap">${runKindPill(kind)}</td>
                         <td class="whitespace-nowrap">${runStatusPill(r.status)}</td>
@@ -2037,10 +2147,14 @@
                 const errLogs = asObject(errLogsRaw);
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
-                    el.innerHTML = renderLogBlock(run.id, 'stdout', logs, '', true) +
-                        renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running');
+                    el.innerHTML = renderCombinedLogBlock(logs, errLogs) + `
+                        <details class="raw-log-streams">
+                            <summary>${escHTML(t('logs.rawStreams'))}</summary>
+                            ${renderLogBlock(run.id, 'stdout', logs, '', true)}
+                            ${renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running')}
+                        </details>`;
                 }
-                const lp = document.getElementById('log-pane-stdout');
+                const lp = document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
                 if (run.status === 'running') connectWS(id);
             }).catch(() => {
@@ -2076,7 +2190,15 @@
                 sock.onmessage = (e) => {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'log.line') {
-                        const lp = document.getElementById('log-pane-' + (msg.source || source));
+                        const lineSource = msg.source || source;
+                        const content = asText(msg.content);
+                        const combined = document.getElementById('log-pane-combined');
+                        if (combined && !(lineSource === 'stderr' && isProgressRefreshLine(content))) {
+                            const prefix = combined.textContent ? '\n' : '';
+                            combined.innerHTML += prefix + `<span class="log-source">${escHTML(lineSource)}</span>${escHTML(content)}`;
+                            combined.scrollTop = combined.scrollHeight;
+                        }
+                        const lp = document.getElementById('log-pane-' + lineSource);
                         if (lp) { lp.textContent += '\n' + msg.content; lp.scrollTop = lp.scrollHeight; }
                     }
                 };
