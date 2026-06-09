@@ -395,6 +395,19 @@
             border-radius: 999px;
             flex: 0 0 auto;
         }
+        .comparison-chart-block {
+            border: 1px solid #e6dfd3;
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 14px;
+            background: #fffdf8;
+        }
+        .comparison-chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #191817;
+        }
 
         /* Modal overlay */
         .modal-bg {
@@ -719,6 +732,7 @@
                 </div>
                 <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
                     placeholder="Search name or command" data-i18n-placeholder="filters.searchNameCommand">
+                <button id="compare-runs-btn" class="btn-secondary text-sm" onclick="openRunComparison()" disabled>Compare (0)</button>
             </div>
             <div id="runs-table-container"></div>
         </div>
@@ -1256,6 +1270,7 @@
         let allRunMarks = [];
         let allRunBookmarks = [];
         let bookmarkedRunIds = new Set();
+        let selectedCompareRunIds = new Set();
         let runResourceFilterSignature = '';
         let execResourceFilterSignature = '';
         let runFilterStatus = '';
@@ -1841,10 +1856,84 @@
                 points: metricPoints(events, n),
             })).filter(s => s.points.length > 0);
         }
+        function isMetricEvent(ev) {
+            const t = asText(ev.type).toLowerCase();
+            return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && numberValue(ev.value) != null;
+        }
+        function metricPointFromEvent(ev, idx) {
+            return {
+                x: numberValue(ev.epoch ?? ev.step ?? ev.iter) ?? idx + 1,
+                y: numberValue(ev.value),
+                meta: eventStepLabel(ev),
+            };
+        }
+        async function fetchRunEventLines(run) {
+            const path = uiEventsPath(run);
+            if (!path) return [];
+            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(run.id) + '/logs?path=' + encodeURIComponent(path) + '&limit=5000&tail=true'));
+            return logLines(logs).map(l => eventLineContent(asObject(l)));
+        }
+        function comparisonMetricGroups(runEventSets) {
+            const groups = new Map();
+            runEventSets.forEach(({ run, events }) => {
+                const names = Array.from(new Set(events.filter(isMetricEvent).map(ev => eventName(ev))));
+                const baseCounts = new Map();
+                names.forEach(name => baseCounts.set(metricBaseName(name), (baseCounts.get(metricBaseName(name)) || 0) + 1));
+                names.forEach(name => {
+                    const base = metricBaseName(name);
+                    const points = events.filter(ev => isMetricEvent(ev) && eventName(ev) === name).map(metricPointFromEvent);
+                    if (!points.length) return;
+                    if (!groups.has(base)) groups.set(base, []);
+                    const runLabel = run.name || run.id;
+                    const label = baseCounts.get(base) > 1 ? runLabel + ' · ' + metricSeriesLabel(name) : runLabel;
+                    groups.get(base).push({
+                        name: run.id + ':' + name,
+                        label,
+                        points,
+                        runId: run.id,
+                        resource: resourceLabel(run.resource_id),
+                        kind: run.kind || 'formal',
+                    });
+                });
+            });
+            return Array.from(groups.entries()).map(([base, series]) => ({
+                base,
+                series: series.sort((a, b) => a.label.localeCompare(b.label)),
+            })).filter(g => g.series.length >= 2)
+              .sort((a, b) => metricPriority(a.base) - metricPriority(b.base) || a.base.localeCompare(b.base));
+        }
+        async function openRunComparison() {
+            const runs = selectedCompareRuns();
+            document.getElementById('metric-chart-title').textContent = 'Run comparison';
+            document.getElementById('metric-chart-subtitle').textContent = runs.length + ' runs selected';
+            document.getElementById('metric-chart-body').innerHTML = '<div class="empty-state">' + escHTML(t('state.loading')) + '</div>';
+            document.getElementById('metric-chart-modal').classList.remove('hidden');
+            if (runs.length < 2) {
+                document.getElementById('metric-chart-body').innerHTML = '<div class="event-empty">Select at least two formal/ablation runs with UI events.</div>';
+                return;
+            }
+            const eventSets = await Promise.all(runs.map(async run => {
+                const lines = await fetchRunEventLines(run);
+                return { run, events: parseEventLines(lines) };
+            }));
+            const groups = comparisonMetricGroups(eventSets).slice(0, 8);
+            const pointCount = groups.reduce((sum, g) => sum + g.series.reduce((s, x) => s + x.points.length, 0), 0);
+            document.getElementById('metric-chart-subtitle').textContent = runs.length + ' runs · ' + groups.length + ' comparable metrics · ' + pointCount + ' points';
+            if (!groups.length) {
+                document.getElementById('metric-chart-body').innerHTML = '<div class="event-empty">No comparable metrics found across selected runs.</div>';
+                return;
+            }
+            document.getElementById('metric-chart-body').innerHTML = groups.map(group => `
+                <div class="comparison-chart-block">
+                    <div class="comparison-chart-title">${escHTML(metricDisplayName(group.base))}</div>
+                    ${renderMetricChartSVG(group.series)}
+                    <div class="metric-chart-meta">${escHTML(group.series.map(s => s.label + ' · ' + s.resource + ' · ' + s.kind + ' · ' + s.runId).join(' | '))}</div>
+                </div>
+            `).join('');
+        }
         function metricGroups(events) {
             const latest = latestByName(events, ev => {
-                const t = asText(ev.type).toLowerCase();
-                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
+                return isMetricEvent(ev);
             });
             const groups = new Map();
             latest.forEach(({ name, ev }) => {
@@ -2355,7 +2444,7 @@
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
-                    <th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
+                    <th style="width:42px">Cmp</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
@@ -2363,7 +2452,10 @@
                     const fav = bookmarkedRunIds.has(r.id);
                     const kind = asText(r.kind || 'formal');
                     const findingCount = runMarkCount(r.id);
+                    const canCompare = isCompareRunEligible(r);
+                    const checked = selectedCompareRunIds.has(r.id);
                     return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
+                        <td onclick="event.stopPropagation()">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>
                             <div class="flex items-center gap-2 flex-wrap">
@@ -2380,6 +2472,35 @@
                     </tr>`;
                 }).join('')}</tbody>
             </table>`;
+            updateCompareButton();
+        }
+
+        function isCompareRunEligible(run) {
+            const r = asObject(run);
+            const kind = asText(r.kind || 'formal').toLowerCase();
+            return (kind === 'formal' || kind === 'ablation') && !!uiEventsPath(r);
+        }
+
+        function toggleCompareRun(runId, checked) {
+            if (checked) selectedCompareRunIds.add(runId);
+            else selectedCompareRunIds.delete(runId);
+            updateCompareButton();
+        }
+
+        function selectedCompareRuns() {
+            return allRuns.map(asObject).filter(r => selectedCompareRunIds.has(r.id) && isCompareRunEligible(r));
+        }
+
+        function updateCompareButton() {
+            const btn = document.getElementById('compare-runs-btn');
+            if (!btn) return;
+            for (const id of Array.from(selectedCompareRunIds)) {
+                const run = allRuns.map(asObject).find(r => r.id === id);
+                if (!run || !isCompareRunEligible(run)) selectedCompareRunIds.delete(id);
+            }
+            const count = selectedCompareRuns().length;
+            btn.textContent = 'Compare (' + count + ')';
+            btn.disabled = count < 2;
         }
 
         function renderFavorites(bookmarks) {
