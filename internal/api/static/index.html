@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>aexp</title>
+    <link rel="icon" type="image/svg+xml" href="/aexp-icon.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
@@ -47,6 +48,20 @@
             -webkit-font-smoothing: antialiased;
         }
         h1, h2, h3, h4 { font-family: 'Poppins', Arial, sans-serif; }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+        .brand-mark {
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(25, 24, 23, 0.08);
+        }
 
         /* Tabs */
         .tab-btn {
@@ -191,9 +206,12 @@
 
         <!-- Header -->
         <header class="flex items-end justify-between mb-10">
-            <div>
-                <h1 class="text-2xl font-semibold tracking-tight font-heading">aexp</h1>
-                <p class="text-sm text-ink-secondary mt-0.5" data-i18n="app.subtitle">Agent Experiment Control Plane</p>
+            <div class="brand">
+                <img class="brand-mark" src="/aexp-icon.svg" alt="" aria-hidden="true">
+                <div>
+                    <h1 class="text-2xl font-semibold tracking-tight font-heading">aexp</h1>
+                    <p class="text-sm text-ink-secondary mt-0.5" data-i18n="app.subtitle">Agent Experiment Control Plane</p>
+                </div>
             </div>
             <div class="flex items-center gap-3">
                 <span id="status-indicator" class="text-xs text-ink-muted"></span>

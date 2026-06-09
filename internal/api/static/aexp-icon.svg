@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="aexp">
+  <rect x="5" y="5" width="54" height="54" rx="14" fill="#fffdf8"/>
+  <rect x="5" y="5" width="54" height="54" rx="14" fill="none" stroke="#d8d3c8" stroke-width="2"/>
+
+  <g transform="rotate(-13 20 23)">
+    <rect x="10" y="14" width="22" height="17" rx="5" fill="#e3edf6" stroke="#346486" stroke-width="1.6"/>
+    <text x="21" y="25.6" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="9" font-weight="700" fill="#346486">Cx</text>
+  </g>
+
+  <g transform="rotate(10 45 22)">
+    <rect x="34" y="13" width="22" height="17" rx="5" fill="#f5e0db" stroke="#a84a3a" stroke-width="1.6"/>
+    <path d="M45 17.7l1.4 3.1 3.1 1.4-3.1 1.4-1.4 3.1-1.4-3.1-3.1-1.4 3.1-1.4z" fill="#a84a3a"/>
+  </g>
+
+  <g transform="rotate(-8 42 43)">
+    <rect x="31" y="34" width="23" height="17" rx="5" fill="#e6f0e8" stroke="#35644a" stroke-width="1.6"/>
+    <path d="M39 39l-4 3.6 4 3.5M46 39l4 3.6-4 3.5" fill="none" stroke="#35644a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g>
+    <rect x="17" y="28" width="30" height="23" rx="6" fill="#f0ede5" stroke="#5f5b53" stroke-width="2"/>
+    <rect x="22" y="33" width="20" height="5" rx="2.5" fill="#fffdf8" stroke="#c9c2b6" stroke-width="1.2"/>
+    <rect x="22" y="42" width="20" height="5" rx="2.5" fill="#fffdf8" stroke="#c9c2b6" stroke-width="1.2"/>
+    <circle cx="25" cy="35.5" r="1.2" fill="#c96545"/>
+    <circle cx="25" cy="44.5" r="1.2" fill="#35644a"/>
+    <path d="M30 35.5h9M30 44.5h9" stroke="#7a766d" stroke-width="1.4" stroke-linecap="round"/>
+  </g>
+</svg>
