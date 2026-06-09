@@ -213,81 +213,11 @@
             font-weight: 500;
             margin-bottom: 10px;
         }
-        .metric-summary {
-            border: 1px solid #d8d3c8;
-            border-radius: 0.875rem;
-            background: #fffdf8;
-            padding: 14px 16px;
-            margin-bottom: 16px;
-        }
-        .metric-summary table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        .metric-summary th,
-        .metric-summary td {
-            padding: 7px 8px;
-            border-bottom: 1px solid #e8e5dc;
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-        .metric-summary th:first-child,
-        .metric-summary td:first-child {
-            text-align: left;
-        }
-        .metric-summary tr:last-child td {
-            border-bottom: none;
-        }
-        .metric-summary .metric-highlight {
-            color: #c96545;
-            font-weight: 700;
-        }
-        .metric-summary tbody tr:first-child td {
-            background: #fff4e8;
-        }
-        .metric-cards {
-            display: grid;
-            gap: 10px;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            margin-bottom: 12px;
-        }
-        .metric-card {
-            border: 1px solid #e7dfcf;
-            border-radius: 0.75rem;
-            background: #ffffff;
-            padding: 10px 12px;
-        }
-        .metric-card.primary {
-            border-color: #d98254;
-            background: #fff6ed;
-        }
-        .metric-card-label {
-            color: #6f6a60;
-            font-size: 12px;
-            margin-bottom: 4px;
-        }
-        .metric-card-value {
-            color: #191817;
-            font-size: 20px;
-            font-weight: 700;
-            font-variant-numeric: tabular-nums;
-            line-height: 1.1;
-        }
-        .metric-card.primary .metric-card-value {
-            color: #c96545;
-        }
         .log-actions {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
             margin: 0 0 12px;
-        }
-        @media (max-width: 760px) {
-            .metric-cards {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
         }
 
         /* Modal overlay */
@@ -1237,17 +1167,13 @@
                 'logs.lines': '{count} lines',
                 'logs.tailRange': 'showing lines {first}-{last} of {total}',
                 'logs.stderrHint': 'progress bars and warnings often use stderr',
-                'logs.loadMore': 'Load 5000 lines',
-                'logs.combinedClean': 'Clean merged log',
+                'logs.loadMore': 'Load 1000 lines',
+                'logs.combinedClean': 'Terminal tail',
                 'logs.rawStreams': 'Raw stdout / stderr',
-                'logs.filteredProgress': 'hidden {count} progress refresh lines',
-                'logs.metricSummary': 'Metric summary',
-                'logs.latestMetric': 'Latest YOLO metric',
-                'logs.noMetrics': 'No metric row found in the current log tail.',
-                'logs.cleanTail': 'Clean log tail',
+                'logs.cleanTail': 'Terminal tail',
                 'logs.loadRaw': 'Load raw stdout / stderr',
-                'logs.followLive': 'Follow live logs',
-                'logs.stopLive': 'Stop live logs',
+                'logs.followLive': 'Resume tail',
+                'logs.stopLive': 'Pause tail',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1371,17 +1297,13 @@
                 'logs.lines': '{count} 行',
                 'logs.tailRange': '正在显示第 {first}-{last} 行，共 {total} 行',
                 'logs.stderrHint': '训练进度条和警告经常写到 stderr',
-                'logs.loadMore': '加载 5000 行',
-                'logs.combinedClean': '干净合并日志',
+                'logs.loadMore': '加载 1000 行',
+                'logs.combinedClean': 'Terminal tail',
                 'logs.rawStreams': '原始 stdout / stderr',
-                'logs.filteredProgress': '已隐藏 {count} 行进度刷新',
-                'logs.metricSummary': '指标摘要',
-                'logs.latestMetric': '最新 YOLO 指标',
-                'logs.noMetrics': '当前日志尾部没有找到指标行',
-                'logs.cleanTail': '干净日志尾巴',
+                'logs.cleanTail': 'Terminal tail',
                 'logs.loadRaw': '加载原始 stdout / stderr',
-                'logs.followLive': '实时跟随日志',
-                'logs.stopLive': '停止跟随日志',
+                'logs.followLive': '继续 tail',
+                'logs.stopLive': '暂停 tail',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1527,92 +1449,6 @@
                 : t('logs.lines', { count: total || lines.length });
             return { total, first, last, truncated, label };
         }
-        function isProgressRefreshLine(text) {
-            text = asText(text).trim();
-            if (!text) return false;
-            if (/(Traceback|Error|ERROR|Exception|WARNING|RuntimeError|failed|失败)/i.test(text)) return false;
-            const hasProgressBar = /\d+%\|/.test(text) || /\|\s*\d+\/\d+\s*\[/.test(text);
-            const hasSpeed = /(\bit\/s\b|\bs\/it\b|<\d{2}:\d{2}|ETA|\?it\/s)/i.test(text);
-            const compactCounter = /^\s*\d+\/\d+\s*(\[|$)/.test(text);
-            if (hasProgressBar || (hasSpeed && /(\d+%|\d+\/\d+)/.test(text)) || compactCounter) return true;
-            if (/(Epoch|Class|Images|Instances|Box|mAP|precision|recall|loss|metrics)/i.test(text)) return false;
-            return hasProgressBar || (hasSpeed && /(\d+%|\d+\/\d+)/.test(text)) || compactCounter;
-        }
-        function extractMetricRows(stdoutLogs, stderrLogs) {
-            const rows = [];
-            const seen = new Set();
-            const allLines = [...logLines(stdoutLogs), ...logLines(stderrLogs)];
-            allLines.forEach(line => {
-                const text = asText(asObject(line).content).trim().replace(/\s+/g, ' ');
-                const m = text.match(/^all\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*$/i);
-                if (!m) return;
-                const key = m.slice(1).join('|');
-                if (seen.has(key)) return;
-                seen.add(key);
-                rows.push({
-                    className: 'all',
-                    images: m[1],
-                    instances: m[2],
-                    precision: m[3],
-                    recall: m[4],
-                    map50: m[5],
-                    map5095: m[6],
-                });
-            });
-            return rows;
-        }
-        function renderMetricSummary(stdoutLogs, stderrLogs) {
-            const rows = extractMetricRows(stdoutLogs, stderrLogs);
-            if (!rows.length) {
-                return `<div class="metric-summary">
-                    <div class="flex items-center justify-between gap-3 mb-1">
-                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.metricSummary'))}</h3>
-                    </div>
-                    <div class="text-sm text-ink-muted">${escHTML(t('logs.noMetrics'))}</div>
-                </div>`;
-            }
-            const latest = rows[rows.length - 1];
-            const visibleRows = rows.slice(-8).reverse();
-            return `<div class="metric-summary">
-                <div class="flex items-center justify-between gap-3 mb-2">
-                    <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.latestMetric'))}</h3>
-                </div>
-                <div class="metric-cards">
-                    <div class="metric-card primary">
-                        <div class="metric-card-label">mAP50-95</div>
-                        <div class="metric-card-value">${escHTML(latest.map5095)}</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-card-label">mAP50</div>
-                        <div class="metric-card-value">${escHTML(latest.map50)}</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-card-label">Precision</div>
-                        <div class="metric-card-value">${escHTML(latest.precision)}</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-card-label">Recall</div>
-                        <div class="metric-card-value">${escHTML(latest.recall)}</div>
-                    </div>
-                </div>
-                <div class="table-scroll">
-                    <table>
-                        <thead><tr>
-                            <th>Class</th><th>Images</th><th>Instances</th><th>P</th><th>R</th><th>mAP50</th><th>mAP50-95</th>
-                        </tr></thead>
-                        <tbody>${visibleRows.map(row => `<tr>
-                            <td>${escHTML(row.className)}</td>
-                            <td>${escHTML(row.images)}</td>
-                            <td>${escHTML(row.instances)}</td>
-                            <td>${escHTML(row.precision)}</td>
-                            <td>${escHTML(row.recall)}</td>
-                            <td class="metric-highlight">${escHTML(row.map50)}</td>
-                            <td class="metric-highlight">${escHTML(row.map5095)}</td>
-                        </tr>`).join('')}</tbody>
-                    </table>
-                </div>
-            </div>`;
-        }
         function combinedLogLines(stdoutLogs, stderrLogs) {
             const rows = [];
             logLines(stdoutLogs).forEach((line, idx) => rows.push({
@@ -1626,32 +1462,19 @@
                 content: asText(asObject(line).content)
             }));
             rows.sort((a, b) => a.order - b.order);
-            let hidden = 0;
-            const visible = [];
-            rows.forEach(row => {
-                if (row.source === 'stderr' && isProgressRefreshLine(row.content)) {
-                    hidden++;
-                    return;
-                }
-                visible.push(row);
-            });
-            return { visible, hidden };
+            return rows;
         }
         function renderCombinedLogBlock(stdoutLogs, stderrLogs) {
             const merged = combinedLogLines(stdoutLogs, stderrLogs);
-            const note = merged.hidden > 0
-                ? `<span class="log-muted-note">${escHTML(t('logs.filteredProgress', { count: merged.hidden }))}</span>`
-                : '';
-            const body = merged.visible.map(row =>
+            const body = merged.map(row =>
                 `<span class="log-source">${escHTML(row.source)}</span>${escHTML(row.content)}`
             ).join('\n');
             return `
                 <div class="mb-4">
                     <div class="flex items-center justify-between gap-3 mb-2">
                         <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.cleanTail'))}</h3>
-                        ${note}
                     </div>
-                    <div class="log-pane" id="log-pane-combined" data-lines="${escAttr(String(merged.visible.length))}">${body}</div>
+                    <div class="log-pane" id="log-pane-combined" data-lines="${escAttr(String(merged.length))}">${body}</div>
                 </div>`;
         }
         function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
@@ -2321,7 +2144,7 @@
                 const errLogs = asObject(errLogsRaw);
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
-                    el.innerHTML = renderMetricSummary(logs, errLogs) + renderCombinedLogBlock(logs, errLogs) + `
+                    el.innerHTML = renderCombinedLogBlock(logs, errLogs) + `
                         <div class="log-actions">
                             <button type="button" class="btn-secondary text-xs" onclick="loadRawLogs('${escAttr(run.id)}')">${escHTML(t('logs.loadRaw'))}</button>
                             ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
@@ -2330,6 +2153,7 @@
                 }
                 const lp = document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
+                if (run.status === 'running') startLiveLogs(run.id);
             }).catch(() => {
                 const el = document.getElementById('run-logs-detail');
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
@@ -2376,7 +2200,7 @@
             currentDetailRunId = '';
         }
 
-        const LIVE_LOG_MAX_LINES = 400;
+        const LIVE_LOG_MAX_LINES = 1000;
         function trimLogPane(pane, maxLines) {
             const count = Number(pane.dataset.lines || 0);
             if (count <= maxLines) return;
@@ -2416,6 +2240,11 @@
                 if (btn) btn.textContent = t('logs.followLive');
                 return;
             }
+            startLiveLogs(runId);
+        }
+
+        function startLiveLogs(runId) {
+            if (liveLogFollowing && logSockets.length) return;
             liveLogFollowing = true;
             const btn = document.getElementById('live-log-toggle');
             if (btn) btn.textContent = t('logs.stopLive');
@@ -2435,9 +2264,7 @@
                         const lineSource = msg.source || source;
                         const content = asText(msg.content);
                         const combined = document.getElementById('log-pane-combined');
-                        if (combined && !(lineSource === 'stderr' && isProgressRefreshLine(content))) {
-                            appendCombinedLogLine(combined, lineSource, content);
-                        }
+                        if (combined) appendCombinedLogLine(combined, lineSource, content);
                         const lp = document.getElementById('log-pane-' + lineSource);
                         if (lp) appendPlainLogLine(lp, content);
                     }

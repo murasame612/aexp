@@ -1132,8 +1132,8 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Stream new lines
-	logCh, err := s.executor.TailLogs(r.Context(), id, source, 0)
+	// Stream only new lines; the UI fetches its initial snapshot over HTTP.
+	logCh, err := s.executor.TailLogs(r.Context(), id, source, -1)
 	if err != nil {
 		conn.WriteJSON(map[string]string{"type": "error", "message": err.Error()})
 		return

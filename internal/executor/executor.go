@@ -398,7 +398,9 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 		logFile = run.RemoteRunDir + "/logs/stdout.log"
 	}
 
-	if lastN <= 0 {
+	if lastN < 0 {
+		lastN = 0
+	} else if lastN == 0 {
 		lastN = 200
 	}
 
