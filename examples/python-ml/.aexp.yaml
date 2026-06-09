@@ -1,0 +1,29 @@
+resource: mu
+cwd: /home/ziwu/project/python-ml
+env: auto
+default_gpu: 0
+
+logs:
+  - logs/**/*.log
+metrics:
+  - runs/**/*.csv
+  - results/**/*.json
+artifacts:
+  - checkpoints/**/*.pt
+  - outputs/**/*
+
+sync:
+  source: ./
+  target: /home/ziwu/project/python-ml
+  profile: code
+  exclude:
+    - dataset/raw/
+    - checkpoints/
+
+setup:
+  command: python -m pip install -r requirements.txt
+  kind: setup
+
+train:
+  command: bash scripts/train.sh configs/experiments/default.yaml
+  kind: formal

@@ -255,6 +255,64 @@ train:
 	}
 }
 
+func TestResolveSyncExcludesUsesProfileIgnoreAndFlags(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".aexpignore"), []byte(`
+# local scratch
+dataset/raw/
+
+*.tmp
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	excludes, sources, err := resolveSyncExcludes(dir, "code", false, []string{"local-only/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		".venv/",
+		"__pycache__/",
+		"runs/detect/",
+		"dataset/raw/",
+		"*.tmp",
+		"local-only/",
+	} {
+		if !containsString(excludes, want) {
+			t.Fatalf("excludes missing %q: %#v", want, excludes)
+		}
+	}
+	for _, want := range []string{"profile:code", filepath.Join(dir, ".aexpignore"), "flags"} {
+		if !containsString(sources, want) {
+			t.Fatalf("sources missing %q: %#v", want, sources)
+		}
+	}
+}
+
+func TestResolveSyncExcludesNoDefaultOnlyKeepsExplicit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".aexpignore"), []byte("dataset/raw/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	excludes, sources, err := resolveSyncExcludes(dir, "code", true, []string{"keep-this-out/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(excludes) != 1 || excludes[0] != "keep-this-out/" {
+		t.Fatalf("unexpected excludes with no defaults: %#v", excludes)
+	}
+	if len(sources) != 1 || sources[0] != "flags" {
+		t.Fatalf("unexpected sources with no defaults: %#v", sources)
+	}
+}
+
+func TestResolveSyncExcludesRejectsUnknownProfile(t *testing.T) {
+	if _, _, err := resolveSyncExcludes(t.TempDir(), "mystery", false, nil); err == nil || !strings.Contains(err.Error(), "unknown sync profile") {
+		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+}
+
 func runProjectInitForTest(args ...string) (string, error) {
 	cmd := projectInitCmd()
 	cmd.SilenceUsage = true

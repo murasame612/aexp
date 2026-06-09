@@ -304,5 +304,7 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - project profile cache：已实现，`run submit` / `project run` / `exec` 的 `--project-env auto` 默认复用可用缓存，`--refresh-env` 可强制重新探测，run 记录仍保存 resolved 快照。
 - resource 控制通道状态：已实现，resource 记录保存 `ssh_status/last_doctor_error/last_checked_at/last_success_at`，doctor/project doctor 会更新，CLI/UI 能显示 idle 但 SSH failed。
 - UI 多 run 比较：已实现，Runs 表可选择 formal/ablation 且带 UI events 的 run，一次性拉取 events 后按同名 metric 同图比较，legend 使用 run name 并保留 run id/resource/kind 元信息。
+- project sync 打磨：已实现基础并补测试，`push/project sync/remote-pull` 支持 profile、`.aexpignore`、explicit excludes、dry-run excludes 来源展示，远端缺 rsync 会给 remote-pull 修复建议。
+- 文档和示例项目模板：已实现，`examples/python-ml` 提供 `.aexp.yaml`、`.aexpignore`、训练脚本、实验 config 和 5 步项目级工作流。
 
-优先继续：project sync 打磨、文档和示例项目模板。
+优先继续：基于真实 agent 使用继续打磨默认值、报错和 UI 细节。

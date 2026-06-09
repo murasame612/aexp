@@ -67,6 +67,20 @@ aexp serve --port 8080
 aexp serve --daemon
 ```
 
+## 项目级工作流
+
+对 agent 来说，推荐把固定的 resource、cwd、env、sync、setup/train recipe 写进项目里的 `.aexp.yaml`：
+
+```bash
+aexp project init --resource mu --cwd /remote/project --dry-run
+aexp project doctor
+aexp project sync --dry-run
+aexp project run setup
+aexp project run train
+```
+
+示例见 [examples/python-ml](examples/python-ml)。原则是：实验参数仍放在项目自己的 `configs/` 和 `scripts/`，`.aexp.yaml` 只保存 aexp 该怎么同步、怎么进入环境、怎么提交 run。
+
 ## 文档
 
 | 文档 | 内容 |
