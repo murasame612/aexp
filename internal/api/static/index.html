@@ -1804,6 +1804,21 @@
             if (/(loss|error|grad|lr|token|throughput|speed)/.test(n)) return 10;
             return 50;
         }
+        function pickVisibleMetricGroups(groups, maxCount) {
+            groups = asArray(groups);
+            maxCount = maxCount || 18;
+            const picked = [];
+            const seen = new Set();
+            const add = group => {
+                if (!group || seen.has(group.base) || picked.length >= maxCount) return;
+                seen.add(group.base);
+                picked.push(group);
+            };
+            groups.filter(g => metricPriority(g.base) === 0).forEach(add);
+            groups.filter(g => /loss|error/i.test(metricBaseName(g.base))).forEach(add);
+            groups.forEach(add);
+            return picked;
+        }
         function eventStepLabel(ev) {
             const bits = [];
             if (ev.epoch != null) bits.push('epoch ' + ev.epoch);
@@ -2048,7 +2063,8 @@
                 const t = asText(ev.type).toLowerCase();
                 return t === 'progress' || ev.current != null || ev.total != null;
             }).slice(-6);
-            const metrics = metricGroups(events).slice(0, 12);
+            const allMetrics = metricGroups(events);
+            const metrics = pickVisibleMetricGroups(allMetrics, 18);
             const params = latestByName(events, ev => {
                 const t = asText(ev.type).toLowerCase();
                 return t === 'param' || t === 'params' || t === 'hparam' || t === 'config' || t === 'model';
@@ -2723,7 +2739,7 @@
             const filtered = allRuns.filter(r => {
                 r = asObject(r);
                 const kind = asText(r.kind || 'formal').toLowerCase();
-                if (runFilterKind === 'experiments' && (kind === 'setup' || kind === 'smoke')) return false;
+                if (runFilterKind === 'experiments' && (kind === 'setup' || kind === 'smoke') && !uiEventsPath(r)) return false;
                 if (runFilterKind === 'tools' && kind !== 'setup' && kind !== 'smoke') return false;
                 if (runFilterStatus && r.status !== runFilterStatus) return false;
                 if (runFilterResource && r.resource_id !== runFilterResource) return false;
