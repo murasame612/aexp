@@ -299,6 +299,29 @@
             font-size: 11px;
             min-height: 16px;
         }
+        .event-series-list {
+            display: grid;
+            gap: 5px;
+            margin-top: 8px;
+        }
+        .event-series-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: baseline;
+            gap: 10px;
+            color: #5f5b53;
+            font-size: 12px;
+        }
+        .event-series-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .event-series-value {
+            color: #191817;
+            font-family: 'Menlo', monospace;
+            font-size: 12px;
+        }
         .event-progress-track {
             height: 7px;
             margin-top: 8px;
@@ -1796,6 +1819,22 @@
                 points: metricPoints(events, n),
             })).filter(s => s.points.length > 0);
         }
+        function metricGroups(events) {
+            const latest = latestByName(events, ev => {
+                const t = asText(ev.type).toLowerCase();
+                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
+            });
+            const groups = new Map();
+            latest.forEach(({ name, ev }) => {
+                const base = metricBaseName(name);
+                if (!groups.has(base)) groups.set(base, []);
+                groups.get(base).push({ name, ev });
+            });
+            return Array.from(groups.entries()).map(([base, rows]) => {
+                rows.sort((a, b) => metricSeriesLabel(a.name).localeCompare(metricSeriesLabel(b.name)));
+                return { base, rows };
+            }).sort((a, b) => metricPriority(a.base) - metricPriority(b.base) || a.base.localeCompare(b.base));
+        }
         function sparkline(values) {
             values = asArray(values).filter(v => numberValue(v) != null).map(Number);
             if (values.length < 2) return '';
@@ -1898,10 +1937,7 @@
                 const t = asText(ev.type).toLowerCase();
                 return t === 'progress' || ev.current != null || ev.total != null;
             }).slice(-6);
-            const metrics = latestByName(events, ev => {
-                const t = asText(ev.type).toLowerCase();
-                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
-            }).sort((a, b) => metricPriority(a.name) - metricPriority(b.name)).slice(0, 12);
+            const metrics = metricGroups(events).slice(0, 12);
             const params = latestByName(events, ev => {
                 const t = asText(ev.type).toLowerCase();
                 return t === 'param' || t === 'params' || t === 'hparam' || t === 'config' || t === 'model';
@@ -1927,14 +1963,24 @@
                 }).join('')}</div>` : '';
             const metricsHTML = metrics.length ? `
                 <div class="event-section-title">${escHTML(t('events.metrics'))}</div>
-                <div class="event-grid">${metrics.map(({ name, ev }) => {
-                    const series = metricSeries(events, name);
-                    const openArg = escAttr(JSON.stringify(name));
+                <div class="event-grid">${metrics.map(({ base, rows }) => {
+                    const first = rows[0];
+                    const series = comparableMetricSeries(events, first.name);
+                    const openArg = escAttr(JSON.stringify(first.name));
+                    const latestRows = rows.slice(0, 4).map(({ name, ev }) => `
+                        <div class="event-series-row">
+                            <span class="event-series-name" title="${escAttr(name)}">${escHTML(metricSeriesLabel(name))}</span>
+                            <span class="event-series-value">${escHTML(formatEventValue(ev.value))}</span>
+                        </div>`).join('');
+                    const meta = rows.length > 1
+                        ? `${rows.length} series · grouped by ${base}`
+                        : eventStepLabel(first.ev) || asText(first.ev.unit || '');
                     return `<div class="event-card event-card-clickable" role="button" tabindex="0" onclick="openMetricChart(${openArg})" onkeydown="if(event.key==='Enter'||event.key===' ')openMetricChart(${openArg})">
-                        <div class="event-card-label" title="${escAttr(name)}">${escHTML(metricDisplayName(name))}</div>
-                        <div class="event-card-value">${escHTML(formatEventValue(ev.value))}</div>
-                        ${sparkline(series)}
-                        <div class="event-card-meta">${escHTML(eventStepLabel(ev) || asText(ev.unit || ''))}</div>
+                        <div class="event-card-label" title="${escAttr(base)}">${escHTML(metricDisplayName(base))}</div>
+                        <div class="event-card-value">${escHTML(rows.length > 1 ? rows.length + ' series' : formatEventValue(first.ev.value))}</div>
+                        <div class="event-series-list">${latestRows}</div>
+                        ${sparkline(series[0]?.points.map(p => p.y) || [])}
+                        <div class="event-card-meta">${escHTML(meta)}</div>
                     </div>`;
                 }).join('')}</div>` : '';
             const paramsHTML = params.length ? `
