@@ -707,6 +707,16 @@
                         <button type="button" data-value="" onclick="selectRunResource('')" data-i18n="filters.allResources">All resources</button>
                     </div>
                 </div>
+                <div class="custom-select" id="run-filter-kind">
+                    <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('run-kind')">
+                        <span id="run-filter-kind-label" data-i18n="filters.experiments">Experiments</span>
+                    </button>
+                    <div class="custom-select-menu hidden" id="run-filter-kind-menu">
+                        <button type="button" data-value="experiments" onclick="selectRunKind('experiments')" data-i18n="filters.experiments">Experiments</button>
+                        <button type="button" data-value="tools" onclick="selectRunKind('tools')" data-i18n="filters.toolTasks">Tool tasks</button>
+                        <button type="button" data-value="all" onclick="selectRunKind('all')" data-i18n="filters.allKinds">All kinds</button>
+                    </div>
+                </div>
                 <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
                     placeholder="Search name or command" data-i18n-placeholder="filters.searchNameCommand">
             </div>
@@ -1250,6 +1260,7 @@
         let execResourceFilterSignature = '';
         let runFilterStatus = '';
         let runFilterResource = '';
+        let runFilterKind = 'experiments';
         let execFilterResource = '';
         let execFilterActor = '';
         let pendingConfirmAction = null;
@@ -1332,6 +1343,9 @@
                 'filters.allStatuses': 'All statuses',
                 'filters.allResources': 'All resources',
                 'filters.allActors': 'All actors',
+                'filters.experiments': 'Experiments',
+                'filters.toolTasks': 'Tool tasks',
+                'filters.allKinds': 'All kinds',
                 'filters.searchNameCommand': 'Search name or command',
                 'filters.searchFavorites': 'Search favorite runs or notes',
                 'filters.searchExecs': 'Search command, resource, actor, event id',
@@ -1470,6 +1484,9 @@
                 'filters.allStatuses': '全部状态',
                 'filters.allResources': '全部资源',
                 'filters.allActors': '全部执行者',
+                'filters.experiments': '实验任务',
+                'filters.toolTasks': '工具任务',
+                'filters.allKinds': '全部类型',
                 'filters.searchNameCommand': '搜索名称或命令',
                 'filters.searchFavorites': '搜索收藏实验或标注',
                 'filters.searchExecs': '搜索命令、资源、执行者、事件 ID',
@@ -1580,6 +1597,11 @@
             const runResourceLabel = document.getElementById('run-filter-resource-label');
             if (runResourceLabel) {
                 runResourceLabel.textContent = runFilterResource ? resourceLabel(runFilterResource) : t('filters.allResources');
+            }
+            const runKindLabelEl = document.getElementById('run-filter-kind-label');
+            if (runKindLabelEl) {
+                runKindLabelEl.textContent = runKindFilterLabel(runFilterKind);
+                updateFilterMenuActive('run-filter-kind-menu', runFilterKind);
             }
             const execResourceLabel = document.getElementById('exec-filter-resource-label');
             if (execResourceLabel) {
@@ -2446,6 +2468,7 @@
 
         function toggleFilterMenu(kind) {
             const id = kind === 'resource' ? 'run-filter-resource-menu'
+                : kind === 'run-kind' ? 'run-filter-kind-menu'
                 : kind === 'exec-resource' ? 'exec-filter-resource-menu'
                 : kind === 'exec-actor' ? 'exec-filter-actor-menu'
                 : 'run-filter-status-menu';
@@ -2474,6 +2497,20 @@
             updateFilterMenuActive('run-filter-resource-menu', value);
             closeFilterMenus();
             applyRunFilters();
+        }
+
+        function selectRunKind(value) {
+            runFilterKind = value || 'experiments';
+            document.getElementById('run-filter-kind-label').textContent = runKindFilterLabel(runFilterKind);
+            updateFilterMenuActive('run-filter-kind-menu', runFilterKind);
+            closeFilterMenus();
+            applyRunFilters();
+        }
+
+        function runKindFilterLabel(value) {
+            if (value === 'tools') return t('filters.toolTasks');
+            if (value === 'all') return t('filters.allKinds');
+            return t('filters.experiments');
         }
 
         function updateFilterMenuActive(menuId, value) {
@@ -2552,6 +2589,9 @@
             const query = (document.getElementById('run-filter-query')?.value || '').trim().toLowerCase();
             const filtered = allRuns.filter(r => {
                 r = asObject(r);
+                const kind = asText(r.kind || 'formal').toLowerCase();
+                if (runFilterKind === 'experiments' && (kind === 'setup' || kind === 'smoke')) return false;
+                if (runFilterKind === 'tools' && kind !== 'setup' && kind !== 'smoke') return false;
                 if (runFilterStatus && r.status !== runFilterStatus) return false;
                 if (runFilterResource && r.resource_id !== runFilterResource) return false;
                 if (query) {
