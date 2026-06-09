@@ -654,6 +654,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	source := r.URL.Query().Get("source")
+	logPath := strings.TrimSpace(r.URL.Query().Get("path"))
 	if source == "" {
 		source = "stdout"
 	}
@@ -670,16 +671,20 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	var total int
 	var remote bool
 	tailMode := parseBoolQuery(r.URL.Query().Get("tail"))
-	if tailMode && offset == 0 {
+	if logPath != "" {
+		lines, total, remote = s.remoteLogFileLines(r.Context(), id, logPath, limit)
+		source = logPath
+	} else if tailMode && offset == 0 {
 		lines, total, remote = s.remoteLogLines(r.Context(), id, source, limit)
 	}
-	if !remote {
+	if logPath == "" && !remote {
 		lines, total, remote = s.fastLogLines(r.Context(), id, source, offset, limit)
 	}
 	firstLine, lastLine := logLineBounds(lines)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"run_id":      id,
 		"source":      source,
+		"path":        logPath,
 		"total_lines": total,
 		"offset":      offset,
 		"limit":       limit,
@@ -690,6 +695,38 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		"last_line":   lastLine,
 		"truncated":   firstLine > 1 && total > len(lines),
 	})
+}
+
+func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath string, limit int) ([]store.LogLine, int, bool) {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return nil, 0, false
+	}
+	resource, err := s.store.GetResource(ctx, run.ResourceID)
+	if err != nil || resource == nil || resource.Status == store.ResourceStatusUnreachable {
+		return nil, 0, false
+	}
+
+	remoteCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	remoteLines, err := s.executor.GetLogFileSnapshot(remoteCtx, runID, logPath, limit)
+	if err != nil {
+		return nil, 0, false
+	}
+	lines := make([]store.LogLine, 0, len(remoteLines))
+	for _, line := range remoteLines {
+		lines = append(lines, store.LogLine{
+			RunID:   runID,
+			Source:  line.Source,
+			LineNo:  line.LineNo,
+			Content: line.Content,
+		})
+	}
+	total := 0
+	if len(lines) > 0 {
+		total = lines[len(lines)-1].LineNo
+	}
+	return lines, total, true
 }
 
 func (s *Server) fastLogLines(ctx context.Context, runID string, source string, offset, limit int) ([]store.LogLine, int, bool) {
@@ -1109,6 +1146,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 
 	id := chi.URLParam(r, "id")
 	source := r.URL.Query().Get("source")
+	logPath := strings.TrimSpace(r.URL.Query().Get("path"))
 	if source == "" {
 		source = "stdout"
 	}
@@ -1120,7 +1158,12 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	if !isFalseQuery(r.URL.Query().Get("snapshot")) {
-		lastLines, _ := s.executor.GetLogSnapshot(r.Context(), id, source, 200)
+		var lastLines []executor.LogLine
+		if logPath != "" {
+			lastLines, _ = s.executor.GetLogFileSnapshot(r.Context(), id, logPath, 200)
+		} else {
+			lastLines, _ = s.executor.GetLogSnapshot(r.Context(), id, source, 200)
+		}
 		for _, line := range lastLines {
 			conn.WriteJSON(map[string]interface{}{
 				"type":    "log.line",
@@ -1133,9 +1176,15 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream only new lines; the UI fetches its initial snapshot over HTTP.
-	logCh, err := s.executor.TailLogs(r.Context(), id, source, -1)
-	if err != nil {
-		conn.WriteJSON(map[string]string{"type": "error", "message": err.Error()})
+	var logCh <-chan executor.LogLine
+	var streamErr error
+	if logPath != "" {
+		logCh, streamErr = s.executor.TailLogFile(r.Context(), id, logPath, -1)
+	} else {
+		logCh, streamErr = s.executor.TailLogs(r.Context(), id, source, -1)
+	}
+	if streamErr != nil {
+		conn.WriteJSON(map[string]string{"type": "error", "message": streamErr.Error()})
 		return
 	}
 

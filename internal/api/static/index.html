@@ -1171,6 +1171,7 @@
                 'logs.combinedClean': 'Terminal tail',
                 'logs.rawStreams': 'Raw stdout / stderr',
                 'logs.cleanTail': 'Terminal tail',
+                'logs.agentLog': 'Agent log',
                 'logs.loadRaw': 'Load raw stdout / stderr',
                 'logs.followLive': 'Resume tail',
                 'logs.stopLive': 'Pause tail',
@@ -1301,6 +1302,7 @@
                 'logs.combinedClean': 'Terminal tail',
                 'logs.rawStreams': '原始 stdout / stderr',
                 'logs.cleanTail': 'Terminal tail',
+                'logs.agentLog': 'Agent log',
                 'logs.loadRaw': '加载原始 stdout / stderr',
                 'logs.followLive': '继续 tail',
                 'logs.stopLive': '暂停 tail',
@@ -1475,6 +1477,29 @@
                         <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.cleanTail'))}</h3>
                     </div>
                     <div class="log-pane" id="log-pane-combined" data-lines="${escAttr(String(merged.length))}">${body}</div>
+                </div>`;
+        }
+        function isExactLogPath(path) {
+            path = asText(path).trim();
+            return !!path && !/[?*[\]{}]/.test(path) && !path.endsWith('/');
+        }
+        function preferredRunLogPath(run) {
+            const paths = asArray(tryParseJSON(asObject(run).log_paths_json, []));
+            return asText(paths.find(isExactLogPath) || '').trim();
+        }
+        function renderAgentLogBlock(runId, logPath, logs) {
+            const lines = logLines(logs);
+            const meta = logMeta(logs, lines);
+            const loadMore = meta.truncated
+                ? `<button type="button" class="btn-secondary text-xs" onclick="loadMoreLogFile('${escAttr(runId)}','${escAttr(logPath)}')">${escHTML(t('logs.loadMore'))}</button>`
+                : '';
+            return `
+                <div class="mb-4">
+                    <div class="flex items-center justify-between gap-3 mb-2">
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.agentLog'))} <span class="text-ink-muted font-normal" title="${escAttr(logPath)}">(${escHTML(meta.label)} · ${escHTML(logPath)})</span></h3>
+                        ${loadMore}
+                    </div>
+                    <div class="log-pane" id="log-pane-agent" data-log-path="${escAttr(logPath)}" data-lines="${escAttr(String(lines.length))}">${lines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
                 </div>`;
         }
         function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
@@ -2135,25 +2160,30 @@
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
             });
 
-            Promise.all([
-                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
-                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
-            ]).then(([logsRaw, errLogsRaw]) => {
+            const preferredLogPath = preferredRunLogPath(run);
+            const logPromise = preferredLogPath
+                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=300&tail=true')
+                : Promise.all([
+                    fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
+                    fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
+                ]);
+            logPromise.then(result => {
                 if (currentDetailRunId !== id) return;
-                const logs = asObject(logsRaw);
-                const errLogs = asObject(errLogsRaw);
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
-                    el.innerHTML = renderCombinedLogBlock(logs, errLogs) + `
+                    const logHTML = preferredLogPath
+                        ? renderAgentLogBlock(run.id, preferredLogPath, asObject(result))
+                        : renderCombinedLogBlock(asObject(result[0]), asObject(result[1]));
+                    el.innerHTML = logHTML + `
                         <div class="log-actions">
                             <button type="button" class="btn-secondary text-xs" onclick="loadRawLogs('${escAttr(run.id)}')">${escHTML(t('logs.loadRaw'))}</button>
-                            ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
+                            ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}','${escAttr(preferredLogPath)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
                         </div>
                         <div id="raw-log-streams"></div>`;
                 }
-                const lp = document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
+                const lp = document.getElementById('log-pane-agent') || document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
-                if (run.status === 'running') startLiveLogs(run.id);
+                if (run.status === 'running') startLiveLogs(run.id, preferredLogPath);
             }).catch(() => {
                 const el = document.getElementById('run-logs-detail');
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
@@ -2170,6 +2200,16 @@
             const meta = logMeta(logs, lines);
             const metaEl = document.getElementById('log-meta-' + source);
             if (metaEl) metaEl.textContent = '(' + meta.label + ')';
+            pane.scrollTop = pane.scrollHeight;
+        }
+
+        async function loadMoreLogFile(runId, logPath) {
+            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?path=' + encodeURIComponent(logPath) + '&limit=1000&tail=true'));
+            const pane = document.getElementById('log-pane-agent');
+            if (!pane) return;
+            const lines = logLines(logs);
+            pane.textContent = lines.map(l => asText(asObject(l).content)).join('\n');
+            pane.dataset.lines = String(lines.length);
             pane.scrollTop = pane.scrollHeight;
         }
 
@@ -2231,7 +2271,7 @@
             pane.scrollTop = pane.scrollHeight;
         }
 
-        function toggleLiveLogs(runId) {
+        function toggleLiveLogs(runId, logPath) {
             if (liveLogFollowing) {
                 logSockets.forEach(sock => sock.close());
                 logSockets = [];
@@ -2240,21 +2280,33 @@
                 if (btn) btn.textContent = t('logs.followLive');
                 return;
             }
-            startLiveLogs(runId);
+            startLiveLogs(runId, logPath);
         }
 
-        function startLiveLogs(runId) {
+        function startLiveLogs(runId, logPath) {
             if (liveLogFollowing && logSockets.length) return;
             liveLogFollowing = true;
             const btn = document.getElementById('live-log-toggle');
             if (btn) btn.textContent = t('logs.stopLive');
-            connectWS(runId);
+            connectWS(runId, logPath);
         }
 
-        function connectWS(runId) {
+        function connectWS(runId, logPath) {
             logSockets.forEach(sock => sock.close());
             logSockets = [];
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (logPath) {
+                const sock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ path: logPath, snapshot: 'false' }));
+                sock.onmessage = (e) => {
+                    if (!liveLogFollowing || currentDetailRunId !== runId) return;
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'log.line') {
+                        appendPlainLogLine(document.getElementById('log-pane-agent'), asText(msg.content));
+                    }
+                };
+                logSockets.push(sock);
+                return;
+            }
             ['stdout', 'stderr'].forEach(source => {
                 const sock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ source, snapshot: 'false' }));
                 sock.onmessage = (e) => {

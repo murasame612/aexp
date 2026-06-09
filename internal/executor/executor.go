@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -430,6 +431,44 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 	return logCh, nil
 }
 
+// TailLogFile streams a project log file from a run. Relative paths resolve from run.Cwd.
+func (e *Executor) TailLogFile(ctx context.Context, runID string, logPath string, lastN int) (<-chan LogLine, error) {
+	run, resource, logFile, label, err := e.resolveRunLogFile(ctx, runID, logPath)
+	if err != nil {
+		return nil, err
+	}
+	if lastN < 0 {
+		lastN = 0
+	} else if lastN == 0 {
+		lastN = 200
+	}
+
+	cmd := fmt.Sprintf("tail -F -n %d %s", lastN, shellQuote(logFile))
+	ch, err := e.execStream(ctx, resource, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	logCh := make(chan LogLine, 64)
+	go func() {
+		defer close(logCh)
+		lineNo := 0
+		for line := range ch {
+			if line == "" {
+				continue
+			}
+			lineNo++
+			select {
+			case logCh <- LogLine{RunID: run.ID, Source: label, LineNo: lineNo, Content: line}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return logCh, nil
+}
+
 // GetLogSnapshot returns the last N lines of a log file as a one-shot read.
 func (e *Executor) GetLogSnapshot(ctx context.Context, runID string, source string, lastN int) ([]LogLine, error) {
 	run, err := e.store.GetRun(ctx, runID)
@@ -464,6 +503,89 @@ tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN
 		return nil, err
 	}
 
+	totalLines := 0
+	contentLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(contentLines) > 0 && strings.HasPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t") {
+		fmt.Sscanf(strings.TrimPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t"), "%d", &totalLines)
+		contentLines = contentLines[1:]
+	}
+	startLine := 1
+	if totalLines > len(contentLines) {
+		startLine = totalLines - len(contentLines) + 1
+	}
+
+	var lines []LogLine
+	for i, content := range contentLines {
+		if content == "" {
+			continue
+		}
+		lines = append(lines, LogLine{
+			RunID:   runID,
+			Source:  source,
+			LineNo:  startLine + i,
+			Content: content,
+		})
+	}
+	return lines, nil
+}
+
+// GetLogFileSnapshot returns the last N lines from a project log file.
+func (e *Executor) GetLogFileSnapshot(ctx context.Context, runID string, logPath string, lastN int) ([]LogLine, error) {
+	run, resource, logFile, label, err := e.resolveRunLogFile(ctx, runID, logPath)
+	if err != nil {
+		return nil, err
+	}
+	if lastN <= 0 {
+		lastN = 200
+	}
+
+	cmd := fmt.Sprintf(`LOG_FILE=%s
+if [ ! -f "$LOG_FILE" ]; then exit 0; fi
+total=$(tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ')
+printf '\001AEXP_TOTAL_LINES\t%%s\n' "$total"
+tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN)
+
+	out, _, err := e.exec(ctx, resource, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return parseLogSnapshot(run.ID, label, out)
+}
+
+func (e *Executor) resolveRunLogFile(ctx context.Context, runID string, logPath string) (*store.Run, *store.Resource, string, string, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	if run == nil {
+		return nil, nil, "", "", fmt.Errorf("run %s not found", runID)
+	}
+	resource, err := e.store.GetResource(ctx, run.ResourceID)
+	if err != nil || resource == nil {
+		return nil, nil, "", "", fmt.Errorf("resource not found")
+	}
+	cleanPath := strings.TrimSpace(logPath)
+	if cleanPath == "" || strings.ContainsAny(cleanPath, "\x00\r\n") {
+		return nil, nil, "", "", fmt.Errorf("invalid log path")
+	}
+	var remotePath string
+	if strings.HasPrefix(cleanPath, "/") {
+		remotePath = path.Clean(cleanPath)
+	} else {
+		base := strings.TrimSpace(run.Cwd)
+		if base == "" {
+			base = run.RemoteRunDir
+		}
+		remotePath = path.Join(base, cleanPath)
+	}
+	root := path.Clean(resource.RootDir)
+	if root != "." && remotePath != root && !strings.HasPrefix(remotePath, strings.TrimRight(root, "/")+"/") {
+		return nil, nil, "", "", fmt.Errorf("log path %s is outside resource root %s", remotePath, root)
+	}
+	return run, resource, remotePath, cleanPath, nil
+}
+
+func parseLogSnapshot(runID string, source string, out string) ([]LogLine, error) {
 	totalLines := 0
 	contentLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(contentLines) > 0 && strings.HasPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t") {
