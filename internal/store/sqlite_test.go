@@ -59,10 +59,17 @@ func TestResourceCRUD(t *testing.T) {
 	}
 
 	r.Status = ResourceStatusIdle
+	now := time.Now()
+	r.SSHStatus = ResourceSSHStatusFailed
+	r.LastDoctorError = "ssh: EOF"
+	r.LastCheckedAt = &now
 	s.UpdateResource(ctx, r)
 	got2, _ := s.GetResource(ctx, "rsrc_test001")
 	if got2.Status != ResourceStatusIdle {
 		t.Errorf("status = %q, want %q", got2.Status, ResourceStatusIdle)
+	}
+	if got2.SSHStatus != ResourceSSHStatusFailed || got2.LastDoctorError != "ssh: EOF" || got2.LastCheckedAt == nil {
+		t.Errorf("ssh status fields not persisted: %#v", got2)
 	}
 
 	s.DeleteResource(ctx, "rsrc_test001")

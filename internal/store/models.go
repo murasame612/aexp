@@ -7,25 +7,29 @@ import (
 
 // Resource represents a compute resource (SSH server, container, etc.)
 type Resource struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Type         string    `json:"type"` // ssh, docker, local, slurm, k8s
-	Host         string    `json:"host"`
-	OSType       string    `json:"os_type"`
-	Port         int       `json:"port"`
-	User         string    `json:"user"`
-	AuthRef      string    `json:"auth_ref"`
-	SocksProxy   string    `json:"socks_proxy"`   // host:port for SOCKS5 proxy
-	ProxyCommand string    `json:"proxy_command"` // raw ProxyCommand (future)
-	RootDir      string    `json:"root_dir"`
-	CondaBase    string    `json:"conda_base"`
-	CondaInit    string    `json:"conda_init"`
-	CondaEnv     string    `json:"conda_env"`
-	GPUIndices   string    `json:"gpu_indices"`
-	Tags         string    `json:"tags"`
-	Status       string    `json:"status"` // idle, busy, error, unreachable
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Type            string     `json:"type"` // ssh, docker, local, slurm, k8s
+	Host            string     `json:"host"`
+	OSType          string     `json:"os_type"`
+	Port            int        `json:"port"`
+	User            string     `json:"user"`
+	AuthRef         string     `json:"auth_ref"`
+	SocksProxy      string     `json:"socks_proxy"`   // host:port for SOCKS5 proxy
+	ProxyCommand    string     `json:"proxy_command"` // raw ProxyCommand (future)
+	RootDir         string     `json:"root_dir"`
+	CondaBase       string     `json:"conda_base"`
+	CondaInit       string     `json:"conda_init"`
+	CondaEnv        string     `json:"conda_env"`
+	GPUIndices      string     `json:"gpu_indices"`
+	Tags            string     `json:"tags"`
+	Status          string     `json:"status"`     // idle, busy, error, unreachable
+	SSHStatus       string     `json:"ssh_status"` // unknown, ok, failed
+	LastDoctorError string     `json:"last_doctor_error,omitempty"`
+	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
+	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // Run represents a single experiment execution.
@@ -230,6 +234,13 @@ const (
 	ResourceStatusError       = "error"
 	ResourceStatusUnreachable = "unreachable"
 	ResourceStatusUnknown     = "unknown"
+)
+
+// Resource SSH/control-channel status constants.
+const (
+	ResourceSSHStatusUnknown = "unknown"
+	ResourceSSHStatusOK      = "ok"
+	ResourceSSHStatusFailed  = "failed"
 )
 
 // ResourceType constants

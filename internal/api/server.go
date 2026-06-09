@@ -271,6 +271,10 @@ func (s *Server) handleCreateLocalResource(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "LOCAL_SSH_FAILED", err.Error())
 		return
 	}
+	now := time.Now()
+	res.SSHStatus = store.ResourceSSHStatusOK
+	res.LastCheckedAt = &now
+	res.LastSuccessAt = &now
 
 	if err := s.store.CreateResource(r.Context(), &res); err != nil {
 		writeError(w, http.StatusConflict, "CREATE_FAILED", err.Error())
@@ -508,6 +512,18 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if !hasField("status") {
 		update.Status = store.ResourceStatusUnknown
+	}
+	if !hasField("ssh_status") {
+		update.SSHStatus = existing.SSHStatus
+	}
+	if !hasField("last_doctor_error") {
+		update.LastDoctorError = existing.LastDoctorError
+	}
+	if !hasField("last_checked_at") {
+		update.LastCheckedAt = existing.LastCheckedAt
+	}
+	if !hasField("last_success_at") {
+		update.LastSuccessAt = existing.LastSuccessAt
 	}
 
 	if err := s.store.UpdateResource(r.Context(), &update); err != nil {

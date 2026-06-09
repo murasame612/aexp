@@ -328,6 +328,9 @@ func doctorCmd() *cobra.Command {
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			loadSSHKeys(sshPool)
 			report := runDoctorChecks(cmd.Context(), sshPool, res, cwd, condaEnv, gpuIndex)
+			if err := updateResourceControlStatus(cmd.Context(), db, res, report); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update resource ssh status: %v\n", err)
+			}
 			if report.Project != nil {
 				if err := db.SaveProjectProfile(cmd.Context(), report.Project); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", err)
@@ -451,6 +454,43 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 
 	report.RecommendedSubmitCommand = recommendedSubmitCommand(res.Name, cwd, condaEnv, gpuIndex)
 	return report
+}
+
+func updateResourceControlStatus(ctx context.Context, db store.Store, res *store.Resource, report doctorReport) error {
+	now := time.Now()
+	res.LastCheckedAt = &now
+	reachable := doctorCheckByName(report, "resource reachable")
+	if reachable != nil && (reachable.OK || reachable.Severity == "warn") {
+		res.SSHStatus = store.ResourceSSHStatusOK
+		res.LastDoctorError = ""
+		res.LastSuccessAt = &now
+	} else {
+		res.SSHStatus = store.ResourceSSHStatusFailed
+		if reachable != nil && strings.TrimSpace(reachable.Detail) != "" {
+			res.LastDoctorError = reachable.Detail
+		} else {
+			res.LastDoctorError = firstDoctorFailureDetail(report)
+		}
+	}
+	return db.UpdateResource(ctx, res)
+}
+
+func doctorCheckByName(report doctorReport, name string) *doctorCheck {
+	for i := range report.Checks {
+		if report.Checks[i].Name == name {
+			return &report.Checks[i]
+		}
+	}
+	return nil
+}
+
+func firstDoctorFailureDetail(report doctorReport) string {
+	for _, check := range report.Checks {
+		if !check.OK && check.Severity != "warn" && strings.TrimSpace(check.Detail) != "" {
+			return check.Detail
+		}
+	}
+	return "resource control channel failed"
 }
 
 func retryRemote(attempts int, delay time.Duration, fn func() (string, string, error)) (string, string, error) {
@@ -1805,6 +1845,9 @@ func projectDoctorCmd() *cobra.Command {
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			loadSSHKeys(sshPool)
 			report := runDoctorChecks(cmd.Context(), sshPool, res, cwd, condaEnv, gpuIndex)
+			if err := updateResourceControlStatus(cmd.Context(), db, res, report); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update resource ssh status: %v\n", err)
+			}
 			if cfg != nil {
 				applyProjectDoctorConfigRecommendations(&report, cfg, recipeName)
 			}
@@ -2831,7 +2874,7 @@ func resourceListCmd() *cobra.Command {
 			}
 
 			if verbose {
-				fmt.Printf("%-16s %-20s %-8s %-24s %-24s %-12s %-8s %-8s %-8s %s\n", "NAME", "HOST", "OS", "ROOT_DIR", "CONDA_BASE", "CONDA", "GPU", "STATUS", "CPU", "RAM")
+				fmt.Printf("%-16s %-20s %-8s %-24s %-24s %-12s %-8s %-8s %-10s %-8s %-8s %s\n", "NAME", "HOST", "OS", "ROOT_DIR", "CONDA_BASE", "CONDA", "GPU", "STATUS", "SSH", "CPU", "RAM", "LAST_ERROR")
 				for _, r := range resources {
 					snap, _ := db.GetLatestSnapshot(cmd.Context(), r.ID)
 					cpuStr := "-"
@@ -2842,13 +2885,13 @@ func resourceListCmd() *cobra.Command {
 							ramStr = fmt.Sprintf("%.0f%%", snap.MemUsedMB/snap.MemTotalMB*100)
 						}
 					}
-					fmt.Printf("%-16s %-20s %-8s %-24s %-24s %-12s %-8s %-8s %-8s %s\n",
-						truncStr(r.Name, 16), truncStr(r.Host, 20), truncStr(r.OSType, 8), truncStr(r.RootDir, 24), truncStr(r.CondaBase, 24), truncStr(r.CondaEnv, 12), truncStr(r.GPUIndices, 8), r.Status, cpuStr, ramStr)
+					fmt.Printf("%-16s %-20s %-8s %-24s %-24s %-12s %-8s %-8s %-10s %-8s %-8s %s\n",
+						truncStr(r.Name, 16), truncStr(r.Host, 20), truncStr(r.OSType, 8), truncStr(r.RootDir, 24), truncStr(r.CondaBase, 24), truncStr(r.CondaEnv, 12), truncStr(r.GPUIndices, 8), r.Status, resourceControlLabel(r), cpuStr, ramStr, truncStr(r.LastDoctorError, 48))
 				}
 				return nil
 			}
 
-			fmt.Printf("%-16s %-20s %-8s %-8s %-8s  %s\n", "NAME", "HOST", "STATUS", "CPU", "RAM", "GPU")
+			fmt.Printf("%-16s %-20s %-8s %-10s %-8s %-8s  %s\n", "NAME", "HOST", "STATUS", "SSH", "CPU", "RAM", "GPU")
 			for _, r := range resources {
 				snap, _ := db.GetLatestSnapshot(cmd.Context(), r.ID)
 				cpuStr := "-"
@@ -2863,8 +2906,8 @@ func resourceListCmd() *cobra.Command {
 						gpuStr = formatGPUList(snap.GPUJSON)
 					}
 				}
-				fmt.Printf("%-16s %-20s %-8s %-8s %-8s  %s\n",
-					truncStr(r.Name, 16), r.Host, r.Status, cpuStr, ramStr, gpuStr)
+				fmt.Printf("%-16s %-20s %-8s %-10s %-8s %-8s  %s\n",
+					truncStr(r.Name, 16), r.Host, r.Status, resourceControlLabel(r), cpuStr, ramStr, gpuStr)
 			}
 			return nil
 		},
@@ -2872,6 +2915,17 @@ func resourceListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show root_dir, conda env, and configured GPU indices")
 	return cmd
+}
+
+func resourceControlLabel(r store.Resource) string {
+	switch r.SSHStatus {
+	case store.ResourceSSHStatusOK:
+		return "ssh:ok"
+	case store.ResourceSSHStatusFailed:
+		return "ssh:failed"
+	default:
+		return "ssh:?"
+	}
 }
 
 // formatGPUList parses gpu_json and returns a compact summary like "4090 45% 1.2/24G"

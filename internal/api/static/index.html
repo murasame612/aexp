@@ -2150,6 +2150,7 @@
                 const condaLabel = r.conda_env ? 'env:' + r.conda_env : (r.conda_base ? 'conda' : '');
                 const osLabel = r.os_type || '';
                 const sub = [r.host, osLabel, condaLabel].filter(Boolean).join(' · ') || r.type || '-';
+                const sshFailed = (r.ssh_status || 'unknown') === 'failed';
 
                 function metricRow(label, pct, valueText, extraText) {
                     return `<div class="resource-metric">
@@ -2182,9 +2183,10 @@
                 <div class="card" style="padding:14px 18px">
                     <div class="flex justify-between items-center mb-2">
                         <span class="font-medium font-heading text-sm truncate mr-2">${escHTML(r.name || '-')}</span>
-                        ${resourceStatusPill(r.status, 'flex-shrink-0')}
+                        <span class="flex gap-1 flex-shrink-0">${resourceStatusPill(r.status)}${resourceSSHPill(r)}</span>
                     </div>
                     <div class="text-xs text-ink-muted mb-3 truncate">${escHTML(sub)}</div>
+                    ${sshFailed ? '<div class="text-xs mb-3" style="color:#8a3a2a">' + escHTML(r.last_doctor_error || 'SSH control channel failed') + '</div>' : ''}
                     <div class="space-y-1">${rows}</div>
                 </div>`;
             }).join('');
@@ -2316,7 +2318,7 @@
             <div class="table-scroll">
             <table class="data-table">
                 <thead><tr>
-                    <th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.host'))}</th><th>OS</th><th>${escHTML(t('table.status'))}</th><th>CPU</th><th>RAM</th><th>${escHTML(t('table.gpu'))}</th><th style="width:140px"></th>
+                    <th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.host'))}</th><th>OS</th><th>${escHTML(t('table.status'))}</th><th>SSH</th><th>CPU</th><th>RAM</th><th>${escHTML(t('table.gpu'))}</th><th style="width:140px"></th>
                 </tr></thead>
                 <tbody>${resources.map(r => {
                     r = asObject(r);
@@ -2330,6 +2332,7 @@
                         <td class="font-mono text-xs">${escHTML(r.host || '-')}</td>
                         <td>${escHTML(r.os_type || '-')}</td>
                         <td>${resourceStatusPill(r.status)}</td>
+                        <td>${resourceSSHPill(r)}</td>
                         <td class="tabular-nums">${unreachable ? '' : (snap.cpu_percent||0).toFixed(0) + '%'}</td>
                         <td class="tabular-nums">${unreachable ? '' : fmtMB(snap.mem_used_mb) + '/' + fmtMB(snap.mem_total_mb)}</td>
                         <td class="tabular-nums text-xs">${unreachable ? '' : escHTML(gpuUtil + ' ' + gpuMem)}</td>
@@ -2436,6 +2439,15 @@
             status = status || 'unknown';
             const cls = extraClass ? ' ' + extraClass : '';
             return `<span class="pill pill-${escAttr(status)}${cls}" style="font-size:11px;padding:1px 8px">${escHTML(statusLabel(status))}</span>`;
+        }
+
+        function resourceSSHPill(resource) {
+            const r = asObject(resource);
+            const status = asText(r.ssh_status || 'unknown').toLowerCase();
+            const cls = status === 'ok' ? 'idle' : (status === 'failed' ? 'failed' : 'unknown');
+            const label = status === 'ok' ? 'SSH OK' : (status === 'failed' ? 'SSH FAIL' : 'SSH ?');
+            const title = status === 'failed' && r.last_doctor_error ? r.last_doctor_error : label;
+            return `<span class="pill pill-${escAttr(cls)}" title="${escAttr(title)}" style="font-size:11px;padding:1px 8px">${escHTML(label)}</span>`;
         }
 
         function statusLabel(status) {

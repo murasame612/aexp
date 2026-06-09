@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS resources (
     gpu_indices   TEXT DEFAULT '',
     tags          TEXT DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'unknown',
+    ssh_status    TEXT NOT NULL DEFAULT 'unknown',
+    last_doctor_error TEXT DEFAULT '',
+    last_checked_at DATETIME,
+    last_success_at DATETIME,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

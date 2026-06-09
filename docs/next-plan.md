@@ -302,5 +302,6 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - 通用 metric group charts：已实现基础版本。
 - `project doctor` 下一步命令生成器：已实现，JSON/CLI 均包含 recipes、recommended commands、缺失 cwd/sync/recipe 的修复建议。
 - project profile cache：已实现，`run submit` / `project run` / `exec` 的 `--project-env auto` 默认复用可用缓存，`--refresh-env` 可强制重新探测，run 记录仍保存 resolved 快照。
+- resource 控制通道状态：已实现，resource 记录保存 `ssh_status/last_doctor_error/last_checked_at/last_success_at`，doctor/project doctor 会更新，CLI/UI 能显示 idle 但 SSH failed。
 
-优先继续：resource 控制通道状态、UI 多 run 比较、project sync 打磨。
+优先继续：UI 多 run 比较、project sync 打磨。
