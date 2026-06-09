@@ -1032,7 +1032,7 @@ func firstExistingGlob(baseDir string, pattern string) string {
 func projectRunCmd() *cobra.Command {
 	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv string
 	var gpuIndex int
-	var noGPU, force, dryRun bool
+	var noGPU, force, dryRun, refreshEnv bool
 	var launchTimeoutSec int
 
 	cmd := &cobra.Command{
@@ -1112,19 +1112,20 @@ Then run:
 			metricPaths := mergeProjectLists(cfg.Metrics, entry.Metrics)
 			artifactPaths := mergeProjectLists(cfg.Artifacts, entry.Artifacts)
 			submitReq := executor.SubmitRequest{
-				ResourceID:    resourceName,
-				Name:          name,
-				Kind:          kind,
-				GPUIndex:      effectiveGPU,
-				Force:         force,
-				Cwd:           cwd,
-				CondaEnv:      condaEnv,
-				ProjectEnv:    projectEnv,
-				LogPaths:      logPaths,
-				MetricPaths:   metricPaths,
-				ArtifactPaths: artifactPaths,
-				Program:       "bash",
-				Args:          []string{"-lc", entry.Command},
+				ResourceID:        resourceName,
+				Name:              name,
+				Kind:              kind,
+				GPUIndex:          effectiveGPU,
+				Force:             force,
+				Cwd:               cwd,
+				CondaEnv:          condaEnv,
+				ProjectEnv:        projectEnv,
+				LogPaths:          logPaths,
+				MetricPaths:       metricPaths,
+				ArtifactPaths:     artifactPaths,
+				Program:           "bash",
+				Args:              []string{"-lc", entry.Command},
+				RefreshProjectEnv: refreshEnv,
 			}
 			if dryRun {
 				printProjectRunPlan(cfg.Path, commandName, resourceName, submitReq)
@@ -1143,6 +1144,7 @@ Then run:
 	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Override runtime env strategy: auto or raw")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Override conda environment")
+	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the resolved submit command without launching")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created")
 	return cmd
@@ -1543,6 +1545,9 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	}
 	if req.CondaEnv != "" {
 		args = append(args, "--conda-env", req.CondaEnv)
+	}
+	if req.RefreshProjectEnv {
+		args = append(args, "--refresh-env")
 	}
 	if req.GPUIndex == store.GPUIndexNone {
 		args = append(args, "--no-gpu")
@@ -3198,7 +3203,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 func runSubmitCmd() *cobra.Command {
 	var resource, name, cwd, condaEnv, projectEnv, kind, uiEventsPath string
 	var gpuIndex int
-	var shellMode, force, noGPU bool
+	var shellMode, force, noGPU, refreshEnv bool
 	var logPaths, artifactPaths, metricPaths []string
 	var launchTimeoutSec int
 
@@ -3256,6 +3261,7 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.ArtifactPaths = artifactPaths
 			submitReq.MetricPaths = metricPaths
 			submitReq.UIEventsPath = uiEventsPath
+			submitReq.RefreshProjectEnv = refreshEnv
 
 			db := openDB()
 			defer db.Close()
@@ -3312,6 +3318,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Runtime env strategy: auto or raw")
+	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
@@ -3856,7 +3863,7 @@ func runMarksCmd() *cobra.Command {
 func execCmd() *cobra.Command {
 	var resourceName, cwd, projectEnv, condaEnv, apiURL string
 	var timeout int
-	var asJSON, shellMode, dryRun, force, direct bool
+	var asJSON, shellMode, dryRun, force, direct, refreshEnv bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [flags] -- <command>",
@@ -3927,6 +3934,9 @@ Examples:
 				if projectEnv != "" {
 					fmt.Printf("[dry-run] Project env: %s\n", projectEnv)
 				}
+				if refreshEnv {
+					fmt.Println("[dry-run] Refresh project env: true")
+				}
 				if condaEnv != "" {
 					fmt.Printf("[dry-run] Conda env override: %s\n", condaEnv)
 				}
@@ -3943,13 +3953,14 @@ Examples:
 			}
 
 			req := executor.ExecRequest{
-				ResourceID: res.ID,
-				Command:    command,
-				Cwd:        cwd,
-				ProjectEnv: projectEnv,
-				CondaEnv:   condaEnv,
-				TimeoutSec: timeout,
-				Actor:      "cli",
+				ResourceID:        res.ID,
+				Command:           command,
+				Cwd:               cwd,
+				ProjectEnv:        projectEnv,
+				CondaEnv:          condaEnv,
+				TimeoutSec:        timeout,
+				Actor:             "cli",
+				RefreshProjectEnv: refreshEnv,
 			}
 
 			var result *executor.ExecResult
@@ -3981,6 +3992,7 @@ Examples:
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory on remote")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Runtime env strategy for exec: raw or auto (.venv, then conda_env, then raw shell)")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment override for --project-env auto")
+	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "Timeout in seconds (max 300)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (stdout/stderr/exit_code)")
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Join command arguments as a raw remote shell string")

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ziwu/aexp/internal/store"
 )
@@ -55,6 +56,99 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("command script missing %q\n%s", want, script)
 		}
+	}
+}
+
+func TestResolveProjectProfileUsesCachedProfile(t *testing.T) {
+	ctx := context.Background()
+	db := newExecutorTestStore(t)
+	res := &store.Resource{
+		ID:      "rsrc_profile",
+		Name:    "profile-resource",
+		Type:    store.ResourceTypeSSH,
+		Host:    "127.0.0.1",
+		Port:    1,
+		User:    "nobody",
+		RootDir: "/workspace",
+		Status:  store.ResourceStatusIdle,
+	}
+	if err := db.CreateResource(ctx, res); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := db.SaveProjectProfile(ctx, &store.ProjectProfile{
+		ResourceID:   res.ID,
+		ResourceName: res.Name,
+		Cwd:          "/workspace/project",
+		EnvStrategy:  ProjectEnvAuto,
+		ResolvedEnv:  ProjectEnvVenv,
+		Python:       "/workspace/project/.venv/bin/python",
+		ResolvedCwd:  "/workspace/project",
+		PythonOK:     true,
+		TorchOK:      true,
+		CUDA:         "ok",
+		CUDAOK:       true,
+		Logs:         []string{"logs/**/*.log"},
+		Metrics:      []string{"runs/**/*.csv"},
+	}); err != nil {
+		t.Fatalf("SaveProjectProfile: %v", err)
+	}
+
+	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	profile, err := exec.ResolveProjectProfile(ctx, res, "/workspace/project", ProjectEnvAuto, "", false)
+	if err != nil {
+		t.Fatalf("ResolveProjectProfile: %v", err)
+	}
+	if profile.Python != "/workspace/project/.venv/bin/python" || profile.ResolvedEnv != ProjectEnvVenv {
+		t.Fatalf("unexpected cached profile: %#v", profile)
+	}
+}
+
+func TestResolveProjectProfileRefreshBypassesCache(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	db := newExecutorTestStore(t)
+	res := &store.Resource{
+		ID:      "rsrc_refresh",
+		Name:    "refresh-resource",
+		Type:    store.ResourceTypeSSH,
+		Host:    "127.0.0.1",
+		Port:    1,
+		User:    "nobody",
+		RootDir: "/workspace",
+		Status:  store.ResourceStatusIdle,
+	}
+	if err := db.CreateResource(ctx, res); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := db.SaveProjectProfile(ctx, &store.ProjectProfile{
+		ResourceID:   res.ID,
+		ResourceName: res.Name,
+		Cwd:          "/workspace/project",
+		EnvStrategy:  ProjectEnvAuto,
+		ResolvedEnv:  ProjectEnvVenv,
+		Python:       "/workspace/project/.venv/bin/python",
+		ResolvedCwd:  "/workspace/project",
+		PythonOK:     true,
+	}); err != nil {
+		t.Fatalf("SaveProjectProfile: %v", err)
+	}
+
+	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	_, err := exec.ResolveProjectProfile(ctx, res, "/workspace/project", ProjectEnvAuto, "", true)
+	if err == nil {
+		t.Fatal("expected refresh to bypass cache and attempt remote detection")
+	}
+}
+
+func TestUsableCachedProjectProfile(t *testing.T) {
+	if usableCachedProjectProfile(nil) {
+		t.Fatal("nil profile should not be usable")
+	}
+	if usableCachedProjectProfile(&store.ProjectProfile{ResolvedEnv: ProjectEnvVenv, ResolvedCwd: "/p"}) {
+		t.Fatal("profile without python_ok should not be usable")
+	}
+	if !usableCachedProjectProfile(&store.ProjectProfile{ResolvedEnv: ProjectEnvVenv, ResolvedCwd: "/p", PythonOK: true}) {
+		t.Fatal("valid profile should be usable")
 	}
 }
 

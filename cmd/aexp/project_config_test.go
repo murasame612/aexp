@@ -226,8 +226,47 @@ func TestProjectDoctorConfigFixesMissingRemoteCWD(t *testing.T) {
 	}
 }
 
+func TestProjectRunDryRunShowsRefreshEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+resource: mu
+cwd: /remote/project
+env: auto
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runProjectRunForTest("--config", configPath, "train", "--dry-run", "--refresh-env")
+	if err != nil {
+		t.Fatalf("project run dry-run failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"expanded submit command:",
+		"--refresh-env",
+		"'aexp' 'run' 'submit'",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func runProjectInitForTest(args ...string) (string, error) {
 	cmd := projectInitCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runProjectRunForTest(args ...string) (string, error) {
+	cmd := projectRunCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs(args)

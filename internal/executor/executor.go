@@ -19,23 +19,24 @@ import (
 
 // SubmitRequest contains the parameters for creating a new run.
 type SubmitRequest struct {
-	ResourceID    string            `json:"resource_id"`
-	Name          string            `json:"name"`
-	Kind          string            `json:"kind"`      // smoke, pilot, formal, ablation
-	GPUIndex      int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
-	Force         bool              `json:"force"`     // skip GPU slot lock
-	Command       string            `json:"command"`
-	Program       string            `json:"program"` // structured: python, bash, etc.
-	Args          []string          `json:"args"`    // structured args
-	Cwd           string            `json:"cwd"`
-	CondaEnv      string            `json:"conda_env"`
-	ProjectEnv    string            `json:"project_env"` // "", raw, auto
-	LogPaths      []string          `json:"log_paths"`
-	ArtifactPaths []string          `json:"artifact_paths"`
-	MetricPaths   []string          `json:"metric_paths"`
-	UIEventsPath  string            `json:"ui_events_path"`
-	EnvVars       map[string]string `json:"env_vars"`
-	CreatedBy     string            `json:"created_by"`
+	ResourceID        string            `json:"resource_id"`
+	Name              string            `json:"name"`
+	Kind              string            `json:"kind"`      // smoke, pilot, formal, ablation
+	GPUIndex          int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
+	Force             bool              `json:"force"`     // skip GPU slot lock
+	Command           string            `json:"command"`
+	Program           string            `json:"program"` // structured: python, bash, etc.
+	Args              []string          `json:"args"`    // structured args
+	Cwd               string            `json:"cwd"`
+	CondaEnv          string            `json:"conda_env"`
+	ProjectEnv        string            `json:"project_env"` // "", raw, auto
+	LogPaths          []string          `json:"log_paths"`
+	ArtifactPaths     []string          `json:"artifact_paths"`
+	MetricPaths       []string          `json:"metric_paths"`
+	UIEventsPath      string            `json:"ui_events_path"`
+	EnvVars           map[string]string `json:"env_vars"`
+	CreatedBy         string            `json:"created_by"`
+	RefreshProjectEnv bool              `json:"refresh_project_env"`
 }
 
 // SubmitOptions controls optional submit behavior.
@@ -142,12 +143,9 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	}
 	var projectProfile *store.ProjectProfile
 	if req.ProjectEnv == ProjectEnvAuto {
-		projectProfile, err = e.DetectProject(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv)
+		projectProfile, err = e.ResolveProjectProfile(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv, req.RefreshProjectEnv)
 		if err != nil {
 			return nil, fmt.Errorf("detect project: %w", err)
-		}
-		if saveErr := e.store.SaveProjectProfile(ctx, projectProfile); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", saveErr)
 		}
 		if len(req.LogPaths) == 0 {
 			req.LogPaths = projectProfile.Logs
@@ -278,6 +276,45 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "running"})
 
 	return run, nil
+}
+
+func (e *Executor) ResolveProjectProfile(ctx context.Context, resource *store.Resource, cwd, strategy, condaEnv string, refresh bool) (*store.ProjectProfile, error) {
+	profileCwd := cwd
+	if profileCwd == "" {
+		profileCwd = resource.RootDir
+	}
+	if strategy == "" {
+		strategy = ProjectEnvAuto
+	}
+	if strategy != ProjectEnvAuto {
+		return e.DetectProject(ctx, resource, profileCwd, strategy, condaEnv)
+	}
+	if !refresh && e.store != nil {
+		cached, cacheErr := e.store.GetProjectProfile(ctx, resource.ID, profileCwd)
+		if cacheErr != nil {
+			return nil, fmt.Errorf("load project profile cache: %w", cacheErr)
+		}
+		if usableCachedProjectProfile(cached) {
+			return cached, nil
+		}
+	}
+	profile, err := e.DetectProject(ctx, resource, profileCwd, strategy, condaEnv)
+	if err != nil {
+		return nil, err
+	}
+	if e.store != nil {
+		if saveErr := e.store.SaveProjectProfile(ctx, profile); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", saveErr)
+		}
+	}
+	return profile, nil
+}
+
+func usableCachedProjectProfile(profile *store.ProjectProfile) bool {
+	return profile != nil &&
+		profile.PythonOK &&
+		strings.TrimSpace(profile.ResolvedEnv) != "" &&
+		strings.TrimSpace(profile.ResolvedCwd) != ""
 }
 
 // RefreshActiveRuns refreshes starting/running runs for a resource, or all resources if resourceID is empty.
@@ -703,13 +740,14 @@ func isFinishedRunStatus(status string) bool {
 
 // ExecRequest is a one-shot remote command (not a Run).
 type ExecRequest struct {
-	ResourceID string `json:"resource_id"`
-	Command    string `json:"command"`
-	Cwd        string `json:"cwd"`
-	ProjectEnv string `json:"project_env"` // "", raw, auto
-	CondaEnv   string `json:"conda_env"`   // optional override for project_env=auto
-	TimeoutSec int    `json:"timeout_sec"` // 0 = default 30s
-	Actor      string `json:"actor"`
+	ResourceID        string `json:"resource_id"`
+	Command           string `json:"command"`
+	Cwd               string `json:"cwd"`
+	ProjectEnv        string `json:"project_env"` // "", raw, auto
+	CondaEnv          string `json:"conda_env"`   // optional override for project_env=auto
+	TimeoutSec        int    `json:"timeout_sec"` // 0 = default 30s
+	Actor             string `json:"actor"`
+	RefreshProjectEnv bool   `json:"refresh_project_env"`
 }
 
 // ExecResult is the response from a one-shot exec.
@@ -766,12 +804,9 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 	// Build command with optional cwd and project environment.
 	cmd := req.Command
 	if req.ProjectEnv == ProjectEnvAuto {
-		profile, err := e.DetectProject(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv)
+		profile, err := e.ResolveProjectProfile(ctx, resource, req.Cwd, req.ProjectEnv, req.CondaEnv, req.RefreshProjectEnv)
 		if err != nil {
 			return nil, fmt.Errorf("detect project: %w", err)
-		}
-		if saveErr := e.store.SaveProjectProfile(ctx, profile); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to save project profile: %v\n", saveErr)
 		}
 		cmd = buildProjectWrappedCommand(resource, profile, req.Command)
 	} else if req.Cwd != "" {
