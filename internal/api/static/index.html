@@ -1869,16 +1869,17 @@
 
         // --- Run Detail ---
         async function showRunDetail(id) {
-            const run = await fetchJSON('/runs/' + id);
-            if (!run) return;
-            const [logsRaw, errLogsRaw, marksRaw] = await Promise.all([
-                fetchJSON('/runs/' + id + '/logs?source=stdout&limit=1000&tail=true'),
-                fetchJSON('/runs/' + id + '/logs?source=stderr&limit=1000&tail=true'),
-                fetchJSON('/runs/' + id + '/marks?limit=20')
-            ]);
-            const logs = asObject(logsRaw);
-            const errLogs = asObject(errLogsRaw);
-            const marks = asArray(marksRaw);
+            logSockets.forEach(sock => sock.close());
+            logSockets = [];
+            document.getElementById('detail-title').textContent = id || t('runs.detail');
+            document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('state.loading')) + '</div>';
+            document.getElementById('run-detail').classList.remove('hidden');
+
+            const run = await fetchJSON('/runs/' + encodeURIComponent(id));
+            if (!run) {
+                document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('status.missing')) + '</div>';
+                return;
+            }
             const resLabel = resourceLabel(run.resource_id);
             const isFavorite = bookmarkedRunIds.has(run.id);
 
@@ -1898,15 +1899,37 @@
                     <div><div class="detail-label">CWD</div><div class="detail-value font-mono text-sm">${escHTML(run.cwd || '—')}</div></div>
                     <div><div class="detail-label">tmux</div><div class="detail-value font-mono text-sm">${escHTML(run.tmux_session || '—')}</div></div>
                 </div>
-                ${renderRunMarksInline(marks)}
-                ${renderLogBlock(run.id, 'stdout', logs, '', true)}
-                ${renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running')}
+                <div id="run-marks-detail"><div class="empty-state" style="padding:10px 0">${escHTML(t('state.loading'))}</div></div>
+                <div id="run-logs-detail"><div class="empty-state" style="padding:10px 0">${escHTML(t('state.loading'))}</div></div>
                 ${run.status === 'running' ? '<button onclick="cancelRun(\'' + run.id + '\')" class="btn-danger">' + escHTML(t('runs.cancelAction')) + '</button>' : ''}
             `;
-            document.getElementById('run-detail').classList.remove('hidden');
-            const lp = document.getElementById('log-pane-stdout');
-            if (lp) lp.scrollTop = lp.scrollHeight;
-            if (run.status === 'running') connectWS(id);
+
+            fetchJSON('/runs/' + encodeURIComponent(id) + '/marks?limit=20').then(marksRaw => {
+                const el = document.getElementById('run-marks-detail');
+                if (el) el.innerHTML = renderRunMarksInline(asArray(marksRaw));
+            }).catch(() => {
+                const el = document.getElementById('run-marks-detail');
+                if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
+            });
+
+            Promise.all([
+                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=1000&tail=true'),
+                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=1000&tail=true')
+            ]).then(([logsRaw, errLogsRaw]) => {
+                const logs = asObject(logsRaw);
+                const errLogs = asObject(errLogsRaw);
+                const el = document.getElementById('run-logs-detail');
+                if (el) {
+                    el.innerHTML = renderLogBlock(run.id, 'stdout', logs, '', true) +
+                        renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running');
+                }
+                const lp = document.getElementById('log-pane-stdout');
+                if (lp) lp.scrollTop = lp.scrollHeight;
+                if (run.status === 'running') connectWS(id);
+            }).catch(() => {
+                const el = document.getElementById('run-logs-detail');
+                if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
+            });
         }
 
         async function loadMoreLogLines(runId, source) {
