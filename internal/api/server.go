@@ -686,9 +686,16 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	var lines []store.LogLine
 	var total int
 	var remote bool
+	var logError string
+	var logErrorKind string
 	tailMode := parseBoolQuery(r.URL.Query().Get("tail"))
 	if logPath != "" {
-		lines, total, remote = s.remoteLogFileLines(r.Context(), id, logPath, limit)
+		var err error
+		lines, total, remote, err = s.remoteLogFileLines(r.Context(), id, logPath, limit)
+		if err != nil {
+			logError = err.Error()
+			logErrorKind = logReadErrorKind(err)
+		}
 		source = logPath
 	} else if tailMode && offset == 0 {
 		lines, total, remote = s.remoteLogLines(r.Context(), id, source, limit)
@@ -710,24 +717,35 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		"first_line":  firstLine,
 		"last_line":   lastLine,
 		"truncated":   firstLine > 1 && total > len(lines),
+		"error":       logError,
+		"error_kind":  logErrorKind,
 	})
 }
 
-func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath string, limit int) ([]store.LogLine, int, bool) {
+func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath string, limit int) ([]store.LogLine, int, bool, error) {
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil || run == nil {
-		return nil, 0, false
+		if err != nil {
+			return nil, 0, false, err
+		}
+		return nil, 0, false, fmt.Errorf("run %s not found", runID)
 	}
 	resource, err := s.store.GetResource(ctx, run.ResourceID)
-	if err != nil || resource == nil || resource.Status == store.ResourceStatusUnreachable {
-		return nil, 0, false
+	if err != nil || resource == nil {
+		if err != nil {
+			return nil, 0, false, err
+		}
+		return nil, 0, false, fmt.Errorf("resource not found")
+	}
+	if resource.Status == store.ResourceStatusUnreachable {
+		return nil, 0, false, fmt.Errorf("resource %s is unreachable; cannot read remote log file %s", resource.Name, logPath)
 	}
 
 	remoteCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	remoteLines, err := s.executor.GetLogFileSnapshot(remoteCtx, runID, logPath, limit)
 	if err != nil {
-		return nil, 0, false
+		return nil, 0, false, err
 	}
 	lines := make([]store.LogLine, 0, len(remoteLines))
 	for _, line := range remoteLines {
@@ -742,7 +760,24 @@ func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath s
 	if len(lines) > 0 {
 		total = lines[len(lines)-1].LineNo
 	}
-	return lines, total, true
+	return lines, total, true, nil
+}
+
+func logReadErrorKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "not found"):
+		return "file_missing"
+	case strings.Contains(msg, "unreachable"):
+		return "resource_unreachable"
+	case strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout") || strings.Contains(msg, "i/o timeout"):
+		return "remote_timeout"
+	default:
+		return "read_failed"
+	}
 }
 
 func (s *Server) fastLogLines(ctx context.Context, runID string, source string, offset, limit int) ([]store.LogLine, int, bool) {

@@ -1401,6 +1401,10 @@
                 'logs.stopLive': 'Pause tail',
                 'events.dashboard': 'Run Events',
                 'events.noEvents': 'No structured events yet',
+                'events.readFailed': 'Could not read event file',
+                'events.resourceUnreachable': 'Resource is unreachable. Bring the machine back online, then refresh this run.',
+                'events.fileMissing': 'Event file does not exist on the remote project path.',
+                'events.remoteTimeout': 'Timed out while reading the remote event file.',
                 'events.progress': 'Progress',
                 'events.metrics': 'Metrics',
                 'events.params': 'Parameters',
@@ -1542,6 +1546,10 @@
                 'logs.stopLive': '暂停 tail',
                 'events.dashboard': '运行事件',
                 'events.noEvents': '还没有结构化事件',
+                'events.readFailed': '无法读取事件文件',
+                'events.resourceUnreachable': '资源控制通道不可用。服务器恢复后刷新这个 run。',
+                'events.fileMissing': '远端项目路径下不存在这个事件文件。',
+                'events.remoteTimeout': '读取远端事件文件超时。',
                 'events.progress': '进度',
                 'events.metrics': '指标',
                 'events.params': '参数',
@@ -1697,6 +1705,25 @@
                 : t('logs.lines', { count: total || lines.length });
             return { total, first, last, truncated, label };
         }
+        function logReadErrorHTML(logs, titleKey) {
+            const obj = asObject(logs);
+            const err = asText(obj.error).trim();
+            if (!err) return '';
+            const kind = asText(obj.error_kind);
+            let hint = '';
+            if (kind === 'resource_unreachable') hint = t('events.resourceUnreachable');
+            else if (kind === 'file_missing') hint = t('events.fileMissing');
+            else if (kind === 'remote_timeout') hint = t('events.remoteTimeout');
+            return `<div class="event-dashboard" id="run-events-dashboard">
+                <div class="event-dashboard-head">
+                    <div>
+                        <div class="event-dashboard-title">${escHTML(t(titleKey || 'events.readFailed'))}</div>
+                        <div class="event-dashboard-path">${escHTML(asText(obj.path || obj.source || ''))}</div>
+                    </div>
+                </div>
+                <div class="event-empty">${escHTML(hint || t('events.readFailed'))}<br><span class="mono">${escHTML(err)}</span></div>
+            </div>`;
+        }
         function combinedLogLines(stdoutLogs, stderrLogs) {
             const rows = [];
             logLines(stdoutLogs).forEach((line, idx) => rows.push({
@@ -1734,6 +1761,8 @@
             return asText(paths.find(isExactLogPath) || '').trim();
         }
         function renderAgentLogBlock(runId, logPath, logs) {
+            const errorHTML = logReadErrorHTML(logs, 'logs.agentLog');
+            if (errorHTML) return errorHTML;
             const lines = logLines(logs);
             const meta = logMeta(logs, lines);
             const loadMore = meta.truncated
@@ -2149,6 +2178,8 @@
             });
         }
         function renderRunEventsBlock(runId, eventPath, logs) {
+            const errorHTML = logReadErrorHTML(logs, 'events.readFailed');
+            if (errorHTML) return errorHTML;
             const lines = logLines(logs).map(l => asText(asObject(l).content));
             currentUIEventsPath = eventPath;
             currentEventLines = lines.slice(-EVENT_LOG_MAX_LINES);

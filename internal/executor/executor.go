@@ -584,7 +584,7 @@ func (e *Executor) GetLogFileSnapshot(ctx context.Context, runID string, logPath
 	}
 
 	cmd := fmt.Sprintf(`LOG_FILE=%s
-if [ ! -f "$LOG_FILE" ]; then exit 0; fi
+if [ ! -f "$LOG_FILE" ]; then printf '\001AEXP_LOG_MISSING\t%%s\n' "$LOG_FILE"; exit 0; fi
 total=$(tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ')
 printf '\001AEXP_TOTAL_LINES\t%%s\n' "$total"
 tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN)
@@ -592,6 +592,10 @@ tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN
 	out, _, err := e.exec(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
+	}
+	if strings.HasPrefix(out, "\x01AEXP_LOG_MISSING\t") {
+		missing := strings.TrimSpace(strings.TrimPrefix(out, "\x01AEXP_LOG_MISSING\t"))
+		return nil, fmt.Errorf("log file not found: %s", missing)
 	}
 	return parseLogSnapshot(run.ID, label, out)
 }
