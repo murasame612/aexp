@@ -247,6 +247,48 @@
         .metric-summary tbody tr:first-child td {
             background: #fff4e8;
         }
+        .metric-cards {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            margin-bottom: 12px;
+        }
+        .metric-card {
+            border: 1px solid #e7dfcf;
+            border-radius: 0.75rem;
+            background: #ffffff;
+            padding: 10px 12px;
+        }
+        .metric-card.primary {
+            border-color: #d98254;
+            background: #fff6ed;
+        }
+        .metric-card-label {
+            color: #6f6a60;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .metric-card-value {
+            color: #191817;
+            font-size: 20px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.1;
+        }
+        .metric-card.primary .metric-card-value {
+            color: #c96545;
+        }
+        .log-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 0 0 12px;
+        }
+        @media (max-width: 760px) {
+            .metric-cards {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
 
         /* Modal overlay */
         .modal-bg {
@@ -1071,6 +1113,8 @@
     <script>
         const API = '/api/v1';
         let logSockets = [];
+        let currentDetailRunId = '';
+        let liveLogFollowing = false;
         let resourcesById = new Map();
         let allRuns = [];
         let allExecEvents = [];
@@ -1198,6 +1242,12 @@
                 'logs.rawStreams': 'Raw stdout / stderr',
                 'logs.filteredProgress': 'hidden {count} progress refresh lines',
                 'logs.metricSummary': 'Metric summary',
+                'logs.latestMetric': 'Latest YOLO metric',
+                'logs.noMetrics': 'No metric row found in the current log tail.',
+                'logs.cleanTail': 'Clean log tail',
+                'logs.loadRaw': 'Load raw stdout / stderr',
+                'logs.followLive': 'Follow live logs',
+                'logs.stopLive': 'Stop live logs',
                 'status.running': 'Running',
                 'status.succeeded': 'Succeeded',
                 'status.failed': 'Failed',
@@ -1326,6 +1376,12 @@
                 'logs.rawStreams': '原始 stdout / stderr',
                 'logs.filteredProgress': '已隐藏 {count} 行进度刷新',
                 'logs.metricSummary': '指标摘要',
+                'logs.latestMetric': '最新 YOLO 指标',
+                'logs.noMetrics': '当前日志尾部没有找到指标行',
+                'logs.cleanTail': '干净日志尾巴',
+                'logs.loadRaw': '加载原始 stdout / stderr',
+                'logs.followLive': '实时跟随日志',
+                'logs.stopLive': '停止跟随日志',
                 'status.running': '运行中',
                 'status.succeeded': '成功',
                 'status.failed': '失败',
@@ -1507,11 +1563,37 @@
         }
         function renderMetricSummary(stdoutLogs, stderrLogs) {
             const rows = extractMetricRows(stdoutLogs, stderrLogs);
-            if (!rows.length) return '';
+            if (!rows.length) {
+                return `<div class="metric-summary">
+                    <div class="flex items-center justify-between gap-3 mb-1">
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.metricSummary'))}</h3>
+                    </div>
+                    <div class="text-sm text-ink-muted">${escHTML(t('logs.noMetrics'))}</div>
+                </div>`;
+            }
+            const latest = rows[rows.length - 1];
             const visibleRows = rows.slice(-8).reverse();
             return `<div class="metric-summary">
                 <div class="flex items-center justify-between gap-3 mb-2">
-                    <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.metricSummary'))}</h3>
+                    <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.latestMetric'))}</h3>
+                </div>
+                <div class="metric-cards">
+                    <div class="metric-card primary">
+                        <div class="metric-card-label">mAP50-95</div>
+                        <div class="metric-card-value">${escHTML(latest.map5095)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-label">mAP50</div>
+                        <div class="metric-card-value">${escHTML(latest.map50)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-label">Precision</div>
+                        <div class="metric-card-value">${escHTML(latest.precision)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-label">Recall</div>
+                        <div class="metric-card-value">${escHTML(latest.recall)}</div>
+                    </div>
                 </div>
                 <div class="table-scroll">
                     <table>
@@ -1566,10 +1648,10 @@
             return `
                 <div class="mb-4">
                     <div class="flex items-center justify-between gap-3 mb-2">
-                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.combinedClean'))}</h3>
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.cleanTail'))}</h3>
                         ${note}
                     </div>
-                    <div class="log-pane" id="log-pane-combined">${body}</div>
+                    <div class="log-pane" id="log-pane-combined" data-lines="${escAttr(String(merged.visible.length))}">${body}</div>
                 </div>`;
         }
         function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
@@ -1588,7 +1670,7 @@
                         <h3 class="text-sm font-medium font-heading">${escHTML(source)} <span class="text-ink-muted font-normal" id="log-meta-${escAttr(source)}">(${escHTML(meta.label)})</span>${hint}</h3>
                         ${loadMore}
                     </div>
-                    <div class="log-pane" id="log-pane-${escAttr(source)}" style="${escAttr(colorStyle || '')}">${lines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
+                    <div class="log-pane" id="log-pane-${escAttr(source)}" data-lines="${escAttr(String(lines.length))}" style="${escAttr(colorStyle || '')}">${lines.map(l => escHTML(asText(asObject(l).content))).join('\n')}</div>
                 </div>`;
         }
         function tryParseJSON(str, fb) { try { return JSON.parse(str || 'null') || fb; } catch { return fb; } }
@@ -1606,7 +1688,7 @@
             }
         }
 
-        // --- Data loading (polls every 2s) ---
+        // --- Data loading (polls every 5s) ---
         let pollTimer = null;
 
         async function loadData() {
@@ -2180,11 +2262,14 @@
         async function showRunDetail(id) {
             logSockets.forEach(sock => sock.close());
             logSockets = [];
+            liveLogFollowing = false;
+            currentDetailRunId = id || '';
             document.getElementById('detail-title').textContent = id || t('runs.detail');
             document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('state.loading')) + '</div>';
             document.getElementById('run-detail').classList.remove('hidden');
 
             const run = await fetchJSON('/runs/' + encodeURIComponent(id));
+            if (currentDetailRunId !== id) return;
             if (!run) {
                 document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('status.missing')) + '</div>';
                 return;
@@ -2218,31 +2303,33 @@
             `;
 
             fetchJSON('/runs/' + encodeURIComponent(id) + '/marks?limit=20').then(marksRaw => {
+                if (currentDetailRunId !== id) return;
                 const el = document.getElementById('run-marks-detail');
                 if (el) el.innerHTML = renderRunMarksInline(asArray(marksRaw));
             }).catch(() => {
+                if (currentDetailRunId !== id) return;
                 const el = document.getElementById('run-marks-detail');
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
             });
 
             Promise.all([
-                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=1000&tail=true'),
-                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=1000&tail=true')
+                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
+                fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
             ]).then(([logsRaw, errLogsRaw]) => {
+                if (currentDetailRunId !== id) return;
                 const logs = asObject(logsRaw);
                 const errLogs = asObject(errLogsRaw);
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
                     el.innerHTML = renderMetricSummary(logs, errLogs) + renderCombinedLogBlock(logs, errLogs) + `
-                        <details class="raw-log-streams">
-                            <summary>${escHTML(t('logs.rawStreams'))}</summary>
-                            ${renderLogBlock(run.id, 'stdout', logs, '', true)}
-                            ${renderLogBlock(run.id, 'stderr', errLogs, 'color:#e8a090', run.status === 'running')}
-                        </details>`;
+                        <div class="log-actions">
+                            <button type="button" class="btn-secondary text-xs" onclick="loadRawLogs('${escAttr(run.id)}')">${escHTML(t('logs.loadRaw'))}</button>
+                            ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
+                        </div>
+                        <div id="raw-log-streams"></div>`;
                 }
                 const lp = document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
-                if (run.status === 'running') connectWS(id);
             }).catch(() => {
                 const el = document.getElementById('run-logs-detail');
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
@@ -2250,21 +2337,89 @@
         }
 
         async function loadMoreLogLines(runId, source) {
-            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=' + encodeURIComponent(source) + '&limit=5000&tail=true'));
+            const logs = asObject(await fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=' + encodeURIComponent(source) + '&limit=1000&tail=true'));
             const pane = document.getElementById('log-pane-' + source);
             if (!pane) return;
             const lines = logLines(logs);
             pane.textContent = lines.map(l => asText(asObject(l).content)).join('\n');
+            pane.dataset.lines = String(lines.length);
             const meta = logMeta(logs, lines);
             const metaEl = document.getElementById('log-meta-' + source);
             if (metaEl) metaEl.textContent = '(' + meta.label + ')';
             pane.scrollTop = pane.scrollHeight;
         }
 
+        async function loadRawLogs(runId) {
+            const target = document.getElementById('raw-log-streams');
+            if (!target) return;
+            target.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('state.loading')) + '</div>';
+            const [logsRaw, errLogsRaw] = await Promise.all([
+                fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stdout&limit=1000&tail=true'),
+                fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stderr&limit=1000&tail=true')
+            ]);
+            if (currentDetailRunId !== runId) return;
+            const logs = asObject(logsRaw);
+            const errLogs = asObject(errLogsRaw);
+            target.innerHTML = `
+                <details class="raw-log-streams" open>
+                    <summary>${escHTML(t('logs.rawStreams'))}</summary>
+                    ${renderLogBlock(runId, 'stdout', logs, '', true)}
+                    ${renderLogBlock(runId, 'stderr', errLogs, 'color:#e8a090', true)}
+                </details>`;
+        }
+
         function closeDetail() {
             document.getElementById('run-detail').classList.add('hidden');
             logSockets.forEach(sock => sock.close());
             logSockets = [];
+            liveLogFollowing = false;
+            currentDetailRunId = '';
+        }
+
+        const LIVE_LOG_MAX_LINES = 400;
+        function trimLogPane(pane, maxLines) {
+            const count = Number(pane.dataset.lines || 0);
+            if (count <= maxLines) return;
+            const lines = pane.textContent.split('\n').slice(-maxLines);
+            pane.textContent = lines.join('\n');
+            pane.dataset.lines = String(lines.length);
+        }
+
+        function appendPlainLogLine(pane, content) {
+            if (!pane) return;
+            if (pane.textContent) pane.appendChild(document.createTextNode('\n'));
+            pane.appendChild(document.createTextNode(asText(content)));
+            pane.dataset.lines = String((Number(pane.dataset.lines || 0) || 0) + 1);
+            trimLogPane(pane, LIVE_LOG_MAX_LINES);
+            pane.scrollTop = pane.scrollHeight;
+        }
+
+        function appendCombinedLogLine(pane, source, content) {
+            if (!pane) return;
+            if (pane.textContent) pane.appendChild(document.createTextNode('\n'));
+            const sourceEl = document.createElement('span');
+            sourceEl.className = 'log-source';
+            sourceEl.textContent = asText(source);
+            pane.appendChild(sourceEl);
+            pane.appendChild(document.createTextNode(asText(content)));
+            pane.dataset.lines = String((Number(pane.dataset.lines || 0) || 0) + 1);
+            trimLogPane(pane, LIVE_LOG_MAX_LINES);
+            pane.scrollTop = pane.scrollHeight;
+        }
+
+        function toggleLiveLogs(runId) {
+            if (liveLogFollowing) {
+                logSockets.forEach(sock => sock.close());
+                logSockets = [];
+                liveLogFollowing = false;
+                const btn = document.getElementById('live-log-toggle');
+                if (btn) btn.textContent = t('logs.followLive');
+                return;
+            }
+            liveLogFollowing = true;
+            const btn = document.getElementById('live-log-toggle');
+            if (btn) btn.textContent = t('logs.stopLive');
+            connectWS(runId);
         }
 
         function connectWS(runId) {
@@ -2274,18 +2429,17 @@
             ['stdout', 'stderr'].forEach(source => {
                 const sock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ source, snapshot: 'false' }));
                 sock.onmessage = (e) => {
+                    if (!liveLogFollowing || currentDetailRunId !== runId) return;
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'log.line') {
                         const lineSource = msg.source || source;
                         const content = asText(msg.content);
                         const combined = document.getElementById('log-pane-combined');
                         if (combined && !(lineSource === 'stderr' && isProgressRefreshLine(content))) {
-                            const prefix = combined.textContent ? '\n' : '';
-                            combined.innerHTML += prefix + `<span class="log-source">${escHTML(lineSource)}</span>${escHTML(content)}`;
-                            combined.scrollTop = combined.scrollHeight;
+                            appendCombinedLogLine(combined, lineSource, content);
                         }
                         const lp = document.getElementById('log-pane-' + lineSource);
-                        if (lp) { lp.textContent += '\n' + msg.content; lp.scrollTop = lp.scrollHeight; }
+                        if (lp) appendPlainLogLine(lp, content);
                     }
                 };
                 logSockets.push(sock);
@@ -2744,7 +2898,7 @@
         updateTokenUI();
         loadServerInfo();
         loadData();
-        pollTimer = setInterval(loadData, 2000);
+        pollTimer = setInterval(loadData, 5000);
     </script>
 </body>
 </html>
