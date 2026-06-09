@@ -12,6 +12,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -570,7 +571,609 @@ resource + cwd + environment strategy + result/log globs.`,
 	}
 	cmd.AddCommand(projectDetectCmd())
 	cmd.AddCommand(projectDoctorCmd())
+	cmd.AddCommand(projectRunCmd())
+	cmd.AddCommand(projectSyncCmd())
 	return cmd
+}
+
+type projectFileConfig struct {
+	Path       string
+	Resource   string
+	Cwd        string
+	Env        string
+	CondaEnv   string
+	DefaultGPU *int
+	Logs       []string
+	Metrics    []string
+	Artifacts  []string
+	Commands   map[string]projectFileCommand
+	Sync       projectFileSync
+}
+
+type projectFileCommand struct {
+	Name      string
+	Command   string
+	Kind      string
+	GPUIndex  *int
+	NoGPU     bool
+	Logs      []string
+	Metrics   []string
+	Artifacts []string
+}
+
+type projectFileSync struct {
+	Source            string
+	Target            string
+	Profile           string
+	Excludes          []string
+	DeleteExtra       bool
+	NoDefaultExcludes bool
+	TimeoutSec        int
+}
+
+func projectRunCmd() *cobra.Command {
+	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv string
+	var gpuIndex int
+	var noGPU, force, dryRun bool
+	var launchTimeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "run [name]",
+		Short: "Submit a configured project command from .aexp.yaml",
+		Long: `Submit a command declared in .aexp.yaml.
+
+Example:
+  train:
+    command: python train.py
+
+Then run:
+  aexp project run train`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			commandName := "train"
+			if len(args) > 0 {
+				commandName = args[0]
+			}
+			cfg, err := loadProjectFileConfig(configPath)
+			if err != nil {
+				return err
+			}
+			entry, ok := cfg.Commands[commandName]
+			if !ok || strings.TrimSpace(entry.Command) == "" {
+				return fmt.Errorf("project command %q not found in %s", commandName, cfg.Path)
+			}
+
+			if resourceName == "" {
+				resourceName = cfg.Resource
+			}
+			if resourceName == "" {
+				return fmt.Errorf("resource is required: set resource: in %s or pass --resource", cfg.Path)
+			}
+			if cwd == "" {
+				cwd = cfg.Cwd
+			}
+			if cwd == "" {
+				cwd = "."
+			}
+			if kind == "" {
+				kind = entry.Kind
+			}
+			if kind == "" {
+				kind = store.RunKindFormal
+			}
+			if projectEnv == "" {
+				projectEnv = cfg.Env
+			}
+			if projectEnv == "" {
+				projectEnv = executor.ProjectEnvAuto
+			}
+			if condaEnv == "" {
+				condaEnv = cfg.CondaEnv
+			}
+			if name == "" {
+				name = entry.Name
+			}
+			if name == "" {
+				name = commandName
+			}
+			effectiveGPU := store.GPUIndexAll
+			if cfg.DefaultGPU != nil {
+				effectiveGPU = *cfg.DefaultGPU
+			}
+			if entry.GPUIndex != nil {
+				effectiveGPU = *entry.GPUIndex
+			}
+			if cmd.Flags().Changed("gpu-index") {
+				effectiveGPU = gpuIndex
+			}
+			if noGPU || entry.NoGPU || (kind == store.RunKindSetup && entry.GPUIndex == nil && !cmd.Flags().Changed("gpu-index")) {
+				effectiveGPU = store.GPUIndexNone
+			}
+
+			logPaths := mergeProjectLists(cfg.Logs, entry.Logs)
+			metricPaths := mergeProjectLists(cfg.Metrics, entry.Metrics)
+			artifactPaths := mergeProjectLists(cfg.Artifacts, entry.Artifacts)
+			submitReq := executor.SubmitRequest{
+				ResourceID:    resourceName,
+				Name:          name,
+				Kind:          kind,
+				GPUIndex:      effectiveGPU,
+				Force:         force,
+				Cwd:           cwd,
+				CondaEnv:      condaEnv,
+				ProjectEnv:    projectEnv,
+				LogPaths:      logPaths,
+				MetricPaths:   metricPaths,
+				ArtifactPaths: artifactPaths,
+				Program:       "bash",
+				Args:          []string{"-lc", entry.Command},
+			}
+			if dryRun {
+				printProjectRunPlan(cfg.Path, commandName, resourceName, submitReq)
+				return nil
+			}
+			return submitConfiguredRun(cmd.Context(), resourceName, submitReq, launchTimeoutSec)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml)")
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Override resource name")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Override working directory")
+	cmd.Flags().StringVar(&name, "name", "", "Override run name")
+	cmd.Flags().StringVar(&kind, "kind", "", "Override run kind")
+	cmd.Flags().IntVar(&gpuIndex, "gpu-index", store.GPUIndexAll, "Override GPU index (-1 for all)")
+	cmd.Flags().BoolVar(&noGPU, "no-gpu", false, "Do not reserve GPUs or set CUDA_VISIBLE_DEVICES")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock")
+	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Override runtime env strategy: auto or raw")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Override conda environment")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the resolved submit command without launching")
+	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created")
+	return cmd
+}
+
+func projectSyncCmd() *cobra.Command {
+	var configPath, resourceName, source, target, profile string
+	var dryRun, deleteExtra, noDefaultExcludes bool
+	var excludes []string
+	var timeoutSec int
+
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Push files using sync settings from .aexp.yaml",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadProjectFileConfig(configPath)
+			if err != nil {
+				return err
+			}
+			if resourceName == "" {
+				resourceName = cfg.Resource
+			}
+			if source == "" {
+				source = cfg.Sync.Source
+			}
+			if source == "" {
+				source = "."
+			}
+			if target == "" {
+				target = cfg.Sync.Target
+			}
+			if target == "" {
+				target = cfg.Cwd
+			}
+			if resourceName == "" || target == "" {
+				return fmt.Errorf("project sync needs resource and target: set resource/cwd or sync.target in %s", cfg.Path)
+			}
+			if profile == "" {
+				profile = cfg.Sync.Profile
+			}
+			if profile == "" {
+				profile = "code"
+			}
+			if !cmd.Flags().Changed("delete") {
+				deleteExtra = cfg.Sync.DeleteExtra
+			}
+			if !cmd.Flags().Changed("no-default-excludes") {
+				noDefaultExcludes = cfg.Sync.NoDefaultExcludes
+			}
+			if !cmd.Flags().Changed("timeout") {
+				timeoutSec = cfg.Sync.TimeoutSec
+			}
+			excludes = append(cfg.Sync.Excludes, excludes...)
+			return runSyncPushFromProject(cmd.Context(), resourceName, source, target, profile, excludes, dryRun, deleteExtra, noDefaultExcludes, timeoutSec)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml)")
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Override resource name")
+	cmd.Flags().StringVar(&source, "source", "", "Override local source")
+	cmd.Flags().StringVar(&target, "target", "", "Override remote target")
+	cmd.Flags().StringVar(&profile, "profile", "", "Override exclude profile: code, code-data, all")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the rsync command without running it")
+	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete files on target that no longer exist on source")
+	cmd.Flags().BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable profile excludes and .aexpignore")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Extra exclude pattern, repeatable")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
+	return cmd
+}
+
+func loadProjectFileConfig(path string) (*projectFileConfig, error) {
+	resolved, err := resolveProjectConfigPath(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read project config: %w", err)
+	}
+	cfg := &projectFileConfig{
+		Path:     resolved,
+		Commands: map[string]projectFileCommand{},
+	}
+	section := ""
+	listKey := ""
+	for lineNo, raw := range strings.Split(string(data), "\n") {
+		line := stripProjectConfigComment(raw)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingSpaces(line)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			value := cleanProjectConfigValue(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+			addProjectConfigListValue(cfg, section, listKey, value)
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			return nil, fmt.Errorf("%s:%d: expected key: value", resolved, lineNo+1)
+		}
+		key = strings.TrimSpace(key)
+		value = cleanProjectConfigValue(value)
+		if indent == 0 {
+			section = ""
+			listKey = ""
+			if value == "" {
+				switch normalizeProjectKey(key) {
+				case "logs", "metrics", "artifacts":
+					listKey = key
+				case "sync":
+					section = key
+				default:
+					section = key
+					ensureProjectCommand(cfg, section)
+				}
+				continue
+			}
+			if err := setProjectConfigScalar(cfg, "", key, value); err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo+1, err)
+			}
+			continue
+		}
+		if section == "" {
+			return nil, fmt.Errorf("%s:%d: nested field without a section", resolved, lineNo+1)
+		}
+		listKey = ""
+		if value == "" {
+			listKey = key
+			continue
+		}
+		if err := setProjectConfigScalar(cfg, section, key, value); err != nil {
+			return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo+1, err)
+		}
+	}
+	if cfg.Sync.Profile == "" {
+		cfg.Sync.Profile = "code"
+	}
+	return cfg, nil
+}
+
+func resolveProjectConfigPath(path string) (string, error) {
+	if path != "" {
+		path = expandPath(path)
+		if !filepath.IsAbs(path) {
+			wd, err := os.Getwd()
+			if err != nil {
+				return "", fmt.Errorf("get current directory: %w", err)
+			}
+			path = filepath.Join(wd, path)
+		}
+		return path, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get current directory: %w", err)
+	}
+	for {
+		candidate := filepath.Join(wd, ".aexp.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(wd)
+		if parent == wd {
+			break
+		}
+		wd = parent
+	}
+	return "", fmt.Errorf("no .aexp.yaml found; run from a project directory or pass --config")
+}
+
+func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) error {
+	switch section {
+	case "":
+		switch normalizeProjectKey(key) {
+		case "resource":
+			cfg.Resource = value
+		case "cwd":
+			cfg.Cwd = value
+		case "env", "projectenv":
+			cfg.Env = value
+		case "condaenv":
+			cfg.CondaEnv = value
+		case "defaultgpu", "gpu":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("%s must be an integer", key)
+			}
+			cfg.DefaultGPU = &n
+		default:
+			cfg.Commands[key] = projectFileCommand{Command: value}
+		}
+	case "sync":
+		switch normalizeProjectKey(key) {
+		case "source":
+			cfg.Sync.Source = value
+		case "target":
+			cfg.Sync.Target = value
+		case "profile":
+			cfg.Sync.Profile = value
+		case "delete":
+			cfg.Sync.DeleteExtra = parseProjectBool(value)
+		case "nodefaultexcludes":
+			cfg.Sync.NoDefaultExcludes = parseProjectBool(value)
+		case "timeout":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("%s must be an integer", key)
+			}
+			cfg.Sync.TimeoutSec = n
+		}
+	default:
+		entry := ensureProjectCommand(cfg, section)
+		switch normalizeProjectKey(key) {
+		case "command", "cmd":
+			entry.Command = value
+		case "name":
+			entry.Name = value
+		case "kind":
+			entry.Kind = value
+		case "gpu", "gpuindex":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("%s must be an integer", key)
+			}
+			entry.GPUIndex = &n
+		case "nogpu":
+			entry.NoGPU = parseProjectBool(value)
+		}
+		cfg.Commands[section] = entry
+	}
+	return nil
+}
+
+func addProjectConfigListValue(cfg *projectFileConfig, section, key, value string) {
+	if value == "" {
+		return
+	}
+	switch section {
+	case "":
+		switch normalizeProjectKey(key) {
+		case "logs":
+			cfg.Logs = append(cfg.Logs, value)
+		case "metrics":
+			cfg.Metrics = append(cfg.Metrics, value)
+		case "artifacts":
+			cfg.Artifacts = append(cfg.Artifacts, value)
+		}
+	case "sync":
+		if normalizeProjectKey(key) == "exclude" || normalizeProjectKey(key) == "excludes" {
+			cfg.Sync.Excludes = append(cfg.Sync.Excludes, value)
+		}
+	default:
+		entry := ensureProjectCommand(cfg, section)
+		switch normalizeProjectKey(key) {
+		case "logs":
+			entry.Logs = append(entry.Logs, value)
+		case "metrics":
+			entry.Metrics = append(entry.Metrics, value)
+		case "artifacts":
+			entry.Artifacts = append(entry.Artifacts, value)
+		}
+		cfg.Commands[section] = entry
+	}
+}
+
+func ensureProjectCommand(cfg *projectFileConfig, name string) projectFileCommand {
+	entry, ok := cfg.Commands[name]
+	if !ok {
+		entry = projectFileCommand{}
+		cfg.Commands[name] = entry
+	}
+	return entry
+}
+
+func stripProjectConfigComment(line string) string {
+	inSingle := false
+	inDouble := false
+	for i, r := range line {
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '#':
+			if !inSingle && !inDouble && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
+				return strings.TrimRight(line[:i], " \t")
+			}
+		}
+	}
+	return strings.TrimRight(line, " \t")
+}
+
+func cleanProjectConfigValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if value[0] == '"' && value[len(value)-1] == '"' || value[0] == '\'' && value[len(value)-1] == '\'' {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}
+
+func leadingSpaces(s string) int {
+	count := 0
+	for _, r := range s {
+		if r != ' ' {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func normalizeProjectKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	return key
+}
+
+func parseProjectBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeProjectLists(base, override []string) []string {
+	if len(override) == 0 {
+		return append([]string(nil), base...)
+	}
+	out := append([]string(nil), base...)
+	return append(out, override...)
+}
+
+func printProjectRunPlan(configPath, commandName, resourceName string, req executor.SubmitRequest) {
+	args := []string{
+		"aexp", "run", "submit",
+		"--resource", resourceName,
+		"--kind", req.Kind,
+		"--cwd", req.Cwd,
+		"--project-env", req.ProjectEnv,
+	}
+	if req.Name != "" {
+		args = append(args, "--name", req.Name)
+	}
+	if req.CondaEnv != "" {
+		args = append(args, "--conda-env", req.CondaEnv)
+	}
+	if req.GPUIndex == store.GPUIndexNone {
+		args = append(args, "--no-gpu")
+	} else {
+		args = append(args, "--gpu-index", fmt.Sprintf("%d", req.GPUIndex))
+	}
+	for _, p := range req.LogPaths {
+		args = append(args, "--log-paths", p)
+	}
+	for _, p := range req.MetricPaths {
+		args = append(args, "--metric-paths", p)
+	}
+	for _, p := range req.ArtifactPaths {
+		args = append(args, "--artifact-paths", p)
+	}
+	args = append(args, "--shell", "--", req.Args[len(req.Args)-1])
+	fmt.Printf("config: %s\n", configPath)
+	fmt.Printf("command: %s\n", commandName)
+	fmt.Println(joinShellArgs(args))
+}
+
+func submitConfiguredRun(ctx context.Context, resourceName string, submitReq executor.SubmitRequest, launchTimeoutSec int) error {
+	db := openDB()
+	defer db.Close()
+
+	res, err := db.GetResourceByName(ctx, resourceName)
+	if err != nil || res == nil {
+		return fmt.Errorf("resource %s not found", resourceName)
+	}
+	submitReq.ResourceID = res.ID
+
+	sshPool := executor.NewSSHPool(10 * time.Second)
+	loadSSHKeys(sshPool)
+	exec := executor.NewExecutor(sshPool, db)
+
+	launchCtx := ctx
+	var cancel context.CancelFunc
+	if launchTimeoutSec > 0 {
+		launchCtx, cancel = context.WithTimeout(ctx, time.Duration(launchTimeoutSec)*time.Second)
+		defer cancel()
+	}
+	createdID := ""
+	run, err := exec.SubmitWithOptions(launchCtx, submitReq, executor.SubmitOptions{
+		OnCreated: func(run *store.Run) {
+			createdID = run.ID
+			fmt.Printf("Created run %s on %s\n", run.ID, resourceName)
+			fmt.Printf("Logs:   aexp run logs %s --tail 100\n", run.ID)
+			fmt.Printf("Status: aexp run status %s --short\n", run.ID)
+			if run.UIEventsPath != "" {
+				fmt.Printf("Events: %s\n", run.UIEventsPath)
+			}
+		},
+	})
+	if err != nil {
+		if createdID != "" {
+			return fmt.Errorf("launch failed for run %s: %w", createdID, err)
+		}
+		return err
+	}
+	fmt.Printf("Launched run %s on %s\n", run.ID, resourceName)
+	fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
+	return nil
+}
+
+func runSyncPushFromProject(ctx context.Context, resourceName, source, target, profile string, excludes []string, dryRun, deleteExtra, noDefaultExcludes bool, timeoutSec int) error {
+	res, exec, cleanup, err := syncResourceExecutor(resourceName)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	source = expandPath(source)
+	target = resolveSyncRemotePath(res, target)
+	resolvedExcludes, excludeSources, err := resolveSyncExcludes(source, profile, noDefaultExcludes, excludes)
+	if err != nil {
+		return err
+	}
+	if !dryRun {
+		if _, err := osexec.LookPath("rsync"); err != nil {
+			return fmt.Errorf("local rsync not found: %w", err)
+		}
+		if err := checkRemoteRsyncViaExec(ctx, exec, res, 20); err != nil {
+			return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
+		}
+		if err := ensureRemoteDir(ctx, exec, res, target); err != nil {
+			return err
+		}
+	}
+	rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, resolvedExcludes, nil)
+	rsyncArgs = append(rsyncArgs, source, remoteRsyncSpec(res, target))
+	if dryRun {
+		printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
+		fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
+		return nil
+	}
+	return runLocalRsync(ctx, timeoutSec, rsyncArgs)
 }
 
 func projectDetectCmd() *cobra.Command {
