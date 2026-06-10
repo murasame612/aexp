@@ -929,6 +929,7 @@ func runProjectInit(opts projectInitOptions) error {
 		DefaultGPU:  opts.DefaultGPU,
 		SetupCmd:    guess.SetupCmd,
 		TrainCmd:    guess.TrainCmd,
+		TrainSafe:   guess.TrainSafe,
 		Logs:        guess.Logs,
 		Metrics:     guess.Metrics,
 		SyncProfile: guess.SyncProfile,
@@ -963,6 +964,7 @@ type projectInitConfig struct {
 	DefaultGPU  int
 	SetupCmd    string
 	TrainCmd    string
+	TrainSafe   bool
 	Logs        []string
 	Metrics     []string
 	SyncProfile string
@@ -971,6 +973,7 @@ type projectInitConfig struct {
 type projectInitGuess struct {
 	SetupCmd    string
 	TrainCmd    string
+	TrainSafe   bool
 	Logs        []string
 	Metrics     []string
 	SyncProfile string
@@ -979,7 +982,8 @@ type projectInitGuess struct {
 func guessProjectInit(dir string) projectInitGuess {
 	guess := projectInitGuess{
 		SetupCmd:    "python -m pip install -r requirements.txt",
-		TrainCmd:    "python train.py",
+		TrainCmd:    "",
+		TrainSafe:   false,
 		Logs:        []string{"logs/**/*.log"},
 		Metrics:     []string{"runs/**/*.csv", "results/**/*.json"},
 		SyncProfile: "code",
@@ -992,28 +996,52 @@ func guessProjectInit(dir string) projectInitGuess {
 	}
 	if candidate := firstExistingGlob(dir, "scripts/train*.sh"); candidate != "" {
 		guess.TrainCmd = "bash " + filepath.ToSlash(candidate)
+		guess.TrainSafe = true
 	} else if candidate := firstExistingGlob(dir, "scripts/train*.py"); candidate != "" {
 		guess.TrainCmd = "python " + filepath.ToSlash(candidate)
-	} else if fileExists(filepath.Join(dir, "main.py")) {
-		guess.TrainCmd = "python main.py"
+		guess.TrainSafe = true
+	} else if fileExists(filepath.Join(dir, "train.py")) {
+		guess.TrainCmd = "python train.py"
+		guess.TrainSafe = false
 	}
-	if candidate := firstExistingGlob(dir, "configs/experiments/*.yaml"); candidate != "" {
-		if strings.HasPrefix(guess.TrainCmd, "bash ") {
-			guess.TrainCmd += " " + filepath.ToSlash(candidate)
-		} else {
-			guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
-		}
-	} else if candidate := firstExistingGlob(dir, "configs/*.yaml"); candidate != "" {
-		if strings.HasPrefix(guess.TrainCmd, "bash ") {
-			guess.TrainCmd += " " + filepath.ToSlash(candidate)
-		} else {
-			guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
+	if guess.TrainCmd != "" && (guess.TrainSafe || !fileExists(filepath.Join(dir, "main.py"))) {
+		if candidate := firstExistingGlob(dir, "configs/experiments/*.yaml"); candidate != "" {
+			if strings.HasPrefix(guess.TrainCmd, "bash ") {
+				guess.TrainCmd += " " + filepath.ToSlash(candidate)
+			} else {
+				guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
+			}
+		} else if candidate := firstExistingGlob(dir, "configs/*.yaml"); candidate != "" {
+			if strings.HasPrefix(guess.TrainCmd, "bash ") {
+				guess.TrainCmd += " " + filepath.ToSlash(candidate)
+			} else {
+				guess.TrainCmd += " --config " + filepath.ToSlash(candidate)
+			}
 		}
 	}
 	if dirExists(filepath.Join(dir, "wandb")) {
 		guess.Metrics = append(guess.Metrics, "wandb/**/*.json")
 	}
 	return guess
+}
+
+func appendProjectTrainConfig(b *strings.Builder, cfg projectInitConfig) {
+	if cfg.TrainSafe && strings.TrimSpace(cfg.TrainCmd) != "" {
+		fmt.Fprintf(b, "train:\n")
+		if strings.Contains(cfg.TrainCmd, "\n") {
+			fmt.Fprintf(b, "  command: |\n")
+			for _, line := range strings.Split(cfg.TrainCmd, "\n") {
+				fmt.Fprintf(b, "    %s\n", line)
+			}
+		} else {
+			fmt.Fprintf(b, "  command: %s\n", cfg.TrainCmd)
+		}
+		fmt.Fprintf(b, "  kind: formal\n")
+		return
+	}
+	fmt.Fprintf(b, "# train:\n")
+	fmt.Fprintf(b, "#   command: TODO replace with the real training command\n")
+	fmt.Fprintf(b, "#   kind: formal\n")
 }
 
 func renderProjectInitConfig(cfg projectInitConfig) string {
@@ -1034,21 +1062,16 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 	fmt.Fprintf(&b, "setup:\n")
 	fmt.Fprintf(&b, "  command: %s\n", cfg.SetupCmd)
 	fmt.Fprintf(&b, "  kind: setup\n\n")
+	fmt.Fprintf(&b, "check-results:\n")
+	fmt.Fprintf(&b, "  command: ls -lah runs results 2>/dev/null || true\n")
+	fmt.Fprintf(&b, "  kind: smoke\n")
+	fmt.Fprintf(&b, "  no_gpu: true\n\n")
 	fmt.Fprintf(&b, "# Optional structured UI events inside scripts:\n")
 	fmt.Fprintf(&b, "#   aexp event metric train/loss 0.23 --epoch 1\n")
 	fmt.Fprintf(&b, "#   aexp event progress train 1 --total 100\n")
 	fmt.Fprintf(&b, "#   aexp-event note \"finished validation\"\n")
 	fmt.Fprintf(&b, "# Python scripts can also import: from aexp_events import metric, progress, param, note\n")
-	fmt.Fprintf(&b, "train:\n")
-	if strings.Contains(cfg.TrainCmd, "\n") {
-		fmt.Fprintf(&b, "  command: |\n")
-		for _, line := range strings.Split(cfg.TrainCmd, "\n") {
-			fmt.Fprintf(&b, "    %s\n", line)
-		}
-	} else {
-		fmt.Fprintf(&b, "  command: %s\n", cfg.TrainCmd)
-	}
-	fmt.Fprintf(&b, "  kind: formal\n")
+	appendProjectTrainConfig(&b, cfg)
 	return b.String()
 }
 
@@ -1063,8 +1086,8 @@ func printProjectInitNextSteps() {
 	fmt.Println()
 	fmt.Println("Next:")
 	fmt.Println("  aexp project doctor")
-	fmt.Println("  aexp project run setup --dry-run")
-	fmt.Println("  aexp project run train --dry-run")
+	fmt.Println("  aexp project run check-results --dry-run")
+	fmt.Println("  edit .aexp.yaml train recipe, then: aexp project run train --dry-run")
 }
 
 func fileExists(path string) bool {
@@ -3921,9 +3944,16 @@ func runMarksCmd() *cobra.Command {
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:   "marks",
+		Use:   "marks [run_id]",
 		Short: "List run findings",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if runID != "" && runID != args[0] {
+					return fmt.Errorf("run id specified twice: positional %s conflicts with --run %s", args[0], runID)
+				}
+				runID = args[0]
+			}
 			db := openDB()
 			defer db.Close()
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -110,6 +111,9 @@ func TestProjectInitDryRun(t *testing.T) {
 		"target: /remote/project",
 		"setup:",
 		"command: python -m pip install -r requirements.txt",
+		"check-results:",
+		"kind: smoke",
+		"no_gpu: true",
 		"train:",
 		"command: bash scripts/train_fusion.sh configs/experiments/fusion.yaml",
 		"aexp event metric train/loss 0.23 --epoch 1",
@@ -118,6 +122,36 @@ func TestProjectInitDryRun(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("dry-run output missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestProjectInitDoesNotPromoteAmbiguousMainPyToFormalTrain(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('cli dispatcher')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var text string
+	withWorkingDir(t, dir, func() {
+		out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project", "--dry-run")
+		if err != nil {
+			t.Fatalf("project init dry-run failed: %v\n%s", err, out)
+		}
+		text = out
+	})
+	for _, want := range []string{
+		"check-results:",
+		"kind: smoke",
+		"no_gpu: true",
+		"# train:",
+		"#   command: TODO replace with the real training command",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("ambiguous init output missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "command: python main.py") {
+		t.Fatalf("ambiguous main.py should not become a formal train command:\n%s", text)
 	}
 }
 
@@ -165,6 +199,7 @@ func TestTopLevelInitProjectDryRun(t *testing.T) {
 		"resource: mu",
 		"cwd: /remote/project",
 		"command: python -m pip install -r requirements.txt",
+		"check-results:",
 		"aexp project run train --dry-run",
 	} {
 		if !strings.Contains(text, want) {
@@ -229,6 +264,59 @@ func TestProjectDoctorConfigRecommendations(t *testing.T) {
 	}
 	if train.Kind != store.RunKindFormal || !train.Selected || train.Evidence != "experiment evidence" {
 		t.Fatalf("unexpected train recipe: %#v", train)
+	}
+}
+
+func TestRunMarksAcceptsPositionalRunID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dbPath := filepath.Join(home, ".aexp", "aexp.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRunMark(context.Background(), &store.RunMark{
+		ID:     "mark_1",
+		RunID:  "run_target",
+		Actor:  "agent",
+		Kind:   "key_result",
+		Title:  "target finding",
+		Reason: "visible",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRunMark(context.Background(), &store.RunMark{
+		ID:     "mark_2",
+		RunID:  "run_other",
+		Actor:  "agent",
+		Kind:   "key_result",
+		Title:  "other finding",
+		Reason: "hidden",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	out, err := runMarksForTest("run_target")
+	if err != nil {
+		t.Fatalf("run marks positional failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "target finding") {
+		t.Fatalf("expected target finding in output:\n%s", out)
+	}
+	if strings.Contains(out, "other finding") {
+		t.Fatalf("positional run id should filter other marks:\n%s", out)
+	}
+
+	out, err = runMarksForTest("run_target", "--run", "run_other")
+	if err == nil {
+		t.Fatalf("expected conflicting run ids to fail, got success:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "specified twice") {
+		t.Fatalf("expected conflict error, got %v out=%s", err, out)
 	}
 }
 
@@ -359,6 +447,16 @@ func runProjectInitForTest(args ...string) (string, error) {
 
 func runInitForTest(args ...string) (string, error) {
 	cmd := initCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runMarksForTest(args ...string) (string, error) {
+	cmd := runMarksCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs(args)
