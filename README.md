@@ -247,6 +247,8 @@ It includes:
 aexp init
 aexp serve [--port 8080] [--daemon]
 aexp mcp
+aexp mcp install [--target codex|claude|all]
+aexp mcp uninstall [--target codex|claude|all]
 
 aexp resource explore <host>
 aexp resource add --name <name> --host <host> --root-dir <dir>
@@ -281,6 +283,25 @@ For the full command reference, see [USAGE.md](USAGE.md).
 ```bash
 aexp mcp
 ```
+
+To register it with local agent clients:
+
+```bash
+# Install/update both Codex and Claude Code MCP configs.
+aexp mcp install --target all
+
+# Or install one client only.
+aexp mcp install --target codex
+aexp mcp install --target claude
+
+# Remove the generated config.
+aexp mcp uninstall --target all
+```
+
+The installer uses the clients' own MCP CLIs (`codex mcp ...` and
+`claude mcp ...`) and manages only the server named `aexp`. By default it
+points the MCP server at the current `aexp` binary and sets
+`AEXP_API_URL=http://127.0.0.1:8080/api/v1`.
 
 The MCP server exposes structured tools for agents:
 

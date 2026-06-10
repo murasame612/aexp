@@ -102,7 +102,200 @@ local "aexp serve" API process when one is already running.`,
 		},
 	}
 	cmd.Flags().StringVar(&binary, "binary", "", "aexp binary to wrap (defaults to the current executable)")
+	cmd.AddCommand(mcpInstallCmd(false))
+	cmd.AddCommand(mcpInstallCmd(true))
 	return cmd
+}
+
+type mcpInstallOptions struct {
+	Target      string
+	Name        string
+	Binary      string
+	APIURL      string
+	ClaudeScope string
+	DryRun      bool
+}
+
+type mcpHostCommand struct {
+	Target      string
+	Description string
+	Program     string
+	Args        []string
+	Optional    bool
+}
+
+func mcpInstallCmd(uninstall bool) *cobra.Command {
+	opts := mcpInstallOptions{
+		Target:      "all",
+		Name:        "aexp",
+		APIURL:      "http://127.0.0.1:8080/api/v1",
+		ClaudeScope: "user",
+	}
+	use := "install"
+	short := "Install aexp MCP config into Codex/Claude Code"
+	if uninstall {
+		use = "uninstall"
+		short = "Remove aexp MCP config from Codex/Claude Code"
+	}
+	cmd := &cobra.Command{
+		Use:     use,
+		Aliases: uninstallAliases(uninstall),
+		Short:   short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !uninstall {
+				binary, err := resolveMCPBinary(opts.Binary)
+				if err != nil {
+					return err
+				}
+				opts.Binary = binary
+			}
+			plan, err := buildMCPInstallPlan(opts, uninstall)
+			if err != nil {
+				return err
+			}
+			if len(plan) == 0 {
+				return fmt.Errorf("no MCP client targets selected")
+			}
+			for _, step := range plan {
+				if opts.DryRun {
+					fmt.Println(renderHostCommand(step))
+					continue
+				}
+				if err := runMCPHostCommand(cmd.Context(), step); err != nil {
+					if step.Optional {
+						fmt.Fprintf(os.Stderr, "warning: %s failed: %v\n", step.Description, err)
+						continue
+					}
+					return err
+				}
+				fmt.Printf("%s: %s\n", step.Target, step.Description)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&opts.Target, "target", opts.Target, "MCP client target: codex, claude, or all")
+	cmd.Flags().StringVar(&opts.Name, "name", opts.Name, "MCP server name")
+	cmd.Flags().StringVar(&opts.Binary, "binary", opts.Binary, "aexp binary path (install only; defaults to current executable)")
+	cmd.Flags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "AEXP_API_URL for the MCP server")
+	cmd.Flags().StringVar(&opts.ClaudeScope, "claude-scope", opts.ClaudeScope, "Claude Code config scope: local, user, or project")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Print commands without changing client config")
+	return cmd
+}
+
+func uninstallAliases(uninstall bool) []string {
+	if uninstall {
+		return []string{"un", "remove"}
+	}
+	return nil
+}
+
+func resolveMCPBinary(explicit string) (string, error) {
+	if explicit != "" {
+		abs, err := filepath.Abs(expandPath(explicit))
+		if err != nil {
+			return "", fmt.Errorf("resolve --binary: %w", err)
+		}
+		return abs, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("find current executable: %w", err)
+	}
+	return filepath.Abs(exe)
+}
+
+func buildMCPInstallPlan(opts mcpInstallOptions, uninstall bool) ([]mcpHostCommand, error) {
+	targets, err := parseMCPTargets(opts.Target)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Name == "" {
+		return nil, fmt.Errorf("--name is required")
+	}
+	if !uninstall && opts.Binary == "" {
+		return nil, fmt.Errorf("--binary is required")
+	}
+	if opts.ClaudeScope == "" {
+		opts.ClaudeScope = "user"
+	}
+	var plan []mcpHostCommand
+	for _, target := range targets {
+		switch target {
+		case "codex":
+			if uninstall {
+				plan = append(plan, mcpHostCommand{Target: "codex", Description: "removed MCP server " + opts.Name, Program: "codex", Args: []string{"mcp", "remove", opts.Name}, Optional: true})
+				continue
+			}
+			plan = append(plan,
+				mcpHostCommand{Target: "codex", Description: "removed old MCP server " + opts.Name, Program: "codex", Args: []string{"mcp", "remove", opts.Name}, Optional: true},
+				mcpHostCommand{Target: "codex", Description: "installed MCP server " + opts.Name, Program: "codex", Args: []string{"mcp", "add", opts.Name, "--env", "AEXP_API_URL=" + opts.APIURL, "--", opts.Binary, "mcp"}},
+			)
+		case "claude":
+			if uninstall {
+				plan = append(plan, mcpHostCommand{Target: "claude", Description: "removed MCP server " + opts.Name, Program: "claude", Args: []string{"mcp", "remove", opts.Name}, Optional: true})
+				continue
+			}
+			plan = append(plan,
+				mcpHostCommand{Target: "claude", Description: "removed old MCP server " + opts.Name, Program: "claude", Args: []string{"mcp", "remove", opts.Name}, Optional: true},
+				mcpHostCommand{Target: "claude", Description: "installed MCP server " + opts.Name, Program: "claude", Args: []string{"mcp", "add", "--scope", opts.ClaudeScope, opts.Name, "-e", "AEXP_API_URL=" + opts.APIURL, "--", opts.Binary, "mcp"}},
+			)
+		}
+	}
+	return plan, nil
+}
+
+func parseMCPTargets(target string) ([]string, error) {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", "all":
+		return []string{"codex", "claude"}, nil
+	case "codex":
+		return []string{"codex"}, nil
+	case "claude", "claude-code", "cc":
+		return []string{"claude"}, nil
+	default:
+		return nil, fmt.Errorf("--target must be codex, claude, or all")
+	}
+}
+
+func runMCPHostCommand(ctx context.Context, step mcpHostCommand) error {
+	if _, err := osexec.LookPath(step.Program); err != nil {
+		return fmt.Errorf("%s not found in PATH", step.Program)
+	}
+	c := osexec.CommandContext(ctx, step.Program, step.Args...)
+	out, err := c.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%s: %w (%s)", renderHostCommand(step), err, msg)
+		}
+		return fmt.Errorf("%s: %w", renderHostCommand(step), err)
+	}
+	return nil
+}
+
+func renderHostCommand(step mcpHostCommand) string {
+	parts := append([]string{step.Program}, step.Args...)
+	return shellJoin(parts)
+}
+
+func shellJoin(parts []string) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, shellQuoteArg(p))
+	}
+	return strings.Join(out, " ")
+}
+
+func shellQuoteArg(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if strings.IndexFunc(s, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '=' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'))
+	}) == -1 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // --- serve ---

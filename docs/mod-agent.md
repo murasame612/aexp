@@ -15,6 +15,20 @@ aexp 限制 Agent 直接使用 shell。Agent 通过结构化工具操作实验�
 MCP 工具调用会转成同一个本地 `aexp` 二进制的 CLI 子命令，因此行为与 CLI 保持一致。
 其中 `aexp_exec` 仍会先尝试本地 `aexp serve` API fast path，以复用常驻进程里的 SSH pool。
 
+用户侧安装可以走：
+
+```bash
+aexp mcp install --target all
+aexp mcp uninstall --target all
+```
+
+安装器是 Codex/Claude Code MCP CLI 的薄包装：
+
+- Codex: `codex mcp remove/add aexp ...`
+- Claude Code: `claude mcp remove/add --scope user aexp ...`
+- 默认只管理名为 `aexp` 的 MCP server。
+- 默认把 `AEXP_API_URL` 设置为 `http://127.0.0.1:8080/api/v1`，让 MCP 工具能复用本地 `aexp serve` 的 API fast path。
+
 当前工具名：
 
 - `aexp_agent_card`

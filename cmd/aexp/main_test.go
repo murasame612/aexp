@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/ziwu/aexp/internal/executor"
@@ -42,6 +43,47 @@ func TestExecViaLocalAPISendsRequest(t *testing.T) {
 	}
 	if got.Actor != "cli" {
 		t.Fatalf("actor = %q, want cli", got.Actor)
+	}
+}
+
+func TestBuildMCPInstallPlanAll(t *testing.T) {
+	plan, err := buildMCPInstallPlan(mcpInstallOptions{
+		Target:      "all",
+		Name:        "aexp",
+		Binary:      "/usr/local/bin/aexp",
+		APIURL:      "http://127.0.0.1:8080/api/v1",
+		ClaudeScope: "user",
+	}, false)
+	if err != nil {
+		t.Fatalf("buildMCPInstallPlan error: %v", err)
+	}
+	got := make([][]string, 0, len(plan))
+	for _, step := range plan {
+		got = append(got, append([]string{step.Program}, step.Args...))
+	}
+	want := [][]string{
+		{"codex", "mcp", "remove", "aexp"},
+		{"codex", "mcp", "add", "aexp", "--env", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "--", "/usr/local/bin/aexp", "mcp"},
+		{"claude", "mcp", "remove", "aexp"},
+		{"claude", "mcp", "add", "--scope", "user", "aexp", "-e", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "--", "/usr/local/bin/aexp", "mcp"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildMCPUninstallPlanClaudeAlias(t *testing.T) {
+	plan, err := buildMCPInstallPlan(mcpInstallOptions{Target: "cc", Name: "aexp"}, true)
+	if err != nil {
+		t.Fatalf("buildMCPInstallPlan error: %v", err)
+	}
+	got := append([]string{plan[0].Program}, plan[0].Args...)
+	want := []string{"claude", "mcp", "remove", "aexp"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan = %#v, want %#v", got, want)
+	}
+	if !plan[0].Optional {
+		t.Fatal("uninstall should tolerate missing MCP config")
 	}
 }
 
