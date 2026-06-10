@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS runs (
     created_by          TEXT DEFAULT '',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at          DATETIME,
-    finished_at         DATETIME
+    finished_at         DATETIME,
+    archived_at         DATETIME,
+    deleted_at          DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS project_profiles (

@@ -93,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/", s.handleSubmitRun)
 			r.Get("/{id}", s.handleGetRun)
 			r.Post("/{id}/cancel", s.handleCancelRun)
+			r.Post("/{id}/archive", s.handleArchiveRun)
+			r.Post("/{id}/restore", s.handleRestoreRun)
+			r.Delete("/{id}", s.handleDeleteRunLogically)
 			r.Get("/{id}/logs", s.handleGetLogs)
 			r.Get("/{id}/summary", s.handleGetSummary)
 			r.Get("/{id}/artifacts", s.handleListArtifacts)
@@ -592,6 +595,8 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	filter := store.RunFilter{
 		ResourceID: r.URL.Query().Get("resource"),
 		Status:     r.URL.Query().Get("status"),
+		Trash:      parseBoolQuery(r.URL.Query().Get("trash")),
+		Deleted:    parseBoolQuery(r.URL.Query().Get("deleted")),
 	}
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		filter.Limit, _ = strconv.Atoi(limitStr)
@@ -621,6 +626,73 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, runs)
+}
+
+func (s *Server) handleArchiveRun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	run, err := s.store.GetRun(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+		writeError(w, http.StatusBadRequest, "RUN_ACTIVE", "running runs cannot be moved to trash")
+		return
+	}
+	if err := s.store.ArchiveRun(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	run, _ = s.store.GetRun(r.Context(), id)
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) handleRestoreRun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.store.RestoreRun(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	run, err := s.store.GetRun(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) handleDeleteRunLogically(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	run, err := s.store.GetRun(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+		writeError(w, http.StatusBadRequest, "RUN_ACTIVE", "running runs cannot be deleted")
+		return
+	}
+	if !run.ArchivedAt.Valid && !run.DeletedAt.Valid {
+		writeError(w, http.StatusBadRequest, "RUN_NOT_ARCHIVED", "move run to trash before deleting it")
+		return
+	}
+	if err := s.store.DeleteRunLogically(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {

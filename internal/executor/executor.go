@@ -449,7 +449,7 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 		lastN = 200
 	}
 
-	cmd := fmt.Sprintf("tail -f -n %d %s", lastN, shellQuote(logFile))
+	cmd := fmt.Sprintf("tail -F -n %d %s", lastN, shellQuote(logFile))
 	ch, err := e.execStream(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
@@ -1079,6 +1079,7 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 
 	lines = append(lines, "#!/usr/bin/env bash")
 	lines = append(lines, "set -e")
+	lines = append(lines, `export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"`)
 
 	// Export environment variables
 	for k, v := range envVars {

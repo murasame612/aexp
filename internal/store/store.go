@@ -17,6 +17,9 @@ type Store interface {
 	GetRun(ctx context.Context, id string) (*Run, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]Run, error)
 	UpdateRun(ctx context.Context, r *Run) error
+	ArchiveRun(ctx context.Context, id string) error
+	RestoreRun(ctx context.Context, id string) error
+	DeleteRunLogically(ctx context.Context, id string) error
 
 	// Project Profiles
 	SaveProjectProfile(ctx context.Context, p *ProjectProfile) error

@@ -742,6 +742,7 @@
                 <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
                     placeholder="Search name or command" data-i18n-placeholder="filters.searchNameCommand">
                 <button id="compare-runs-btn" class="btn-secondary text-sm" onclick="openRunComparison()" disabled>Compare (0)</button>
+                <button id="run-trash-toggle" class="btn-secondary text-sm" onclick="toggleRunTrashMode()" data-i18n="runs.trash">Trash</button>
             </div>
             <div id="runs-table-container"></div>
         </div>
@@ -1275,6 +1276,7 @@
         let eventRenderScheduled = false;
         let resourcesById = new Map();
         let allRuns = [];
+        let trashRuns = [];
         let allExecEvents = [];
         let allRunMarks = [];
         let allRunBookmarks = [];
@@ -1285,6 +1287,7 @@
         let runFilterStatus = '';
         let runFilterResource = '';
         let runFilterKind = 'experiments';
+        let runTrashMode = false;
         let execFilterResource = '';
         let execFilterActor = '';
         let pendingConfirmAction = null;
@@ -1301,6 +1304,8 @@
                 'common.parse': 'Parse',
                 'common.saveChanges': 'Save Changes',
                 'common.remove': 'Remove',
+                'common.delete': 'Delete',
+                'common.restore': 'Restore',
                 'common.edit': 'Edit',
                 'common.copy': 'Copy',
                 'common.saveNote': 'Save Note',
@@ -1386,6 +1391,17 @@
                 'runs.cancelTitle': 'Cancel run',
                 'runs.cancelMessage': 'Cancel this run? The running process will be stopped and the run will be marked as cancelled.',
                 'runs.cancelAction': 'Cancel Run',
+                'runs.trash': 'Trash',
+                'runs.backToRuns': 'Back to runs',
+                'runs.archiveTitle': 'Move run to trash',
+                'runs.archiveMessage': 'Move "{name}" to trash? Logs, events, and findings stay unchanged.',
+                'runs.archiveAction': 'Move to trash',
+                'runs.restoreTitle': 'Restore run',
+                'runs.restoreMessage': 'Restore "{name}" to the main runs list?',
+                'runs.restoreAction': 'Restore',
+                'runs.deleteTitle': 'Delete run',
+                'runs.deleteMessage': 'Delete "{name}" from trash? This is a logical delete; remote files are not removed.',
+                'runs.deleteAction': 'Delete',
                 'marks.noRecent': 'No agent findings yet',
                 'marks.noMarks': 'No run marks',
                 'marks.noAttached': 'No findings attached to this run',
@@ -1403,7 +1419,7 @@
                 'logs.tailRange': 'showing lines {first}-{last} of {total}',
                 'logs.stderrHint': 'progress bars and warnings often use stderr',
                 'logs.loadMore': 'Load 1000 lines',
-                'logs.combinedClean': 'Terminal tail',
+                'logs.combinedClean': 'Clean stdout / stderr',
                 'logs.rawStreams': 'Raw stdout / stderr',
                 'logs.cleanTail': 'Terminal tail',
                 'logs.agentLog': 'Agent log',
@@ -1448,6 +1464,8 @@
                 'common.parse': '解析',
                 'common.saveChanges': '保存修改',
                 'common.remove': '移除',
+                'common.delete': '删除',
+                'common.restore': '恢复',
                 'common.edit': '编辑',
                 'common.copy': '复制',
                 'common.saveNote': '保存标注',
@@ -1533,6 +1551,17 @@
                 'runs.cancelTitle': '取消实验',
                 'runs.cancelMessage': '取消这个实验？运行中的进程会被停止，实验会被标记为已取消。',
                 'runs.cancelAction': '取消实验',
+                'runs.trash': '回收站',
+                'runs.backToRuns': '返回实验',
+                'runs.archiveTitle': '移入回收站',
+                'runs.archiveMessage': '把“{name}”移入回收站？日志、事件和 Agent 发现都会保留。',
+                'runs.archiveAction': '移入回收站',
+                'runs.restoreTitle': '恢复实验',
+                'runs.restoreMessage': '把“{name}”恢复到实验列表？',
+                'runs.restoreAction': '恢复',
+                'runs.deleteTitle': '删除实验',
+                'runs.deleteMessage': '从回收站删除“{name}”？这是逻辑删除，不会删除远端文件。',
+                'runs.deleteAction': '删除',
                 'marks.noRecent': '还没有 Agent 发现',
                 'marks.noMarks': '没有实验标记',
                 'marks.noAttached': '这个实验还没有关联发现',
@@ -1550,9 +1579,9 @@
                 'logs.tailRange': '正在显示第 {first}-{last} 行，共 {total} 行',
                 'logs.stderrHint': '训练进度条和警告经常写到 stderr',
                 'logs.loadMore': '加载 1000 行',
-                'logs.combinedClean': 'Terminal tail',
+                'logs.combinedClean': '清洗后的 stdout / stderr',
                 'logs.rawStreams': '原始 stdout / stderr',
-                'logs.cleanTail': 'Terminal tail',
+                'logs.cleanTail': '终端 tail',
                 'logs.agentLog': 'Agent log',
                 'logs.loadRaw': '加载原始 stdout / stderr',
                 'logs.followLive': '继续 tail',
@@ -1638,6 +1667,10 @@
             if (runKindLabelEl) {
                 runKindLabelEl.textContent = runKindFilterLabel(runFilterKind);
                 updateFilterMenuActive('run-filter-kind-menu', runFilterKind);
+            }
+            const trashBtn = document.getElementById('run-trash-toggle');
+            if (trashBtn) {
+                trashBtn.textContent = runTrashMode ? t('runs.backToRuns') : t('runs.trash');
             }
             const execResourceLabel = document.getElementById('exec-filter-resource-label');
             if (execResourceLabel) {
@@ -1971,7 +2004,7 @@
             return `
                 <div class="mb-4">
                     <div class="flex items-center justify-between gap-3 mb-2">
-                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.cleanTail'))}</h3>
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.combinedClean'))}</h3>
                     </div>
                     <div class="log-pane terminal-pane" id="${escAttr(paneId)}" data-lines="${escAttr(String(merged.length))}">${body}</div>
                 </div>`;
@@ -2044,17 +2077,48 @@
             const parts = [ev.split, ev.stage, ev.name || ev.metric || ev.key || ev.label].map(asText).filter(Boolean);
             return parts.join('/') || fallback || ev.type || 'event';
         }
+        function isMetricType(ev) {
+            const t = asText(ev.type).toLowerCase();
+            return t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar';
+        }
+        function metricEventName(ev) {
+            const metric = ev.metric ?? ev.key ?? ev.label;
+            const parts = [ev.split, ev.stage, metric != null ? metric : ev.name].map(asText).filter(Boolean);
+            return parts.join('/') || eventName(ev, 'metric');
+        }
+        function metricEventSeriesLabel(ev, metricName) {
+            const explicit = ev.series ?? ev.run ?? ev.variant ?? ev.experiment ?? ev.model ?? ev.config;
+            if (explicit != null && asText(explicit) !== '') return asText(explicit);
+            if ((ev.metric != null || ev.key != null || ev.label != null) && ev.name != null && asText(ev.name) !== '') {
+                return asText(ev.name);
+            }
+            return metricSeriesLabel(metricName);
+        }
+        function metricEventRowKey(ev) {
+            const name = metricEventName(ev);
+            return name + '\x00' + metricEventSeriesLabel(ev, name);
+        }
         function metricPathParts(name) {
             return asText(name).split('/').map(p => p.trim()).filter(Boolean);
+        }
+        function metricHasSeriesPrefix(prefix, metric) {
+            const p = asText(prefix).toLowerCase();
+            const m = asText(metric).toLowerCase();
+            if (!p || !m) return false;
+            if (['train', 'val', 'valid', 'validation', 'test', 'metrics', 'metric', 'eval', 'lr'].includes(p)) return false;
+            if (/(map|auc|acc|f1|precision|recall|mae|mse|rmse|r2|bleu|rouge|perplexity|loss|error|score)/.test(m)) return true;
+            return /[_-]|\d/.test(p);
         }
         function metricBaseName(name) {
             const parts = metricPathParts(name);
             if (parts.length >= 3) return parts.slice(1).join('/');
+            if (parts.length === 2 && metricHasSeriesPrefix(parts[0], parts[1])) return parts[1];
             return asText(name);
         }
         function metricSeriesLabel(name) {
             const parts = metricPathParts(name);
             if (parts.length >= 3) return parts[0];
+            if (parts.length === 2 && metricHasSeriesPrefix(parts[0], parts[1])) return parts[0];
             return asText(name);
         }
         function metricDisplayName(name) {
@@ -2110,14 +2174,13 @@
         }
         function metricSeries(events, name) {
             return events.filter(ev => {
-                const t = asText(ev.type).toLowerCase();
-                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && eventName(ev) === name && numberValue(ev.value) != null;
+                return isMetricEvent(ev) && metricEventName(ev) === name;
             }).map(ev => numberValue(ev.value)).slice(-24);
         }
-        function metricPoints(events, name) {
+        function metricPoints(events, name, seriesLabel) {
             return events.filter(ev => {
-                const t = asText(ev.type).toLowerCase();
-                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && eventName(ev) === name && numberValue(ev.value) != null;
+                if (!isMetricEvent(ev) || metricEventName(ev) !== name) return false;
+                return seriesLabel == null || metricEventSeriesLabel(ev, name) === seriesLabel;
             }).map((ev, idx) => ({
                 x: numberValue(ev.epoch ?? ev.step ?? ev.iter) ?? idx + 1,
                 y: numberValue(ev.value),
@@ -2126,20 +2189,23 @@
         }
         function comparableMetricSeries(events, name) {
             const base = metricBaseName(name);
-            const names = Array.from(new Set(events.filter(ev => {
-                const t = asText(ev.type).toLowerCase();
-                return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && ev.value != null;
-            }).map(ev => eventName(ev)).filter(n => metricBaseName(n) === base)));
-            const picked = names.length > 1 ? names : [name];
-            return picked.map(n => ({
-                name: n,
-                label: names.length > 1 ? metricSeriesLabel(n) : metricDisplayName(n),
-                points: metricPoints(events, n),
+            const rows = new Map();
+            events.filter(isMetricEvent).forEach(ev => {
+                const metricName = metricEventName(ev);
+                if (metricBaseName(metricName) !== base) return;
+                const label = metricEventSeriesLabel(ev, metricName);
+                const key = metricName + '\x00' + label;
+                if (!rows.has(key)) rows.set(key, { name: metricName, label });
+            });
+            if (!rows.size) rows.set(name + '\x00' + metricSeriesLabel(name), { name, label: metricSeriesLabel(name) });
+            return Array.from(rows.values()).map(row => ({
+                name: row.name,
+                label: row.label,
+                points: metricPoints(events, row.name, row.label),
             })).filter(s => s.points.length > 0);
         }
         function isMetricEvent(ev) {
-            const t = asText(ev.type).toLowerCase();
-            return (t === 'metric' || t === 'metrics' || t === 'eval' || t === 'scalar') && numberValue(ev.value) != null;
+            return isMetricType(ev) && numberValue(ev.value) != null;
         }
         function metricPointFromEvent(ev, idx) {
             return {
@@ -2157,23 +2223,34 @@
         function comparisonMetricGroups(runEventSets) {
             const groups = new Map();
             runEventSets.forEach(({ run, events }) => {
-                const names = Array.from(new Set(events.filter(isMetricEvent).map(ev => eventName(ev))));
+                const names = Array.from(new Set(events.filter(isMetricEvent).map(ev => metricEventName(ev))));
                 const baseCounts = new Map();
                 names.forEach(name => baseCounts.set(metricBaseName(name), (baseCounts.get(metricBaseName(name)) || 0) + 1));
                 names.forEach(name => {
                     const base = metricBaseName(name);
-                    const points = events.filter(ev => isMetricEvent(ev) && eventName(ev) === name).map(metricPointFromEvent);
-                    if (!points.length) return;
-                    if (!groups.has(base)) groups.set(base, []);
-                    const runLabel = run.name || run.id;
-                    const label = baseCounts.get(base) > 1 ? runLabel + ' · ' + metricSeriesLabel(name) : runLabel;
-                    groups.get(base).push({
-                        name: run.id + ':' + name,
-                        label,
-                        points,
-                        runId: run.id,
-                        resource: resourceLabel(run.resource_id),
-                        kind: run.kind || 'formal',
+                    const series = new Map();
+                    events.filter(ev => isMetricEvent(ev) && metricEventName(ev) === name).forEach(ev => {
+                        const seriesLabel = metricEventSeriesLabel(ev, name);
+                        if (!series.has(seriesLabel)) series.set(seriesLabel, []);
+                        series.get(seriesLabel).push(ev);
+                    });
+                    series.forEach((seriesEvents, seriesLabel) => {
+                        const points = seriesEvents.map(metricPointFromEvent);
+                        if (!points.length) return;
+                        if (!groups.has(base)) groups.set(base, []);
+                        const runLabel = run.name || run.id;
+                        const hasMultipleMetrics = baseCounts.get(base) > 1;
+                        const labelBits = [runLabel];
+                        if (hasMultipleMetrics) labelBits.push(metricSeriesLabel(name));
+                        if (series.size > 1 || seriesLabel !== metricSeriesLabel(name)) labelBits.push(seriesLabel);
+                        groups.get(base).push({
+                            name: run.id + ':' + name + ':' + seriesLabel,
+                            label: labelBits.join(' · '),
+                            points,
+                            runId: run.id,
+                            resource: resourceLabel(run.resource_id),
+                            kind: run.kind || 'formal',
+                        });
                     });
                 });
             });
@@ -2213,17 +2290,23 @@
             `).join('');
         }
         function metricGroups(events) {
-            const latest = latestByName(events, ev => {
-                return isMetricEvent(ev);
+            const latestByMetricSeries = new Map();
+            events.forEach(ev => {
+                if (!isMetricEvent(ev)) return;
+                latestByMetricSeries.set(metricEventRowKey(ev), ev);
+            });
+            const latest = Array.from(latestByMetricSeries.values()).map(ev => {
+                const name = metricEventName(ev);
+                return { name, seriesLabel: metricEventSeriesLabel(ev, name), ev };
             });
             const groups = new Map();
-            latest.forEach(({ name, ev }) => {
+            latest.forEach(({ name, seriesLabel, ev }) => {
                 const base = metricBaseName(name);
                 if (!groups.has(base)) groups.set(base, []);
-                groups.get(base).push({ name, ev });
+                groups.get(base).push({ name, seriesLabel, ev });
             });
             return Array.from(groups.entries()).map(([base, rows]) => {
-                rows.sort((a, b) => metricSeriesLabel(a.name).localeCompare(metricSeriesLabel(b.name)));
+                rows.sort((a, b) => a.seriesLabel.localeCompare(b.seriesLabel));
                 return { base, rows };
             }).sort((a, b) => metricPriority(a.base) - metricPriority(b.base) || a.base.localeCompare(b.base));
         }
@@ -2362,11 +2445,11 @@
                     const openArg = escAttr(JSON.stringify(first.name));
                     const latestRows = rows.slice(0, 4).map(({ name, ev }) => `
                         <div class="event-series-row">
-                            <span class="event-series-name" title="${escAttr(name)}">${escHTML(metricSeriesLabel(name))}</span>
+                            <span class="event-series-name" title="${escAttr(name)}">${escHTML(metricEventSeriesLabel(ev, name))}</span>
                             <span class="event-series-value">${escHTML(formatEventValue(ev.value))}</span>
                         </div>`).join('');
                     const meta = rows.length > 1
-                        ? `${rows.length} series · grouped by ${base}`
+                        ? `${rows.length} series · ${metricDisplayName(base)}`
                         : eventStepLabel(first.ev) || asText(first.ev.unit || '');
                     return `<div class="event-card event-card-clickable" role="button" tabindex="0" onclick="openMetricChart(${openArg})" onkeydown="if(event.key==='Enter'||event.key===' ')openMetricChart(${openArg})">
                         <div class="event-card-label" title="${escAttr(base)}">${escHTML(metricDisplayName(base))}</div>
@@ -2426,23 +2509,26 @@
                     <div class="log-pane" id="log-pane-events" data-log-path="${escAttr(eventPath)}" data-lines="${escAttr(String(currentEventLines.length))}">${currentEventLines.map(escHTML).join('\n')}</div>
                 </details>`;
         }
-        function renderLogBlock(runId, source, logs, colorStyle, forceShow) {
+        function renderLogBlock(runId, source, logs, colorStyle, forceShow, paneSuffix) {
             const lines = logLines(logs);
             if (source === 'stderr' && lines.length === 0 && !forceShow) return '';
             const meta = logMeta(logs, lines);
+            const suffix = asText(paneSuffix || '');
+            const paneId = 'log-pane-' + source + suffix;
+            const metaId = 'log-meta-' + source + suffix;
             const hint = source === 'stderr'
                 ? `<span class="text-ink-muted font-normal ml-2">${escHTML(t('logs.stderrHint'))}</span>`
                 : '';
-            const loadMore = meta.truncated
+            const loadMore = meta.truncated && !suffix
                 ? `<button type="button" class="btn-secondary text-xs" onclick="loadMoreLogLines('${escAttr(runId)}','${escAttr(source)}')">${escHTML(t('logs.loadMore'))}</button>`
                 : '';
             return `
                 <div class="mb-5">
                     <div class="flex items-center justify-between gap-3 mb-2">
-                        <h3 class="text-sm font-medium font-heading">${escHTML(source)} <span class="text-ink-muted font-normal" id="log-meta-${escAttr(source)}">(${escHTML(meta.label)})</span>${hint}</h3>
+                        <h3 class="text-sm font-medium font-heading">${escHTML(source)} <span class="text-ink-muted font-normal" id="${escAttr(metaId)}">(${escHTML(meta.label)})</span>${hint}</h3>
                         ${loadMore}
                     </div>
-                    <div class="log-pane" id="log-pane-${escAttr(source)}" data-lines="${escAttr(String(lines.length))}" style="${escAttr(colorStyle || '')}">${lines.map(l => ansiToHTML(asText(asObject(l).content))).join('\n')}</div>
+                    <div class="log-pane" id="${escAttr(paneId)}" data-lines="${escAttr(String(lines.length))}" style="${escAttr(colorStyle || '')}">${lines.map(l => ansiToHTML(asText(asObject(l).content))).join('\n')}</div>
                 </div>`;
         }
         function tryParseJSON(str, fb) { try { return JSON.parse(str || 'null') || fb; } catch { return fb; } }
@@ -2464,10 +2550,11 @@
         let pollTimer = null;
 
         async function loadData() {
-            const [stats, resources, runs, execEvents, runMarks, runBookmarks] = await Promise.all([
+            const [stats, resources, runs, trash, execEvents, runMarks, runBookmarks] = await Promise.all([
                 fetchJSON('/stats'),
                 fetchJSON('/resources'),
-                fetchJSON('/runs?limit=30'),
+                fetchJSON('/runs?limit=50'),
+                fetchJSON('/runs?trash=true&limit=100'),
                 fetchJSON('/exec-events?limit=500'),
                 fetchJSON('/run-marks?limit=500'),
                 fetchJSON('/run-bookmarks?limit=200')
@@ -2482,6 +2569,7 @@
             const runArr = asArray(runs);
             resourcesById = new Map(resArr.map(r => [asObject(r).id, asObject(r)]));
             allRuns = runArr.map(asObject);
+            trashRuns = asArray(trash).map(asObject);
             allExecEvents = asArray(execEvents).map(asObject);
             allRunMarks = asArray(runMarks).map(asObject);
             allRunBookmarks = asArray(runBookmarks).map(asObject);
@@ -2729,7 +2817,7 @@
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
-                    <th style="width:56px">${escHTML(t('table.compare'))}</th><th>${escHTML(t('table.time'))}</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
+                    <th style="width:56px">${escHTML(t('table.compare'))}</th><th>${escHTML(t('table.time'))}</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:130px">${escHTML(t('table.actions'))}</th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
@@ -2737,9 +2825,15 @@
                     const fav = bookmarkedRunIds.has(r.id);
                     const kind = asText(r.kind || 'formal');
                     const findingCount = runMarkCount(r.id);
-                    const canCompare = isCompareRunEligible(r);
+                    const canCompare = !runTrashMode && isCompareRunEligible(r);
                     const checked = selectedCompareRunIds.has(r.id);
                     const time = formatShortTime(r.created_at || r.started_at);
+                    const active = r.status === 'running' || r.status === 'starting';
+                    const actions = runTrashMode
+                        ? `<button class="link-btn" onclick="event.stopPropagation(); restoreRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.restore'))}</button>
+                           <button class="link-btn hover:text-state-red" onclick="event.stopPropagation(); deleteRunLogically('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.delete'))}</button>`
+                        : `<button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button>
+                           ${active ? '' : `<button class="link-btn hover:text-state-red" title="${escAttr(t('runs.archiveAction'))}" onclick="event.stopPropagation(); archiveRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('runs.trash'))}</button>`}`;
                     return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
                         <td onclick="event.stopPropagation()" title="${escAttr(t('table.compare'))}">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
                         <td class="tabular-nums text-xs text-ink-secondary whitespace-nowrap">${escHTML(time)}</td>
@@ -2752,7 +2846,7 @@
                         <td class="whitespace-nowrap">${runStatusPill(r.status)}</td>
                         <td class="tabular-nums text-xs">${escHTML(runGPULabel(r.gpu_index))}</td>
                         <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
-                        <td><button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button></td>
+                        <td><div class="resource-actions">${actions}</div></td>
                     </tr>`;
                 }).join('')}</tbody>
             </table>`;
@@ -3005,11 +3099,14 @@
 
         function applyRunFilters() {
             const query = (document.getElementById('run-filter-query')?.value || '').trim().toLowerCase();
-            const filtered = allRuns.filter(r => {
+            const sourceRuns = runTrashMode ? trashRuns : allRuns;
+            const filtered = sourceRuns.filter(r => {
                 r = asObject(r);
                 const kind = asText(r.kind || 'formal').toLowerCase();
-                if (runFilterKind === 'experiments' && (kind === 'setup' || kind === 'smoke') && !uiEventsPath(r)) return false;
-                if (runFilterKind === 'tools' && kind !== 'setup' && kind !== 'smoke') return false;
+                if (!runTrashMode) {
+                    if (runFilterKind === 'experiments' && (kind === 'setup' || kind === 'smoke') && !uiEventsPath(r)) return false;
+                    if (runFilterKind === 'tools' && kind !== 'setup' && kind !== 'smoke') return false;
+                }
                 if (runFilterStatus && r.status !== runFilterStatus) return false;
                 if (runFilterResource && r.resource_id !== runFilterResource) return false;
                 if (query) {
@@ -3019,6 +3116,13 @@
                 return true;
             });
             renderRunsTable(filtered);
+        }
+
+        function toggleRunTrashMode() {
+            runTrashMode = !runTrashMode;
+            selectedCompareRunIds.clear();
+            refreshFilterLabels();
+            applyRunFilters();
         }
 
         function applyExecFilters() {
@@ -3093,6 +3197,54 @@
             });
         }
 
+        async function archiveRun(runId, name) {
+            openConfirmModal({
+                title: t('runs.archiveTitle'),
+                message: t('runs.archiveMessage', { name: name || runId }),
+                actionLabel: t('runs.archiveAction'),
+                action: async () => {
+                    await fetch(API + '/runs/' + encodeURIComponent(runId) + '/archive', {
+                        method: 'POST',
+                        headers: authHeaders()
+                    });
+                    if (currentDetailRunId === runId) closeDetail();
+                    await loadData();
+                }
+            });
+        }
+
+        async function restoreRun(runId, name) {
+            openConfirmModal({
+                title: t('runs.restoreTitle'),
+                message: t('runs.restoreMessage', { name: name || runId }),
+                actionLabel: t('runs.restoreAction'),
+                action: async () => {
+                    await fetch(API + '/runs/' + encodeURIComponent(runId) + '/restore', {
+                        method: 'POST',
+                        headers: authHeaders()
+                    });
+                    if (currentDetailRunId === runId) closeDetail();
+                    await loadData();
+                }
+            });
+        }
+
+        async function deleteRunLogically(runId, name) {
+            openConfirmModal({
+                title: t('runs.deleteTitle'),
+                message: t('runs.deleteMessage', { name: name || runId }),
+                actionLabel: t('runs.deleteAction'),
+                action: async () => {
+                    await fetch(API + '/runs/' + encodeURIComponent(runId), {
+                        method: 'DELETE',
+                        headers: authHeaders()
+                    });
+                    if (currentDetailRunId === runId) closeDetail();
+                    await loadData();
+                }
+            });
+        }
+
         // --- Run Detail ---
         async function showRunDetail(id) {
             logSockets.forEach(sock => sock.close());
@@ -3114,6 +3266,12 @@
             }
             const resLabel = resourceLabel(run.resource_id);
             const isFavorite = bookmarkedRunIds.has(run.id);
+            const activeRun = run.status === 'running' || run.status === 'starting';
+            const detailActions = runTrashMode
+                ? `<button class="btn-secondary text-sm" onclick="restoreRun('${escAttr(run.id)}','${escAttr(run.name || run.id)}')">${escHTML(t('runs.restoreAction'))}</button>
+                   <button class="btn-danger text-sm" onclick="deleteRunLogically('${escAttr(run.id)}','${escAttr(run.name || run.id)}')">${escHTML(t('runs.deleteAction'))}</button>`
+                : `<button class="btn-secondary text-sm" onclick="toggleRunBookmark('${escAttr(run.id)}')">${escHTML(isFavorite ? t('runs.removeFavorite') : t('runs.addFavorite'))}</button>
+                   ${activeRun ? '' : `<button class="btn-secondary text-sm" onclick="archiveRun('${escAttr(run.id)}','${escAttr(run.name || run.id)}')">${escHTML(t('runs.archiveAction'))}</button>`}`;
 
             document.getElementById('detail-title').textContent = run.name || run.id;
             document.getElementById('detail-content').innerHTML = `
@@ -3124,7 +3282,7 @@
                             ${runKindPill(run.kind || 'formal')}
                             <span class="mono">${escHTML(run.id)}</span>
                         </div>
-                        <button class="btn-secondary text-sm" onclick="toggleRunBookmark('${escAttr(run.id)}')">${escHTML(isFavorite ? t('runs.removeFavorite') : t('runs.addFavorite'))}</button>
+                        <div class="flex gap-2 flex-wrap justify-end">${detailActions}</div>
                     </div>
                     <div class="detail-grid">
                         <div><div class="detail-label">${escHTML(t('table.resource'))}</div><div class="detail-value" title="${escAttr(run.resource_id || '')}">${escHTML(resLabel)}</div></div>
@@ -3226,21 +3384,18 @@
             const target = document.getElementById('raw-log-streams');
             if (!target) return;
             target.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('state.loading')) + '</div>';
-            const [terminalRaw, logsRaw, errLogsRaw] = await Promise.all([
-                fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=terminal&limit=1000&tail=true').catch(() => ({ lines: [] })),
+            const [logsRaw, errLogsRaw] = await Promise.all([
                 fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stdout&limit=1000&tail=true'),
                 fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stderr&limit=1000&tail=true')
             ]);
             if (currentDetailRunId !== runId) return;
-            const terminalLogs = asObject(terminalRaw);
             const logs = asObject(logsRaw);
             const errLogs = asObject(errLogsRaw);
             target.innerHTML = `
-                ${renderTerminalLogBlock(terminalLogs, renderCombinedLogBlock(logs, errLogs, 'log-pane-combined-raw'), 'log-pane-terminal-raw')}
-                <details class="raw-log-streams">
+                <details class="raw-log-streams" open>
                     <summary>${escHTML(t('logs.rawStreams'))}</summary>
-                    ${renderLogBlock(runId, 'stdout', logs, '', true)}
-                    ${renderLogBlock(runId, 'stderr', errLogs, 'color:#e8a090', true)}
+                    ${renderLogBlock(runId, 'stdout', logs, '', true, '-raw')}
+                    ${renderLogBlock(runId, 'stderr', errLogs, 'color:#e8a090', true, '-raw')}
                 </details>`;
         }
 

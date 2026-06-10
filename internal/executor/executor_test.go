@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,12 +52,76 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 		`mkdir -p "$(dirname -- "$AEXP_UI_EVENTS")"`,
 		`cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`,
 		`export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`,
+		`export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"`,
 		"def metric(name, value, **fields):",
 		"python 'train.py'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("command script missing %q\n%s", want, script)
 		}
+	}
+}
+
+func TestWrapperScriptStreamsStdoutBeforeNewline(t *testing.T) {
+	bash, err := osexec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	runDir := t.TempDir()
+	commandPath := filepath.Join(runDir, "command.sh")
+	if err := os.WriteFile(commandPath, []byte("#!/usr/bin/env bash\nprintf 'progress 1\\r'\nsleep 0.4\nprintf 'progress 2\\r'\nsleep 0.1\nprintf '\\ndone\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write command.sh: %v", err)
+	}
+	wrapperPath := filepath.Join(runDir, "wrapper.sh")
+	if err := os.WriteFile(wrapperPath, []byte(WrapperScript), 0o755); err != nil {
+		t.Fatalf("write wrapper.sh: %v", err)
+	}
+
+	cmd := osexec.Command(bash, wrapperPath, runDir)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wrapper: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	stdoutPath := filepath.Join(runDir, "logs", "stdout.log")
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		data, _ := os.ReadFile(stdoutPath)
+		if strings.Contains(string(data), "progress 1\r") {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("stdout.log did not receive carriage-return progress before newline; got %q", string(data))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wrapper exited: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("wrapper did not exit")
+	}
+
+	terminalPath := filepath.Join(runDir, "logs", "terminal.log")
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for {
+		terminal, err := os.ReadFile(terminalPath)
+		if err != nil {
+			t.Fatalf("read terminal.log: %v", err)
+		}
+		if strings.Contains(string(terminal), "[stdout] progress 1") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal.log missing prefixed progress line:\n%s", string(terminal))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

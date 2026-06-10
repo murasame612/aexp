@@ -15,30 +15,8 @@ RUN_DIR="$1"
 
 mkdir -p "$RUN_DIR/logs"
 : > "$RUN_DIR/logs/terminal.log"
-STDOUT_PIPE="$RUN_DIR/logs/stdout.pipe.$$"
-STDERR_PIPE="$RUN_DIR/logs/stderr.pipe.$$"
-rm -f "$STDOUT_PIPE" "$STDERR_PIPE"
-mkfifo "$STDOUT_PIPE" "$STDERR_PIPE"
-cleanup() {
-  rm -f "$STDOUT_PIPE" "$STDERR_PIPE"
-}
-trap cleanup EXIT
-
-{
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line" | tee -a "$RUN_DIR/logs/stdout.log"
-    printf '[stdout] %s\n' "$line" >> "$RUN_DIR/logs/terminal.log"
-  done < "$STDOUT_PIPE"
-} &
-STDOUT_LOGGER=$!
-
-{
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line" | tee -a "$RUN_DIR/logs/stderr.log" >&2
-    printf '[stderr] %s\n' "$line" >> "$RUN_DIR/logs/terminal.log"
-  done < "$STDERR_PIPE"
-} &
-STDERR_LOGGER=$!
+: > "$RUN_DIR/logs/stdout.log"
+: > "$RUN_DIR/logs/stderr.log"
 
 echo $$ > "$RUN_DIR/pid"
 date +%s > "$RUN_DIR/started_at"
@@ -71,10 +49,9 @@ echo "running" > "$RUN_DIR/status"
 
   exit "$EXIT_CODE"
 
-) > "$STDOUT_PIPE" 2> "$STDERR_PIPE"
+) > >(tee -a "$RUN_DIR/logs/stdout.log" >(tr '\r' '\n' | awk '{ print "[stdout] " $0; fflush() }' >> "$RUN_DIR/logs/terminal.log")) \
+  2> >(tee -a "$RUN_DIR/logs/stderr.log" >(tr '\r' '\n' | awk '{ print "[stderr] " $0; fflush() }' >> "$RUN_DIR/logs/terminal.log") >&2)
 WRAPPER_EXIT=$?
-wait "$STDOUT_LOGGER" 2>/dev/null || true
-wait "$STDERR_LOGGER" 2>/dev/null || true
 exit "$WRAPPER_EXIT"
 `
 

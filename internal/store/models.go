@@ -61,6 +61,8 @@ type Run struct {
 	CreatedAt         time.Time     `json:"created_at"`
 	StartedAt         sql.NullTime  `json:"started_at"`
 	FinishedAt        sql.NullTime  `json:"finished_at"`
+	ArchivedAt        sql.NullTime  `json:"archived_at"`
+	DeletedAt         sql.NullTime  `json:"deleted_at"`
 }
 
 // ProjectProfile captures how a project directory should be entered on a resource.
@@ -89,6 +91,8 @@ type ProjectProfile struct {
 type RunFilter struct {
 	ResourceID string
 	Status     string
+	Trash      bool
+	Deleted    bool
 	Limit      int
 	Offset     int
 }

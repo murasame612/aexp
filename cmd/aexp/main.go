@@ -23,6 +23,7 @@ import (
 	"github.com/ziwu/aexp/internal/api"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/explore"
+	"github.com/ziwu/aexp/internal/mcp"
 	"github.com/ziwu/aexp/internal/monitor"
 	"github.com/ziwu/aexp/internal/store"
 )
@@ -57,6 +58,7 @@ Agent workflow:
 		agentCmd(),
 		doctorCmd(),
 		eventCmd(),
+		mcpCmd(),
 		projectCmd(),
 		syncCmd(),
 		serveCmd(),
@@ -73,6 +75,34 @@ Agent workflow:
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// --- mcp ---
+
+func mcpCmd() *cobra.Command {
+	var binary string
+
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Run the aexp MCP server over stdio",
+		Long: `Run a Model Context Protocol server over stdio.
+
+The MCP server exposes agent-facing aexp tools while delegating execution to
+the current aexp binary. Short commands use "aexp exec", which can reuse a
+local "aexp serve" API process when one is already running.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if binary == "" {
+				exe, err := os.Executable()
+				if err != nil {
+					return fmt.Errorf("find current executable: %w", err)
+				}
+				binary = exe
+			}
+			return mcp.NewServer(binary).Serve(cmd.Context(), os.Stdin, os.Stdout)
+		},
+	}
+	cmd.Flags().StringVar(&binary, "binary", "", "aexp binary to wrap (defaults to the current executable)")
+	return cmd
 }
 
 // --- serve ---
@@ -3359,6 +3389,9 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 	cmd.AddCommand(runRefreshCmd())
 	cmd.AddCommand(runLogsCmd())
 	cmd.AddCommand(runCancelCmd())
+	cmd.AddCommand(runArchiveCmd())
+	cmd.AddCommand(runRestoreCmd())
+	cmd.AddCommand(runDeleteCmd())
 	cmd.AddCommand(runMarkCmd())
 	cmd.AddCommand(runMarksCmd())
 
@@ -3497,6 +3530,7 @@ func runListCmd() *cobra.Command {
 	var status, resource string
 	var asJSON bool
 	var noRefresh bool
+	var trash, deleted bool
 	var refreshTimeoutSec int
 
 	cmd := &cobra.Command{
@@ -3506,7 +3540,7 @@ func runListCmd() *cobra.Command {
 			db := openDB()
 			defer db.Close()
 
-			filter := store.RunFilter{Status: status, Limit: 50}
+			filter := store.RunFilter{Status: status, Limit: 50, Trash: trash, Deleted: deleted}
 			if resource != "" {
 				res, _ := db.GetResourceByName(cmd.Context(), resource)
 				if res != nil {
@@ -3556,6 +3590,8 @@ func runListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&status, "status", "", "Filter by status")
 	cmd.Flags().StringVar(&resource, "resource", "", "Filter by resource name")
+	cmd.Flags().BoolVar(&trash, "trash", false, "List runs in trash")
+	cmd.Flags().BoolVar(&deleted, "deleted", false, "List logically deleted runs")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&noRefresh, "no-refresh", false, "Do not refresh running/starting runs before listing")
 	cmd.Flags().IntVar(&refreshTimeoutSec, "refresh-timeout", 5, "Timeout per running/starting status refresh in seconds")
@@ -3902,6 +3938,96 @@ func runCancelCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func runArchiveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "archive [run_id]",
+		Aliases: []string{"trash"},
+		Short:   "Move a finished run to trash",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			run, err := db.GetRun(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %s not found", args[0])
+			}
+			if runIsActive(run) {
+				return fmt.Errorf("run %s is %s; active runs cannot be moved to trash", run.ID, run.Status)
+			}
+			if err := db.ArchiveRun(cmd.Context(), run.ID); err != nil {
+				return err
+			}
+			fmt.Printf("Moved run %s to trash\n", run.ID)
+			return nil
+		},
+	}
+}
+
+func runRestoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore [run_id]",
+		Short: "Restore a run from trash",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			run, err := db.GetRun(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %s not found", args[0])
+			}
+			if err := db.RestoreRun(cmd.Context(), run.ID); err != nil {
+				return err
+			}
+			fmt.Printf("Restored run %s\n", run.ID)
+			return nil
+		},
+	}
+}
+
+func runDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "delete [run_id]",
+		Aliases: []string{"rm"},
+		Short:   "Logically delete a run from trash",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+
+			run, err := db.GetRun(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %s not found", args[0])
+			}
+			if runIsActive(run) {
+				return fmt.Errorf("run %s is %s; active runs cannot be deleted", run.ID, run.Status)
+			}
+			if !run.ArchivedAt.Valid && !run.DeletedAt.Valid {
+				return fmt.Errorf("run %s is not in trash; run `aexp run archive %s` first", run.ID, run.ID)
+			}
+			if err := db.DeleteRunLogically(cmd.Context(), run.ID); err != nil {
+				return err
+			}
+			fmt.Printf("Logically deleted run %s\n", run.ID)
+			return nil
+		},
+	}
+}
+
+func runIsActive(run *store.Run) bool {
+	return run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting
 }
 
 func runMarkCmd() *cobra.Command {

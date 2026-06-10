@@ -129,6 +129,56 @@ func TestRunCRUD(t *testing.T) {
 	}
 }
 
+func TestRunTrashLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.CreateResource(ctx, &Resource{ID: "rsrc_trash", Name: "trash-res", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle})
+	for _, run := range []*Run{
+		{ID: "run_keep", ResourceID: "rsrc_trash", Status: RunStatusSucceeded, Command: "keep"},
+		{ID: "run_trash", ResourceID: "rsrc_trash", Status: RunStatusSucceeded, Command: "trash"},
+	} {
+		if err := s.CreateRun(ctx, run); err != nil {
+			t.Fatalf("CreateRun(%s): %v", run.ID, err)
+		}
+	}
+
+	if err := s.ArchiveRun(ctx, "run_trash"); err != nil {
+		t.Fatalf("ArchiveRun: %v", err)
+	}
+	visible, _ := s.ListRuns(ctx, RunFilter{})
+	if len(visible) != 1 || visible[0].ID != "run_keep" {
+		t.Fatalf("visible runs = %#v, want run_keep only", visible)
+	}
+	trash, _ := s.ListRuns(ctx, RunFilter{Trash: true})
+	if len(trash) != 1 || trash[0].ID != "run_trash" || !trash[0].ArchivedAt.Valid {
+		t.Fatalf("trash runs = %#v, want archived run_trash", trash)
+	}
+
+	if err := s.RestoreRun(ctx, "run_trash"); err != nil {
+		t.Fatalf("RestoreRun: %v", err)
+	}
+	visible, _ = s.ListRuns(ctx, RunFilter{})
+	if len(visible) != 2 {
+		t.Fatalf("visible after restore = %d, want 2", len(visible))
+	}
+
+	if err := s.ArchiveRun(ctx, "run_trash"); err != nil {
+		t.Fatalf("ArchiveRun again: %v", err)
+	}
+	if err := s.DeleteRunLogically(ctx, "run_trash"); err != nil {
+		t.Fatalf("DeleteRunLogically: %v", err)
+	}
+	trash, _ = s.ListRuns(ctx, RunFilter{Trash: true})
+	if len(trash) != 0 {
+		t.Fatalf("trash after delete = %#v, want empty", trash)
+	}
+	deleted, _ := s.ListRuns(ctx, RunFilter{Deleted: true})
+	if len(deleted) != 1 || deleted[0].ID != "run_trash" || !deleted[0].DeletedAt.Valid {
+		t.Fatalf("deleted runs = %#v, want deleted run_trash", deleted)
+	}
+}
+
 func TestSnapshotAndLogs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
