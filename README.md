@@ -1,123 +1,394 @@
-# aexp — Agent Experiment Control Plane
+# aexp
 
-> 面向人-Agent 协作的科研实验运行中间层。
-> 用统一的 CLI / API / Web / MCP 接口管理异构计算资源上的实验运行、日志、状态、指标和产物。
+Agent-friendly experiment control for SSH machines.
 
-## 为什么需要 aexp？
+`aexp` gives humans and coding agents a small control plane for running research
+experiments on remote GPU boxes. It keeps the convenience of SSH, but adds run
+records, tmux-backed execution, live logs, resource monitoring, structured
+metrics, and an audit trail.
 
-Agent 跑科研实验的现状：SSH 进容器，手动 `nohup`，tmux 里乱跑命令，日志要自己 tail，GPU 要自己查，跑完结果没人记录。Agent 换个会话就忘了上一次跑了什么。
+![aexp dashboard](doc/imgs/main1_EN.png)
 
-aexp 解决这个问题：**给 Agent 和人一个结构化的实验操作系统，而不是裸 shell。**
+## Why aexp?
 
-`aexp` 运行在本地控制端，通过 SSH 调度到已注册的 resource；远程机器不需要安装 `aexp`。
+Research experiments often start as a pile of SSH sessions, `nohup` commands,
+tmux panes, copied log paths, and half-remembered GPU state. That is painful for
+humans and worse for agents: once the chat or terminal session changes, the
+agent no longer knows what was submitted, where the logs are, or whether a run
+is still alive.
 
-```
-Agent (MCP)  /  人 (CLI / Web UI)
-            │
-   ┌────────▼────────┐
-   │   aexp server    │   ← 统一控制平面
-   └────────┬─────────┘
-            │ SSH / local
-   ┌────────▼─────────┐
-   │ 异构计算资源       │   ← 自己服务器、导师服务器、容器、云算力、Slurm
-   │ run via tmux      │
-   └──────────────────┘
-```
+`aexp` makes those actions explicit:
 
-## 核心概念
+| Need | With raw SSH | With aexp |
+|---|---|---|
+| Run a quick inspection command | `ssh host ...` | `aexp exec --resource gpu -- ...` |
+| Start a long experiment | manual `tmux` / `nohup` | `aexp run submit ...` |
+| Find logs later | remember paths | `aexp run logs <run_id>` |
+| See GPU/CPU/RAM | run remote commands | Web dashboard and resource snapshots |
+| Resume after context loss | reconstruct from shell history | query runs, events, metrics, and marks |
+| Keep setup/smoke/formal runs separate | naming convention | first-class `--kind setup|smoke|formal|ablation` |
 
-| 概念 | 说明 |
-|---|---|
-| **Resource** | 一台可用的计算资源（SSH 服务器、Docker 容器、Slurm 节点等） |
-| **Run** | 一次实验执行，绑定到某个 resource，有完整的生命周期 |
-| **Snapshot** | 某个 resource 在某时刻的 CPU/GPU/内存状态 |
-| **Agent Event** | Agent 每一步操作的审计日志（谁、为什么、做了什么） |
+Today `aexp` targets SSH resources. The schema leaves room for Docker, Slurm,
+Kubernetes, and local execution, but the open-source path is intentionally
+simple: one local binary, one SQLite database, remote machines with SSH + tmux.
 
-完整概念定义见 [concepts.md](docs/concepts.md)。
+## What It Does
 
-## 快速开始
+- Register SSH resources with root directories, default Conda environments, GPU
+  labels, SOCKS proxies, or ProxyCommand.
+- Submit long-running runs into deterministic remote tmux sessions.
+- Capture stdout, stderr, exit code, timestamps, and live terminal logs.
+- Follow logs from CLI or browser while the run is still active.
+- Run short one-shot commands without creating a formal run record.
+- Discover project runtime profiles: `.venv`, `uv run`, Conda, Python, Torch,
+  CUDA, candidate logs, and candidate metric files.
+- Sync local project files to a resource with rsync.
+- Emit JSONL UI events from scripts for progress, params, notes, and metrics.
+- Store resources, runs, events, marks, and history in local SQLite.
+
+## Install
+
+### From Source
 
 ```bash
-# 初始化
-aexp init
+git clone https://github.com/ziwu/aexp.git
+cd aexp
+go build -o aexp ./cmd/aexp
+./aexp --help
+```
 
-# 注册计算资源
+### With `go install`
+
+```bash
+go install github.com/ziwu/aexp/cmd/aexp@latest
+aexp --help
+```
+
+Remote machines do not need `aexp`. They need:
+
+- SSH access from your local machine
+- `bash`
+- `tmux`
+- your experiment runtime, such as Python, uv, Conda, CUDA, or project scripts
+- optional: `rsync` for project sync
+
+## Quick Start
+
+Initialize local state:
+
+```bash
+aexp init
+```
+
+Explore a remote host before registering it:
+
+```bash
+aexp resource explore 192.168.1.100 --user root
+```
+
+Add a resource:
+
+```bash
 aexp resource add \
-  --name mu-tslib \
-  --type ssh \
+  --name gpu-box \
   --host 192.168.1.100 \
   --user root \
   --root-dir /workspace \
-  --tags "4090,timeseries"
-
-# 提交实验
-aexp run submit \
-  --resource mu-tslib \
-  --name "ECL-iTransformer" \
-  --cwd /workspace/Time-Series-Library \
-  -- python train.py --data ECL --model iTransformer
-
-# 查看日志
-aexp run logs r_Yn7pL2wE
-
-# 启动 Web 仪表盘（默认只监听本机，localhost 免 token）
-aexp serve --port 8080
-
-# 后台运行
-aexp serve --daemon
+  --conda-env research \
+  --gpu-indices 0
 ```
 
-## 项目级工作流
-
-对 agent 来说，推荐把固定的 resource、cwd、env、sync、setup/train recipe 写进项目里的 `.aexp.yaml`：
+Run a quick inspection command:
 
 ```bash
-aexp project init --resource mu --cwd /remote/project --dry-run
+aexp exec --resource gpu-box -- nvidia-smi
+aexp exec --resource gpu-box --cwd /workspace/project --project-env auto -- 'python -V'
+```
+
+Submit a tracked experiment:
+
+```bash
+aexp run submit \
+  --resource gpu-box \
+  --name ecl-itransformer \
+  --kind formal \
+  --cwd /workspace/Time-Series-Library \
+  --project-env auto \
+  --gpu-index 0 \
+  --log-paths 'logs/**/*.log' \
+  --metric-paths 'results/**/*.json' \
+  -- python train.py --data ECL --model iTransformer
+```
+
+Watch it:
+
+```bash
+aexp run list
+aexp run status run_xxx --short
+aexp run logs run_xxx --follow
+```
+
+Open the dashboard:
+
+```bash
+aexp serve --port 8080
+```
+
+Then visit `http://localhost:8080`.
+
+Localhost access is token-free by default. If you bind to a non-local address,
+remote browser/API access requires the API token printed by the server.
+
+## Common Workflows
+
+### One-Shot Remote Checks
+
+Use `exec` for bounded inspection and operations. It does not create a run.
+
+```bash
+aexp exec --resource gpu-box -- 'df -h /workspace'
+aexp exec --resource gpu-box --json -- 'du -sh /workspace/.aexp/runs/*'
+aexp exec --resource gpu-box --timeout 120 -- 'find /workspace -name "*.pt" | wc -l'
+```
+
+If a command looks like a training job, `aexp exec` refuses it unless you pass
+`--force`. Use `run submit` for long-running experiments.
+
+### Long-Running Experiments
+
+`run submit` creates a durable run:
+
+- a local SQLite record
+- a remote directory under `<root-dir>/.aexp/runs/<run_id>`
+- a remote `command.sh`
+- a deterministic tmux session named `aexp_<run_id>`
+- stdout/stderr/terminal logs
+- exit status and timestamps
+
+Structured argv mode is the default:
+
+```bash
+aexp run submit --resource gpu-box -- python train.py --epochs 20
+```
+
+Use shell mode only when you need shell syntax:
+
+```bash
+aexp run submit \
+  --resource gpu-box \
+  --shell -- 'echo start; python train.py 2>&1 | tee train.log'
+```
+
+Use run kinds deliberately:
+
+```bash
+aexp run submit --kind setup --no-gpu --resource gpu-box --shell -- 'uv sync'
+aexp run submit --kind smoke --resource gpu-box -- python train.py --epochs 1
+aexp run submit --kind formal --resource gpu-box -- python train.py --epochs 100
+```
+
+Smoke runs are connectivity or wiring checks. Do not treat them as experimental
+results.
+
+### Project Configs
+
+For repeated project work, put resource, cwd, sync settings, and recipes in a
+project-local `.aexp.yaml`.
+
+```bash
+aexp project init --resource gpu-box --cwd /workspace/project
 aexp project doctor
 aexp project sync --dry-run
-aexp project run setup
+aexp project sync
+aexp project run setup --dry-run
 aexp project run train
 ```
 
-示例见 [examples/python-ml](examples/python-ml)。原则是：实验参数仍放在项目自己的 `configs/` 和 `scripts/`，`.aexp.yaml` 只保存 aexp 该怎么同步、怎么进入环境、怎么提交 run。
+See [examples/python-ml](examples/python-ml) for a minimal project layout.
 
-## 文档
+### Structured Metrics and Progress
 
-| 文档 | 内容 |
-|---|---|
-| [USAGE.md](USAGE.md) | **使用指南 — 所有命令和参数说明** |
-| [testing.md](docs/testing.md) | 编译二进制、临时 smoke 测试环境、如何查看测试 DB |
-| [blueprint.md](docs/blueprint.md) | 架构总览、MVP 范围、技术栈、文件结构 |
-| [concepts.md](docs/concepts.md) | Resource / Run / Snapshot / Artifact / Agent Event 定义 |
-| [mod-store.md](docs/mod-store.md) | SQLite schema、migration、repository 接口 |
-| [mod-resource.md](docs/mod-resource.md) | 异构资源注册、认证、健康检查 |
-| [mod-executor.md](docs/mod-executor.md) | tmux 执行、wrapper script、生命周期状态机 |
-| [mod-logger.md](docs/mod-logger.md) | stdout/stderr 捕获、日志 tail、日志游标 |
-| [mod-monitor.md](docs/mod-monitor.md) | CPU/GPU/内存轮询、WebSocket 推送、健康度 |
-| [mod-api.md](docs/mod-api.md) | REST 端点、WebSocket 协议 |
-| [mod-web.md](docs/mod-web.md) | 仪表盘页面线框图 |
-| [mod-cli.md](docs/mod-cli.md) | CLI 命令、JSON 输出、配置文件 |
-| [mod-agent.md](docs/mod-agent.md) | MCP 工具定义、Agent 调用规范 |
-| [mod-security.md](docs/mod-security.md) | SSH key 策略、命令沙箱、路径限制 |
-| [deployment.md](docs/deployment.md) | 部署方式、systemd、数据备份 |
+Inside a submitted run, `aexp` sets `AEXP_RUN_ID`, `AEXP_RUN_DIR`, and
+`AEXP_UI_EVENTS`. Python scripts can write structured JSONL events with the
+generated helper:
 
-## 技术栈
+```python
+from aexp_events import metric, progress, param, note
 
-- **Go 1.22+** — 单二进制、并发 SSH、WebSocket
-- **SQLite** (modernc.org/sqlite) — 零部署，单文件
-- **cobra** — CLI 框架
-- **chi** — 轻量 HTTP router
-- **gorilla/websocket** — 实时日志流
-- **嵌入式 HTML** — 无构建步骤，编译进二进制
+param("model", "iTransformer")
+progress("epoch", current=1, total=20)
+metric("val/loss", 0.123, step=1)
+note("first checkpoint written")
+```
 
-## MVP 范围
+The dashboard renders these events as progress cards, metric cards, and charts.
 
-Phase 1（当前）：
-- [x] 注册 SSH 资源
-- [x] tmux 执行实验 + wrapper script 捕获 exit code
-- [x] 实时日志 tail（CLI + WebSocket）
-- [x] CPU/GPU/内存监控
-- [x] Web 仪表盘
-- [x] Agent 审计日志（agent_events）
+![metrics](doc/imgs/mertics_card.png)
 
-不包括（Phase 2+）：MCP server、自动创建容器、MLflow 集成、调度器、多用户认证。
+### Web Dashboard
+
+The dashboard is embedded in the Go binary. There is no frontend build step.
+
+![runs](doc/imgs/runs.png)
+
+It includes:
+
+- resource cards with CPU/RAM/GPU snapshots
+- run list and run details
+- live stdout/stderr/terminal logs
+- structured progress and metrics
+- agent findings and run marks
+
+![logs](doc/imgs/logs.png)
+
+## CLI Overview
+
+```text
+aexp init
+aexp serve [--port 8080] [--daemon]
+aexp mcp
+
+aexp resource explore <host>
+aexp resource add --name <name> --host <host> --root-dir <dir>
+aexp resource list [--json] [--verbose]
+aexp resource update <name> ...
+aexp resource remove <name>
+
+aexp exec --resource <name> -- <command>
+aexp run submit --resource <name> [flags] -- <program> [args...]
+aexp run list [--json]
+aexp run status <run_id> [--short] [--json]
+aexp run logs <run_id> [--follow] [--source stdout|stderr]
+aexp run cancel <run_id>
+aexp run mark <run_id> --title ... --reason ... --evidence ...
+
+aexp project init
+aexp project doctor
+aexp project sync
+aexp project run <recipe>
+
+aexp sync doctor --resource <name> <source> <target>
+aexp sync push --resource <name> <source> <target>
+aexp sync pull --resource <name> <source> <target>
+```
+
+For the full command reference, see [USAGE.md](USAGE.md).
+
+## MCP For Agents
+
+`aexp` can run as a stdio MCP server:
+
+```bash
+aexp mcp
+```
+
+The MCP server exposes structured tools for agents:
+
+- `aexp_agent_card`
+- `aexp_init`
+- `aexp_project_init`
+- `aexp_list_resources`
+- `aexp_doctor`
+- `aexp_resource_explore`
+- `aexp_resource_add`
+- `aexp_resource_add_local`
+- `aexp_resource_update`
+- `aexp_resource_remove`
+- `aexp_exec`
+- `aexp_submit_run`
+- `aexp_list_runs`
+- `aexp_refresh_runs`
+- `aexp_get_run_status`
+- `aexp_tail_run_logs`
+- `aexp_cancel_run`
+- `aexp_mark_run`
+- `aexp_list_run_marks`
+- `aexp_exec_history`
+- `aexp_exec_show`
+- `aexp_event_metric`
+- `aexp_event_progress`
+- `aexp_event_param`
+- `aexp_event_note`
+- `aexp_project_detect`
+- `aexp_project_doctor`
+- `aexp_project_run`
+- `aexp_project_sync`
+- `aexp_sync_doctor`
+- `aexp_sync_push`
+- `aexp_sync_pull`
+- `aexp_sync_remote_pull`
+- `aexp_cli`
+
+The current implementation wraps the local `aexp` binary instead of duplicating
+executor logic. That keeps behavior identical to the CLI: short commands still
+use `aexp exec`, including the local API fast path that can reuse a warm
+`aexp serve` SSH pool, while long tasks go through tracked `run submit`.
+`aexp_cli` is deliberately restricted to read-only commands; use the dedicated
+tools for exec, submit, cancel, sync, resources, projects, and marks. Agents
+should not need to fall back to raw CLI for normal aexp operations.
+
+## Data Model
+
+`aexp` stores its local control-plane state in SQLite:
+
+```text
+~/.aexp/aexp.db
+```
+
+Remote run files live under the registered resource root:
+
+```text
+<root-dir>/.aexp/runs/<run_id>/
+  command.sh
+  status
+  exit_code
+  started_at
+  finished_at
+  logs/
+    stdout.log
+    stderr.log
+    terminal.log
+```
+
+## Safety Model
+
+`aexp` is a personal or small-team research tool, not a multi-tenant scheduler.
+
+- It executes commands as the SSH user you configured.
+- `--cwd` is constrained under the resource `root_dir` for aexp-managed paths.
+- Dangerous command patterns such as `rm -rf /` are rejected.
+- Localhost browser access is convenient by default; remote access requires the
+  API token.
+- Binding `aexp serve --host 0.0.0.0` exposes the service. Put it behind SSH,
+  a VPN, or another trusted access layer.
+
+## Documentation
+
+- [USAGE.md](USAGE.md): full user guide and command examples
+- [docs/concepts.md](docs/concepts.md): resources, runs, snapshots, events
+- [docs/development.md](docs/development.md): architecture, implementation notes, module map
+- [docs/deployment.md](docs/deployment.md): daemon and deployment notes
+- [docs/testing.md](docs/testing.md): build and smoke testing workflow
+- [docs/mod-security.md](docs/mod-security.md): security boundaries
+- [docs/mod-api.md](docs/mod-api.md): REST and WebSocket API
+- [docs/mod-agent.md](docs/mod-agent.md): MCP tool surface
+
+## Development
+
+```bash
+go test ./...
+go build -o aexp ./cmd/aexp
+```
+
+This repository intentionally keeps the binary self-contained: Go backend,
+embedded HTML/CSS/JS dashboard, SQLite storage, and no Node build pipeline.
+
+## Status
+
+`aexp` is early-stage software built from real research workflow pain. It is
+useful today for SSH-based experiment tracking, but expect rough edges around
+multi-user deployments, non-SSH backends, and integration with external
+experiment trackers.
+
+Contributions that improve reliability, documentation, provider support, and
+agent-oriented workflows are welcome.
