@@ -62,7 +62,9 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 	client, ok := p.conns[connKey]
 	p.mu.RUnlock()
 
-	if ok && p.isAliveContext(ctx, client) {
+	if ok {
+		// Reuse optimistically. Probing with SendRequest can spin hot on half-dead
+		// SSH muxes; NewSession below removes stale connections and retries once.
 		return client, nil
 	}
 
@@ -70,7 +72,7 @@ func (p *SSHPool) Get(ctx context.Context, host string, port int, user string, k
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if client, ok = p.conns[connKey]; ok && p.isAliveContext(ctx, client) {
+	if client, ok = p.conns[connKey]; ok {
 		return client, nil
 	}
 
@@ -246,29 +248,6 @@ func (p *SSHPool) RemoveByHost(host string, port int) {
 		}
 	}
 	p.mu.Unlock()
-}
-
-func (p *SSHPool) isAliveContext(ctx context.Context, client *ssh.Client) bool {
-	timeout := p.timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		return err == nil
-	case <-checkCtx.Done():
-		_ = client.Close()
-		return false
-	}
 }
 
 // Exec runs a command and returns stdout+stderr as strings.
