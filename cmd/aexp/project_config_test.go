@@ -108,6 +108,7 @@ func TestProjectInitDryRun(t *testing.T) {
 		"resource: mu",
 		"cwd: /remote/project",
 		"sync:",
+		"events helper: " + filepath.Join(resolvedDir, "aexp_events.py"),
 		"target: /remote/project",
 		"setup:",
 		"command: python -m pip install -r requirements.txt",
@@ -165,6 +166,19 @@ func TestProjectInitWritesAndRefusesOverwrite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, ".aexp.yaml")); err != nil {
 		t.Fatalf("expected .aexp.yaml: %v", err)
 	}
+	helperPath := filepath.Join(dir, "aexp_events.py")
+	helper, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatalf("expected aexp_events.py: %v", err)
+	}
+	for _, want := range []string{
+		"def metric(name, value, **fields):",
+		`os.environ.get("AEXP_UI_EVENTS", "")`,
+	} {
+		if !strings.Contains(string(helper), want) {
+			t.Fatalf("events helper missing %q:\n%s", want, helper)
+		}
+	}
 	withWorkingDir(t, dir, func() {
 		out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project")
 		if err == nil {
@@ -174,6 +188,21 @@ func TestProjectInitWritesAndRefusesOverwrite(t *testing.T) {
 			t.Fatalf("expected overwrite warning, got err=%v out=%s", err, out)
 		}
 	})
+}
+
+func TestProjectInitCanSkipEventsHelper(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir, func() {
+		if out, err := runProjectInitForTest("--resource", "mu", "--cwd", "/remote/project", "--no-events-helper"); err != nil {
+			t.Fatalf("project init failed: %v\n%s", err, out)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(dir, ".aexp.yaml")); err != nil {
+		t.Fatalf("expected .aexp.yaml: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "aexp_events.py")); !os.IsNotExist(err) {
+		t.Fatalf("expected no aexp_events.py, stat err=%v", err)
+	}
 }
 
 func TestTopLevelInitProjectDryRun(t *testing.T) {
@@ -208,6 +237,9 @@ func TestTopLevelInitProjectDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".aexp.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("dry-run should not write .aexp.yaml, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "aexp_events.py")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not write aexp_events.py, stat err=%v", err)
 	}
 }
 

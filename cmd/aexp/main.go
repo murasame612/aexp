@@ -856,21 +856,22 @@ type projectFileSync struct {
 func projectInitCmd() *cobra.Command {
 	var resourceName, cwd, envStrategy, condaEnv, outputPath string
 	var defaultGPU int
-	var force, dryRun bool
+	var force, dryRun, noEventsHelper bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a project .aexp.yaml recipe file",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProjectInit(projectInitOptions{
-				Resource:   resourceName,
-				Cwd:        cwd,
-				Env:        envStrategy,
-				CondaEnv:   condaEnv,
-				OutputPath: outputPath,
-				DefaultGPU: defaultGPU,
-				Force:      force,
-				DryRun:     dryRun,
+				Resource:       resourceName,
+				Cwd:            cwd,
+				Env:            envStrategy,
+				CondaEnv:       condaEnv,
+				OutputPath:     outputPath,
+				DefaultGPU:     defaultGPU,
+				Force:          force,
+				DryRun:         dryRun,
+				NoEventsHelper: noEventsHelper,
 			})
 		},
 	}
@@ -882,18 +883,20 @@ func projectInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputPath, "output", "", "Output config path (default: .aexp.yaml)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the config without writing it")
+	cmd.Flags().BoolVar(&noEventsHelper, "no-events-helper", false, "Do not create project-local aexp_events.py")
 	return cmd
 }
 
 type projectInitOptions struct {
-	Resource   string
-	Cwd        string
-	Env        string
-	CondaEnv   string
-	OutputPath string
-	DefaultGPU int
-	Force      bool
-	DryRun     bool
+	Resource       string
+	Cwd            string
+	Env            string
+	CondaEnv       string
+	OutputPath     string
+	DefaultGPU     int
+	Force          bool
+	DryRun         bool
+	NoEventsHelper bool
 }
 
 func runProjectInit(opts projectInitOptions) error {
@@ -936,6 +939,9 @@ func runProjectInit(opts projectInitOptions) error {
 	})
 	if opts.DryRun {
 		fmt.Printf("target: %s\n", outputPath)
+		if !opts.NoEventsHelper {
+			fmt.Printf("events helper: %s\n", projectEventsHelperPath(localDir))
+		}
 		fmt.Println(content)
 		printProjectInitNextSteps()
 		return nil
@@ -952,7 +958,31 @@ func runProjectInit(opts projectInitOptions) error {
 		return fmt.Errorf("write project config: %w", err)
 	}
 	fmt.Printf("Created %s\n", outputPath)
+	if !opts.NoEventsHelper {
+		if err := writeProjectEventsHelper(localDir); err != nil {
+			return err
+		}
+	}
 	printProjectInitNextSteps()
+	return nil
+}
+
+func projectEventsHelperPath(localDir string) string {
+	return filepath.Join(localDir, "aexp_events.py")
+}
+
+func writeProjectEventsHelper(localDir string) error {
+	helperPath := projectEventsHelperPath(localDir)
+	if _, err := os.Stat(helperPath); err == nil {
+		fmt.Printf("Kept existing %s\n", helperPath)
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("check events helper: %w", err)
+	}
+	if err := os.WriteFile(helperPath, []byte(executor.AexpEventsPythonHelper()), 0644); err != nil {
+		return fmt.Errorf("write events helper: %w", err)
+	}
+	fmt.Printf("Created %s\n", helperPath)
 	return nil
 }
 
@@ -2849,7 +2879,7 @@ func initCmd() *cobra.Command {
 	var project bool
 	var resourceName, cwd, envStrategy, condaEnv, outputPath string
 	var defaultGPU int
-	var force, dryRun bool
+	var force, dryRun, noEventsHelper bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -2885,14 +2915,15 @@ func initCmd() *cobra.Command {
 				fmt.Println()
 				fmt.Println("Creating project config...")
 				return runProjectInit(projectInitOptions{
-					Resource:   resourceName,
-					Cwd:        cwd,
-					Env:        envStrategy,
-					CondaEnv:   condaEnv,
-					OutputPath: outputPath,
-					DefaultGPU: defaultGPU,
-					Force:      force,
-					DryRun:     dryRun,
+					Resource:       resourceName,
+					Cwd:            cwd,
+					Env:            envStrategy,
+					CondaEnv:       condaEnv,
+					OutputPath:     outputPath,
+					DefaultGPU:     defaultGPU,
+					Force:          force,
+					DryRun:         dryRun,
+					NoEventsHelper: noEventsHelper,
 				})
 			}
 			return nil
@@ -2907,6 +2938,7 @@ func initCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputPath, "output", "", "Project config output path (with --project; default: .aexp.yaml)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing project config (with --project)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the project config without writing it (with --project)")
+	cmd.Flags().BoolVar(&noEventsHelper, "no-events-helper", false, "Do not create project-local aexp_events.py (with --project)")
 	return cmd
 }
 

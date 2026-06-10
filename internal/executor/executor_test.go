@@ -49,7 +49,7 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 	for _, want := range []string{
 		`mkdir -p "$(dirname -- "$AEXP_UI_EVENTS")"`,
 		`cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`,
-		`export PYTHONPATH="$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`,
+		`export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`,
 		"def metric(name, value, **fields):",
 		"python 'train.py'",
 	} {

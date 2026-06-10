@@ -1109,9 +1109,9 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 		lines = append(lines, `mkdir -p "$(dirname -- "$AEXP_UI_EVENTS")"`)
 		lines = append(lines, `: > "$AEXP_UI_EVENTS"`)
 		lines = append(lines, `cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`)
-		lines = append(lines, aexpEventsPythonHelper())
+		lines = append(lines, AexpEventsPythonHelper())
 		lines = append(lines, `PY`)
-		lines = append(lines, `export PYTHONPATH="$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`)
+		lines = append(lines, `export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`)
 	}
 
 	// The actual command
@@ -1205,7 +1205,7 @@ func normalizeUIEventsPath(value string, runID string, hasWorkingDir bool, remot
 	}
 }
 
-func aexpEventsPythonHelper() string {
+func AexpEventsPythonHelper() string {
 	return `import json
 import os
 import time
