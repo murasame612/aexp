@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/store"
 )
+
+const maxPollBackoff = 2 * time.Minute
 
 // Manager polls resource health on a fixed interval.
 type Manager struct {
@@ -165,26 +168,52 @@ func resourcePollSignature(r *store.Resource) string {
 }
 
 func (m *Manager) pollLoop(ctx context.Context, r *store.Resource) {
-	ticker := time.NewTicker(m.interval)
-	defer ticker.Stop()
-
-	// Poll immediately on start
-	m.poll(ctx, r)
+	failures := 0
 
 	for {
+		ok := m.poll(ctx, r)
+		if ctx.Err() != nil {
+			return
+		}
+		if ok {
+			failures = 0
+		} else {
+			failures++
+		}
+		delay := pollBackoffDelay(m.interval, failures)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			m.poll(ctx, r)
+		case <-timer.C:
 		}
 	}
 }
 
-func (m *Manager) poll(ctx context.Context, r *store.Resource) {
+func pollBackoffDelay(base time.Duration, failures int) time.Duration {
+	if base <= 0 {
+		base = time.Second
+	}
+	if failures <= 0 {
+		return base
+	}
+	shift := failures - 1
+	if shift > 30 {
+		shift = 30
+	}
+	multiplier := math.Pow(2, float64(shift))
+	delay := time.Duration(float64(base) * multiplier)
+	if delay <= 0 || delay > maxPollBackoff {
+		return maxPollBackoff
+	}
+	return delay
+}
+
+func (m *Manager) poll(ctx context.Context, r *store.Resource) bool {
 	snap, err := m.PollResource(ctx, r)
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	if err != nil {
 		m.logger.Warn("poll failed", "resource", r.Name, "error", err)
@@ -193,13 +222,13 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) {
 			r.Status = store.ResourceStatusUnreachable
 			m.store.UpdateResource(ctx, r)
 		}
-		return
+		return false
 	}
 
 	// Save snapshot
 	if err := m.store.SaveSnapshot(ctx, snap); err != nil {
 		m.logger.Error("save snapshot", "error", err)
-		return
+		return true
 	}
 
 	// Derive resource status
@@ -208,6 +237,7 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) {
 		r.Status = newStatus
 		m.store.UpdateResource(ctx, r)
 	}
+	return true
 }
 
 // PollResource executes the probe script and parses the result.
