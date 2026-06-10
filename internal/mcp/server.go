@@ -366,6 +366,39 @@ func (s *Server) toolTailRunLogs(ctx context.Context, args map[string]interface{
 	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
 }
 
+func (s *Server) toolRunSnapshot(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	last := intArg(args, "last", intArg(args, "last_n", 500))
+	cli := []string{"run", "snapshot", runID, "--json", "--tail", strconv.Itoa(last)}
+	if boolArg(args, "refresh", false) {
+		cli = append(cli, "--refresh")
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
+}
+
+func (s *Server) toolTailRunEvents(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	last := intArg(args, "last", intArg(args, "last_n", 50))
+	cli := []string{"run", "events", runID, "--json", "--tail", strconv.Itoa(last)}
+	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
+}
+
+func (s *Server) toolRunMetrics(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	last := intArg(args, "last", intArg(args, "last_n", 500))
+	cli := []string{"run", "metrics", runID, "--json", "--latest", "--tail", strconv.Itoa(last)}
+	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
+}
+
 func (s *Server) toolCLI(ctx context.Context, args map[string]interface{}) (string, error) {
 	cliArgs := stringSliceArg(args, "args")
 	if len(cliArgs) == 0 {
@@ -1265,6 +1298,46 @@ func toolRegistry() []toolSpec {
 					return "", err
 				}
 				return s.runAexp(ctx, timeoutFromArgs(args, 20), "run", "status", runID, "--short", "--json")
+			},
+		},
+		{
+			Name:        "aexp_get_run_snapshot",
+			Description: "Get a low-noise run snapshot: cached status plus latest structured progress, metrics, params, and notes. Prefer this for monitoring instead of repeatedly polling status/logs.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"last":    numberSchema("Number of latest event lines to inspect."),
+				"last_n":  numberSchema("Alias for last."),
+				"refresh": boolSchema("Refresh remote status before returning. Use sparingly; default false."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunSnapshot(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_tail_run_events",
+			Description: "Read the latest structured UI event JSONL entries for a run. Use for progress/metric monitoring before falling back to raw logs.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"last":    numberSchema("Number of latest event lines to read."),
+				"last_n":  numberSchema("Alias for last."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolTailRunEvents(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_get_run_metrics",
+			Description: "Get latest structured metrics for a run from UI events.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"last":    numberSchema("Number of latest event lines to inspect."),
+				"last_n":  numberSchema("Alias for last."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunMetrics(ctx, args)
 			},
 		},
 		{

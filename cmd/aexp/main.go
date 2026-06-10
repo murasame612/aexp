@@ -446,7 +446,8 @@ func agentCmd() *cobra.Command {
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
 		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
-		"Inspect run: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
+		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
+		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve finding: aexp run mark <run_id> --title ... --reason ... --evidence ...",
 	}
 	rules := []string{
@@ -454,6 +455,7 @@ func agentCmd() *cobra.Command {
 		"Use run submit for experiments; use exec only for inspection/ops.",
 		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
 		"Use --kind formal for paper evidence; never treat setup/smoke runs as real results.",
+		"For active training, monitor structured UI events first with run snapshot/events/metrics; avoid tight status/log polling. Poll every 30-60s, then back off up to 120s when nothing changes.",
 		"Always provide --metric-paths and --log-paths for formal runs.",
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
 		"After interpreting logs/metrics/artifacts, write a run mark so results survive context loss.",
@@ -3581,6 +3583,9 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 	cmd.AddCommand(runStatusCmd())
 	cmd.AddCommand(runRefreshCmd())
 	cmd.AddCommand(runLogsCmd())
+	cmd.AddCommand(runEventsCmd())
+	cmd.AddCommand(runMetricsCmd())
+	cmd.AddCommand(runSnapshotCmd())
 	cmd.AddCommand(runCancelCmd())
 	cmd.AddCommand(runArchiveCmd())
 	cmd.AddCommand(runRestoreCmd())
@@ -4108,6 +4113,443 @@ func runLogsCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&follow, "follow", false, "Follow running logs until interrupted")
 	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Deprecated: snapshot mode is the default")
 	return cmd
+}
+
+func runEventsCmd() *cobra.Command {
+	var tailN int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "events [run_id]",
+		Short: "Show structured UI event tail for a run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapshot, err := getRunEventSnapshot(cmd.Context(), args[0], tailN, true)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(snapshot)
+			}
+			for _, line := range snapshot.Lines {
+				fmt.Println(line.Content)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&tailN, "tail", 50, "Number of latest event lines to read")
+	cmd.Flags().IntVar(&tailN, "last", 50, "Alias for --tail")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output parsed events as JSON")
+	return cmd
+}
+
+func runMetricsCmd() *cobra.Command {
+	var tailN int
+	var asJSON, latestOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "metrics [run_id]",
+		Short: "Show latest structured metrics for a run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapshot, err := getRunEventSnapshot(cmd.Context(), args[0], tailN, false)
+			if err != nil {
+				return err
+			}
+			derived := deriveRunEventSummary(snapshot.Events)
+			out := map[string]interface{}{
+				"run_id":      snapshot.RunID,
+				"path":        snapshot.Path,
+				"total_lines": snapshot.TotalLines,
+				"metrics":     derived.Metrics,
+			}
+			if asJSON {
+				return printJSON(out)
+			}
+			if !latestOnly {
+				return fmt.Errorf("only --latest metrics are supported for structured events")
+			}
+			if len(derived.Metrics) == 0 {
+				fmt.Println("No metric events found.")
+				return nil
+			}
+			fmt.Printf("%-36s %-12s %-10s %-10s %s\n", "METRIC", "VALUE", "EPOCH", "STEP", "SERIES")
+			for _, row := range sortedMetricRows(derived.Metrics) {
+				fmt.Printf("%-36s %-12v %-10v %-10v %s\n", truncStr(row.Name, 36), row.Value, blankNil(row.Epoch), blankNil(row.Step), row.Series)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&tailN, "tail", 500, "Number of latest event lines to inspect")
+	cmd.Flags().IntVar(&tailN, "last", 500, "Alias for --tail")
+	cmd.Flags().BoolVar(&latestOnly, "latest", true, "Show latest value per metric")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output latest metrics as JSON")
+	return cmd
+}
+
+func runSnapshotCmd() *cobra.Command {
+	var tailN int
+	var asJSON, refresh bool
+
+	cmd := &cobra.Command{
+		Use:   "snapshot [run_id]",
+		Short: "Show low-noise run status plus latest events/metrics",
+		Long: `Show a low-noise run snapshot for agents.
+
+By default this does not refresh remote tmux status. It reads the cached run
+record plus the structured UI event tail, so agents can monitor training from
+events instead of repeatedly probing status/logs. Pass --refresh when you need
+an explicit remote status check.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			run, err := db.GetRun(cmd.Context(), args[0])
+			if err != nil || run == nil {
+				return fmt.Errorf("run %s not found", args[0])
+			}
+			if refresh && (run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting) {
+				sshPool := executor.NewSSHPool(10 * time.Second)
+				loadSSHKeys(sshPool)
+				exec := executor.NewExecutor(sshPool, db)
+				if refreshed, err := exec.CheckRunStatus(cmd.Context(), run.ID); err == nil && refreshed != nil {
+					run = refreshed
+				}
+			}
+			eventSnapshot, eventErr := getRunEventSnapshot(cmd.Context(), run.ID, tailN, false)
+			summary := RunEventSummary{}
+			if eventErr == nil {
+				summary = deriveRunEventSummary(eventSnapshot.Events)
+			}
+			out := map[string]interface{}{
+				"run": shortRunStatus(db, cmd.Context(), run),
+				"events": map[string]interface{}{
+					"path":        run.UIEventsPath,
+					"total_lines": eventSnapshot.TotalLines,
+					"tail_count":  len(eventSnapshot.Events),
+					"error":       errorString(eventErr),
+				},
+				"monitoring": map[string]interface{}{
+					"preferred_tool":                  "aexp_get_run_snapshot",
+					"fallback_tool":                   "aexp_tail_run_logs",
+					"suggested_poll_interval_sec":     60,
+					"max_backoff_interval_sec":        120,
+					"refresh_status_only_when_needed": true,
+				},
+				"progress": summary.Progress,
+				"metrics":  summary.Metrics,
+				"params":   summary.Params,
+				"notes":    summary.Notes,
+			}
+			if asJSON {
+				return printJSON(out)
+			}
+			fmt.Printf("%s  %s  kind=%s  gpu=%s\n", run.ID, run.Status, run.Kind, displayRunGPU(run.GPUIndex))
+			if run.Name != "" {
+				fmt.Printf("name: %s\n", run.Name)
+			}
+			if run.UIEventsPath != "" {
+				fmt.Printf("events: %s", run.UIEventsPath)
+				if eventErr != nil {
+					fmt.Printf(" (%s)", eventErr)
+				}
+				fmt.Println()
+			}
+			if len(summary.Progress) > 0 {
+				fmt.Println("progress:")
+				for _, p := range sortedProgressRows(summary.Progress) {
+					fmt.Printf("  %s: %v/%v", p.Name, p.Current, blankNil(p.Total))
+					if p.Percent != nil {
+						fmt.Printf(" (%.1f%%)", *p.Percent)
+					}
+					fmt.Println()
+				}
+			}
+			if len(summary.Metrics) > 0 {
+				fmt.Println("latest metrics:")
+				for _, m := range sortedMetricRows(summary.Metrics) {
+					fmt.Printf("  %s = %v", m.Name, m.Value)
+					if m.Epoch != nil {
+						fmt.Printf(" epoch=%v", *m.Epoch)
+					}
+					if m.Step != nil {
+						fmt.Printf(" step=%v", *m.Step)
+					}
+					if m.Series != "" {
+						fmt.Printf(" series=%s", m.Series)
+					}
+					fmt.Println()
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&tailN, "tail", 500, "Number of latest event lines to inspect")
+	cmd.Flags().IntVar(&tailN, "last", 500, "Alias for --tail")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh remote status before returning snapshot")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output snapshot as JSON")
+	return cmd
+}
+
+type RunEventSnapshot struct {
+	RunID      string                   `json:"run_id"`
+	Path       string                   `json:"path"`
+	TotalLines int                      `json:"total_lines"`
+	Lines      []executor.LogLine       `json:"lines,omitempty"`
+	Events     []map[string]interface{} `json:"events"`
+}
+
+type RunEventSummary struct {
+	Progress map[string]ProgressRow   `json:"progress"`
+	Metrics  map[string]MetricRow     `json:"metrics"`
+	Params   map[string]interface{}   `json:"params"`
+	Notes    []map[string]interface{} `json:"notes"`
+}
+
+type ProgressRow struct {
+	Name    string   `json:"name"`
+	Current float64  `json:"current"`
+	Total   *float64 `json:"total,omitempty"`
+	Percent *float64 `json:"percent,omitempty"`
+	Time    *float64 `json:"time,omitempty"`
+}
+
+type MetricRow struct {
+	Name   string   `json:"name"`
+	Series string   `json:"series,omitempty"`
+	Value  float64  `json:"value"`
+	Epoch  *float64 `json:"epoch,omitempty"`
+	Step   *float64 `json:"step,omitempty"`
+	Time   *float64 `json:"time,omitempty"`
+}
+
+func getRunEventSnapshot(ctx context.Context, runID string, tailN int, includeLines bool) (RunEventSnapshot, error) {
+	db := openDB()
+	defer db.Close()
+	run, err := db.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		if err != nil {
+			return RunEventSnapshot{}, err
+		}
+		return RunEventSnapshot{}, fmt.Errorf("run %s not found", runID)
+	}
+	if run.UIEventsPath == "" {
+		return RunEventSnapshot{RunID: run.ID}, fmt.Errorf("run %s has no ui events path", run.ID)
+	}
+	sshPool := executor.NewSSHPool(10 * time.Second)
+	loadSSHKeys(sshPool)
+	exec := executor.NewExecutor(sshPool, db)
+	lines, err := exec.GetLogFileSnapshot(ctx, run.ID, run.UIEventsPath, tailN)
+	if err != nil {
+		return RunEventSnapshot{RunID: run.ID, Path: run.UIEventsPath}, err
+	}
+	events := parseRunEventLines(lines)
+	total := 0
+	if len(lines) > 0 {
+		total = lines[len(lines)-1].LineNo
+	}
+	snapshot := RunEventSnapshot{
+		RunID:      run.ID,
+		Path:       run.UIEventsPath,
+		TotalLines: total,
+		Events:     events,
+	}
+	if includeLines {
+		snapshot.Lines = lines
+	}
+	return snapshot, nil
+}
+
+func parseRunEventLines(lines []executor.LogLine) []map[string]interface{} {
+	events := make([]map[string]interface{}, 0, len(lines))
+	for _, line := range lines {
+		var ev map[string]interface{}
+		if err := json.Unmarshal([]byte(line.Content), &ev); err != nil {
+			continue
+		}
+		ev["_line"] = line.LineNo
+		events = append(events, ev)
+	}
+	return events
+}
+
+func deriveRunEventSummary(events []map[string]interface{}) RunEventSummary {
+	out := RunEventSummary{
+		Progress: map[string]ProgressRow{},
+		Metrics:  map[string]MetricRow{},
+		Params:   map[string]interface{}{},
+	}
+	for _, ev := range events {
+		typ := strings.ToLower(asEventString(ev["type"]))
+		switch {
+		case isProgressEvent(typ, ev):
+			row, ok := progressRowFromEvent(ev)
+			if ok {
+				out.Progress[row.Name] = row
+			}
+		case isMetricEvent(typ, ev):
+			row, ok := metricRowFromEvent(ev)
+			if ok {
+				out.Metrics[metricKey(row)] = row
+			}
+		case typ == "param" || typ == "params" || typ == "hparam" || typ == "config":
+			if name := eventName(ev); name != "" {
+				out.Params[name] = ev["value"]
+			}
+		case typ == "note" || typ == "log" || typ == "message":
+			out.Notes = append(out.Notes, ev)
+			if len(out.Notes) > 5 {
+				out.Notes = out.Notes[len(out.Notes)-5:]
+			}
+		}
+	}
+	return out
+}
+
+func isProgressEvent(typ string, ev map[string]interface{}) bool {
+	if typ == "progress" {
+		return true
+	}
+	_, hasCurrent := eventFloat(ev["current"])
+	_, hasTotal := eventFloat(ev["total"])
+	return hasCurrent && hasTotal
+}
+
+func isMetricEvent(typ string, ev map[string]interface{}) bool {
+	if typ == "metric" || typ == "metrics" || typ == "eval" || typ == "scalar" {
+		return true
+	}
+	_, hasValue := eventFloat(ev["value"])
+	return hasValue && eventName(ev) != ""
+}
+
+func progressRowFromEvent(ev map[string]interface{}) (ProgressRow, bool) {
+	name := eventName(ev)
+	current, ok := eventFloat(ev["current"])
+	if name == "" || !ok {
+		return ProgressRow{}, false
+	}
+	row := ProgressRow{Name: name, Current: current}
+	if total, ok := eventFloat(ev["total"]); ok {
+		row.Total = &total
+		if total != 0 {
+			pct := current / total * 100
+			row.Percent = &pct
+		}
+	}
+	if t, ok := eventFloat(ev["time"]); ok {
+		row.Time = &t
+	}
+	return row, true
+}
+
+func metricRowFromEvent(ev map[string]interface{}) (MetricRow, bool) {
+	name := eventName(ev)
+	value, ok := eventFloat(ev["value"])
+	if name == "" || !ok {
+		return MetricRow{}, false
+	}
+	row := MetricRow{Name: name, Value: value, Series: eventSeries(ev)}
+	if epoch, ok := eventFloat(ev["epoch"]); ok {
+		row.Epoch = &epoch
+	}
+	if step, ok := eventFloat(ev["step"]); ok {
+		row.Step = &step
+	}
+	if t, ok := eventFloat(ev["time"]); ok {
+		row.Time = &t
+	}
+	return row, true
+}
+
+func eventName(ev map[string]interface{}) string {
+	for _, key := range []string{"name", "metric", "key", "label"} {
+		if s := asEventString(ev[key]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func eventSeries(ev map[string]interface{}) string {
+	parts := make([]string, 0, 4)
+	for _, key := range []string{"series", "run", "variant", "split", "stage"} {
+		if s := asEventString(ev[key]); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+func metricKey(row MetricRow) string {
+	if row.Series == "" {
+		return row.Name
+	}
+	return row.Series + "/" + row.Name
+}
+
+func eventFloat(v interface{}) (float64, bool) {
+	switch raw := v.(type) {
+	case float64:
+		return raw, true
+	case float32:
+		return float64(raw), true
+	case int:
+		return float64(raw), true
+	case int64:
+		return float64(raw), true
+	case json.Number:
+		f, err := raw.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func asEventString(v interface{}) string {
+	switch raw := v.(type) {
+	case string:
+		return strings.TrimSpace(raw)
+	case fmt.Stringer:
+		return strings.TrimSpace(raw.String())
+	default:
+		return ""
+	}
+}
+
+func sortedMetricRows(rows map[string]MetricRow) []MetricRow {
+	out := make([]MetricRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return metricKey(out[i]) < metricKey(out[j]) })
+	return out
+}
+
+func sortedProgressRows(rows map[string]ProgressRow) []ProgressRow {
+	out := make([]ProgressRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func blankNil(v *float64) interface{} {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func runCancelCmd() *cobra.Command {

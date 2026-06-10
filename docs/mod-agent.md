@@ -46,6 +46,9 @@ aexp mcp uninstall --target all
 - `aexp_list_runs`
 - `aexp_refresh_runs`
 - `aexp_get_run_status`
+- `aexp_get_run_snapshot`
+- `aexp_tail_run_events`
+- `aexp_get_run_metrics`
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
 - `aexp_archive_run`
@@ -163,58 +166,68 @@ aexp mcp uninstall --target all
 }
 ```
 
-### tail_run_logs
+### get_run_snapshot
 
-获取 run 的最近日志。
+获取低噪声 run 快照。默认不刷新远端 tmux 状态，只读取本地 run 记录和结构化
+UI events tail，适合作为训练过程的主监控入口。
+建议 agent 每 30-60 秒查询一次；如果 epoch/step 没变化，按指数退避到最多
+120 秒。不要用高频 `get_run_status` 或 `tail_run_logs` 作为正常训练监控。
 
 ```json
 {
-  "name": "tail_run_logs",
+  "name": "aexp_get_run_snapshot",
   "input": {
     "run_id": "run_Yn7pL2wE",
-    "source": "stdout",
-    "last_n": 100
+    "last": 500,
+    "refresh": false
   }
 }
 ```
 
 ```json
 {
-  "run_id": "run_Yn7pL2wE",
-  "source": "stdout",
-  "total_lines": 3021,
-  "lines": [
-    {"line_no": 2922, "content": "Epoch 9/100, loss=0.0312"},
-    {"line_no": 2923, "content": "Epoch 10/100, loss=0.0287"}
-  ]
+  "run": {"id": "run_Yn7pL2wE", "status": "running", "kind": "formal"},
+  "events": {"path": ".aexp/events/run_Yn7pL2wE.jsonl", "total_lines": 116},
+  "progress": {"epoch": {"current": 8, "total": 100, "percent": 8}},
+  "metrics": {
+    "val/mAP50-95(B)": {"value": 0.545, "epoch": 8}
+  },
+  "params": {"model": "yolov8s"}
+}
+```
+
+### tail_run_events
+
+读取结构化 UI event JSONL tail。用于查看原始事件流，而不是原始 stdout/stderr。
+
+```json
+{
+  "name": "aexp_tail_run_events",
+  "input": {
+    "run_id": "run_Yn7pL2wE",
+    "last": 50
+  }
 }
 ```
 
 ### get_run_metrics
 
-读取 run 指定的 metric 文件内容。
+从 UI events 中聚合最新指标。
 
 ```json
 {
-  "name": "get_run_metrics",
+  "name": "aexp_get_run_metrics",
   "input": {
-    "run_id": "run_Yn7pL2wE"
+    "run_id": "run_Yn7pL2wE",
+    "last": 500
   }
 }
 ```
 
-```json
-{
-  "run_id": "run_Yn7pL2wE",
-  "metrics": {
-    "results/ECL_iTransformer_metrics.json": {
-      "mse": 0.1823,
-      "mae": 0.2981,
-      "best_epoch": 87
-    }
-  }
-}
-```
+### tail_run_logs
+
+获取 run 的最近 stdout/stderr。这个工具应该用于失败、卡住、OOM、缺少 events
+时诊断，不应该作为正常训练进度的高频监控方式。
 
 ### list_run_artifacts
 
@@ -282,19 +295,19 @@ Agent 想跑一个实验：
 
 3. (等待一段时间)
 
-4. get_run_status(run_id="run_Yn7pL2wE")
-   → status=running, elapsed=300s
+4. aexp_get_run_snapshot(run_id="run_Yn7pL2wE")
+   → status=running, epoch=8/100, val/mAP50-95(B)=0.545
 
-5. tail_run_logs(run_id="run_Yn7pL2wE", last_n=50)
-   → 看到 loss 在下降
+5. aexp_tail_run_events(run_id="run_Yn7pL2wE", last=50)
+   → 查看原始结构化事件
 
 6. (再等待)
 
-7. get_run_status(run_id="run_Yn7pL2wE")
+7. aexp_get_run_status(run_id="run_Yn7pL2wE")
    → status=succeeded, exit_code=0
 
-8. get_run_metrics(run_id="run_Yn7pL2wE")
-   → mse=0.1823, mae=0.2981
+8. aexp_get_run_metrics(run_id="run_Yn7pL2wE")
+   → latest formal metrics
 
 9. list_run_artifacts(run_id="run_Yn7pL2wE")
    → checkpoints/model_best.pt

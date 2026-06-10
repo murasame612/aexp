@@ -249,6 +249,7 @@ aexp runs:  0 active
 
 ```bash
 ./aexp run status run_Yn7pL2wE
+./aexp run status run_Yn7pL2wE --short --json
 ```
 
 输出示例：
@@ -263,15 +264,42 @@ tmux:      aexp_run_Yn7pL2wE
 Started:   2026-06-07T14:30:05+08:00
 ```
 
+#### 事件优先监控
+
+训练脚本写入 `$AEXP_UI_EVENTS` 后，优先用结构化事件看进度和指标。这样不会被
+tqdm、ANSI 控制字符、重复表头和 stdout/stderr 分流干扰。
+
+```bash
+# 低噪声快照：cached status + 最新 progress/metrics/params/notes
+./aexp run snapshot run_Yn7pL2wE --json
+
+# 最新指标
+./aexp run metrics run_Yn7pL2wE --latest --json
+
+# 原始结构化 event tail
+./aexp run events run_Yn7pL2wE --tail 50 --json
+```
+
+`snapshot` 默认不刷新远端 tmux 状态，适合 agent 周期性查看训练曲线。
+如果需要确认 run 是否已经结束，再显式使用：
+
+```bash
+./aexp run snapshot run_Yn7pL2wE --refresh --json
+./aexp run status run_Yn7pL2wE --short --json
+```
+
 #### 查看日志
 
 ```bash
-# 实时 tail（Ctrl+C 停止）
-./aexp run logs run_Yn7pL2wE
-
 # 只看最后 50 行
 ./aexp run logs run_Yn7pL2wE --last 50
+
+# 需要持续跟随时显式打开 follow
+./aexp run logs run_Yn7pL2wE --follow
 ```
+
+日志适合失败、卡住、OOM、缺少 events 或指标异常时诊断；正常训练进度不要靠
+高频日志 tail。
 
 #### 取消运行
 

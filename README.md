@@ -153,8 +153,9 @@ Watch it:
 
 ```bash
 aexp run list
-aexp run status run_xxx --short
-aexp run logs run_xxx --follow
+aexp run snapshot run_xxx --json
+aexp run events run_xxx --tail 50 --json
+aexp run logs run_xxx --tail 100
 ```
 
 The Runs page shows run kind, status, GPU, command, favorite/trash actions, and
@@ -248,6 +249,13 @@ note("first checkpoint written")
 ```
 
 The dashboard renders these events as progress cards, metric cards, and charts.
+Agents can read the same low-noise event stream without scraping raw logs:
+
+```bash
+aexp run snapshot run_xxx --json
+aexp run metrics run_xxx --latest --json
+aexp run events run_xxx --tail 50 --json
+```
 
 ![metrics](doc/imgs/mertics_card.png)
 
@@ -297,6 +305,9 @@ aexp exec --resource <name> -- <command>
 aexp run submit --resource <name> [flags] -- <program> [args...]
 aexp run list [--json]
 aexp run status <run_id> [--short] [--json]
+aexp run snapshot <run_id> [--json]
+aexp run events <run_id> [--tail 50] [--json]
+aexp run metrics <run_id> [--latest] [--json]
 aexp run logs <run_id> [--follow] [--source stdout|stderr]
 aexp run cancel <run_id>
 aexp run mark <run_id> --title ... --reason ... --evidence ...
@@ -357,6 +368,9 @@ The MCP server exposes structured tools for agents:
 - `aexp_list_runs`
 - `aexp_refresh_runs`
 - `aexp_get_run_status`
+- `aexp_get_run_snapshot`
+- `aexp_tail_run_events`
+- `aexp_get_run_metrics`
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
 - `aexp_mark_run`
@@ -381,6 +395,10 @@ The current implementation wraps the local `aexp` binary instead of duplicating
 executor logic. That keeps behavior identical to the CLI: short commands still
 use `aexp exec`, including the local API fast path that can reuse a warm
 `aexp serve` SSH pool, while long tasks go through tracked `run submit`.
+For active training, agents should monitor `aexp_get_run_snapshot` or
+`aexp_tail_run_events` first; raw stdout/stderr logs are for debugging failures,
+OOMs, hangs, or missing events. Poll snapshots every 30-60 seconds, then back
+off toward 120 seconds when progress has not changed.
 `aexp_cli` is deliberately restricted to read-only commands; use the dedicated
 tools for exec, submit, cancel, sync, resources, projects, and marks. Agents
 should not need to fall back to raw CLI for normal aexp operations.
