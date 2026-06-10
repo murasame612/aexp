@@ -404,6 +404,50 @@
             border-radius: 999px;
             flex: 0 0 auto;
         }
+        .metric-value-table-wrap {
+            border: 1px solid #e8e5dc;
+            border-radius: 0.875rem;
+            overflow: hidden;
+            background: #fffdf8;
+            margin-bottom: 14px;
+        }
+        .metric-value-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        .metric-value-table th,
+        .metric-value-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee9df;
+            text-align: left;
+            vertical-align: top;
+        }
+        .metric-value-table tr:last-child td {
+            border-bottom: 0;
+        }
+        .metric-value-table th {
+            color: #5f5b53;
+            background: #f4f0e8;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .metric-value-table td {
+            color: #191817;
+            font-size: 12px;
+        }
+        .metric-value-number {
+            font-family: 'Menlo', monospace;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        .metric-value-label {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #5f5b53;
+        }
         .comparison-chart-block {
             border: 1px solid #e6dfd3;
             border-radius: 8px;
@@ -2425,7 +2469,7 @@
                 color: METRIC_CHART_COLORS[idx % METRIC_CHART_COLORS.length],
                 points: asArray(s.points).filter(p => numberValue(p.x) != null && numberValue(p.y) != null),
             })).filter(s => s.points.length >= 2);
-            if (!series.length) return `<div class="event-empty">${escHTML(t('events.noEvents'))}</div>`;
+            if (!series.length) return `<div class="event-empty">至少需要 2 个点才会绘制曲线；上方已显示当前最后值。</div>`;
             const width = 860, height = 420;
             const pad = { left: 68, right: 24, top: 28, bottom: 54 };
             const allPoints = series.flatMap(s => s.points);
@@ -2466,13 +2510,43 @@
                 ${paths}
             </svg>${legend}`;
         }
+        function renderMetricValueTable(series) {
+            series = asArray(series).map(s => {
+                const points = asArray(s.points).filter(p => numberValue(p.x) != null && numberValue(p.y) != null);
+                const last = points[points.length - 1] || null;
+                return { ...s, points, last };
+            }).filter(s => s.last);
+            if (!series.length) return '';
+            return `<div class="metric-value-table-wrap">
+                <table class="metric-value-table">
+                    <thead>
+                        <tr>
+                            <th style="width:32%">Series</th>
+                            <th style="width:18%">Latest</th>
+                            <th style="width:18%">Epoch / step</th>
+                            <th>Metric</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${series.map(s => `
+                            <tr>
+                                <td><div class="metric-value-label" title="${escAttr(s.label)}">${escHTML(s.label)}</div></td>
+                                <td><span class="metric-value-number">${escHTML(formatEventValue(s.last.y))}</span></td>
+                                <td>${escHTML(s.last.meta || formatEventValue(s.last.x))}</td>
+                                <td><div class="metric-value-label" title="${escAttr(s.name)}">${escHTML(metricDisplayName(s.name))}</div></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+        }
         function openMetricChart(name) {
             const events = parseEventLines(currentEventLines);
             const series = comparableMetricSeries(events, name);
             const pointCount = series.reduce((sum, s) => sum + s.points.length, 0);
             document.getElementById('metric-chart-title').textContent = metricDisplayName(metricBaseName(name));
             document.getElementById('metric-chart-subtitle').textContent = series.length + ' series · ' + pointCount + ' points';
-            document.getElementById('metric-chart-body').innerHTML = renderMetricChartSVG(series);
+            document.getElementById('metric-chart-body').innerHTML = renderMetricValueTable(series) + renderMetricChartSVG(series);
             document.getElementById('metric-chart-modal').classList.remove('hidden');
         }
         function closeMetricChart() {
