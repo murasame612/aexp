@@ -600,7 +600,7 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 		return len(report.Checks) - 1
 	}
 	execRemote := func(command string) (string, string, error) {
-		return pool.Exec(ctx, res.Host, res.Port, res.User, res.AuthRef, command, res.SocksProxy, res.ProxyCommand)
+		return pool.Exec(ctx, res.Host, res.Port, res.User, res.AuthRef, executor.WithResourceRemotePath(res, command), res.SocksProxy, res.ProxyCommand)
 	}
 	remoteOK := 0
 
@@ -3294,7 +3294,7 @@ func formatGPUList(gpuJSON string) string {
 }
 
 func resourceAddCmd() *cobra.Command {
-	var name, host, osType, user, rootDir, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
+	var name, host, osType, user, rootDir, remotePath, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
 	var port int
 	var resType string
 
@@ -3319,6 +3319,7 @@ func resourceAddCmd() *cobra.Command {
 				User:         user,
 				AuthRef:      authRef,
 				RootDir:      rootDir,
+				RemotePath:   remotePath,
 				CondaBase:    condaBase,
 				CondaInit:    condaInit,
 				CondaEnv:     condaEnv,
@@ -3345,6 +3346,7 @@ func resourceAddCmd() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
 	cmd.Flags().StringVar(&rootDir, "root-dir", "", "Workspace root directory (required)")
+	cmd.Flags().StringVar(&remotePath, "remote-path", "", "PATH prefix for non-interactive remote commands (e.g. /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin)")
 	cmd.Flags().StringVar(&condaBase, "conda-base", "", "Conda/Miniforge base prefix (e.g. /home/user/miniforge3)")
 	cmd.Flags().StringVar(&condaInit, "conda-init", "", "Conda init script path (defaults to <conda-base>/etc/profile.d/conda.sh)")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Default conda environment")
@@ -3402,7 +3404,7 @@ turn on Remote Login first if localhost SSH is disabled.`,
 }
 
 func resourceUpdateCmd() *cobra.Command {
-	var name, host, osType, user, rootDir, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
+	var name, host, osType, user, rootDir, remotePath, condaBase, condaInit, condaEnv, gpuIndices, tags, authRef, socksProxy, proxyCommand string
 	var port int
 	var resType string
 
@@ -3434,6 +3436,7 @@ func resourceUpdateCmd() *cobra.Command {
 			setString("user", &r.User, user)
 			setString("auth-ref", &r.AuthRef, authRef)
 			setString("root-dir", &r.RootDir, rootDir)
+			setString("remote-path", &r.RemotePath, remotePath)
 			setString("conda-base", &r.CondaBase, condaBase)
 			setString("conda-init", &r.CondaInit, condaInit)
 			setString("conda-env", &r.CondaEnv, condaEnv)
@@ -3473,6 +3476,7 @@ func resourceUpdateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 0, "SSH port")
 	cmd.Flags().StringVar(&user, "user", "", "SSH user")
 	cmd.Flags().StringVar(&rootDir, "root-dir", "", "Workspace root directory")
+	cmd.Flags().StringVar(&remotePath, "remote-path", "", "PATH prefix for non-interactive remote commands")
 	cmd.Flags().StringVar(&condaBase, "conda-base", "", "Conda/Miniforge base prefix (e.g. /home/user/miniforge3)")
 	cmd.Flags().StringVar(&condaInit, "conda-init", "", "Conda init script path (defaults to <conda-base>/etc/profile.d/conda.sh)")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Default conda environment")
@@ -5232,20 +5236,22 @@ func buildLocalSSHResource(name string, rootDir string) (*store.Resource, error)
 		return nil, fmt.Errorf("no default SSH key found; create ~/.ssh/id_ed25519 or register localhost manually with --auth-ref")
 	}
 	condaBase, condaInit := detectLocalConda()
+	osType := localOSType()
 	return &store.Resource{
-		ID:        genID("rsrc_"),
-		Name:      name,
-		Type:      store.ResourceTypeSSH,
-		Host:      "127.0.0.1",
-		OSType:    localOSType(),
-		Port:      22,
-		User:      userName,
-		AuthRef:   keyPath,
-		RootDir:   rootDir,
-		CondaBase: condaBase,
-		CondaInit: condaInit,
-		Tags:      "local",
-		Status:    store.ResourceStatusUnknown,
+		ID:         genID("rsrc_"),
+		Name:       name,
+		Type:       store.ResourceTypeSSH,
+		Host:       "127.0.0.1",
+		OSType:     osType,
+		Port:       22,
+		User:       userName,
+		AuthRef:    keyPath,
+		RootDir:    rootDir,
+		RemotePath: executor.EffectiveRemotePath(&store.Resource{OSType: osType}),
+		CondaBase:  condaBase,
+		CondaInit:  condaInit,
+		Tags:       "local",
+		Status:     store.ResourceStatusUnknown,
 	}, nil
 }
 

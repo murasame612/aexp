@@ -760,6 +760,7 @@ func addResourceOptionalFlags(cli *[]string, args map[string]interface{}, includ
 	addOptionalStringFlag(cli, args, "tags", "--tags")
 	addOptionalStringFlag(cli, args, "socks_proxy", "--socks-proxy")
 	addOptionalStringFlag(cli, args, "proxy_command", "--proxy-command")
+	addOptionalStringFlag(cli, args, "remote_path", "--remote-path")
 	if v := stringArg(args, "root_dir", ""); v != "" && includeName {
 		*cli = append(*cli, "--root-dir", v)
 	}
@@ -1687,6 +1688,7 @@ func resourceConfigSchema(base map[string]interface{}) map[string]interface{} {
 	base["tags"] = stringSchema("Comma-separated tags.")
 	base["socks_proxy"] = stringSchema("SOCKS5 proxy host:port.")
 	base["proxy_command"] = stringSchema("SSH ProxyCommand.")
+	base["remote_path"] = stringSchema("PATH prefix for non-interactive remote commands, e.g. /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin.")
 	return base
 }
 

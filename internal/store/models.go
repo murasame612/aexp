@@ -18,6 +18,7 @@ type Resource struct {
 	SocksProxy      string     `json:"socks_proxy"`   // host:port for SOCKS5 proxy
 	ProxyCommand    string     `json:"proxy_command"` // raw ProxyCommand (future)
 	RootDir         string     `json:"root_dir"`
+	RemotePath      string     `json:"remote_path"` // PATH prefix for non-interactive remote commands
 	CondaBase       string     `json:"conda_base"`
 	CondaInit       string     `json:"conda_init"`
 	CondaEnv        string     `json:"conda_env"`

@@ -62,12 +62,42 @@ func (e *Executor) Pool() *SSHPool {
 
 // exec is a helper that runs a command on a resource, using its proxy settings if configured.
 func (e *Executor) exec(ctx context.Context, r *store.Resource, cmd string) (string, string, error) {
-	return e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, cmd, r.SocksProxy, r.ProxyCommand)
+	return e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
 }
 
 // execStream is a helper that streams a command's stdout from a resource.
 func (e *Executor) execStream(ctx context.Context, r *store.Resource, cmd string) (<-chan string, error) {
-	return e.pool.ExecStream(ctx, r.Host, r.Port, r.User, r.AuthRef, cmd, r.SocksProxy, r.ProxyCommand)
+	return e.pool.ExecStream(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
+}
+
+const macOSDefaultRemotePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+// WithResourceRemotePath prefixes a remote shell command with the PATH aexp should
+// use for non-interactive control-plane commands such as tmux/status/cancel.
+func WithResourceRemotePath(r *store.Resource, cmd string) string {
+	remotePath := EffectiveRemotePath(r)
+	if remotePath == "" {
+		return cmd
+	}
+	return "export PATH=" + shellQuote(remotePath) + ":$PATH\n" + cmd
+}
+
+// EffectiveRemotePath returns the configured PATH prefix for a resource. macOS
+// hosts get Homebrew paths by default because SSH non-interactive shells often
+// omit /opt/homebrew/bin.
+func EffectiveRemotePath(r *store.Resource) string {
+	if r == nil {
+		return ""
+	}
+	if path := strings.TrimSpace(r.RemotePath); path != "" {
+		return path
+	}
+	switch strings.ToLower(strings.TrimSpace(r.OSType)) {
+	case "macos", "darwin":
+		return macOSDefaultRemotePath
+	default:
+		return ""
+	}
 }
 
 // Submit creates and starts a new run on a resource.

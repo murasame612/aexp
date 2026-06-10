@@ -37,6 +37,25 @@ func TestNormalizeUIEventsPath(t *testing.T) {
 	}
 }
 
+func TestWithResourceRemotePath(t *testing.T) {
+	cmd := WithResourceRemotePath(&store.Resource{
+		OSType:     "macos",
+		RemotePath: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+	}, "tmux -V")
+	if !strings.HasPrefix(cmd, "export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin':$PATH\n") {
+		t.Fatalf("unexpected remote path wrapper: %q", cmd)
+	}
+	if !strings.HasSuffix(cmd, "tmux -V") {
+		t.Fatalf("wrapped command missing original command: %q", cmd)
+	}
+	if got := EffectiveRemotePath(&store.Resource{OSType: "macos"}); !strings.Contains(got, "/opt/homebrew/bin") {
+		t.Fatalf("macos default remote path missing homebrew bin: %q", got)
+	}
+	if got := WithResourceRemotePath(&store.Resource{OSType: "linux"}, "echo ok"); got != "echo ok" {
+		t.Fatalf("linux without remote_path should not be wrapped: %q", got)
+	}
+}
+
 func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 	req := SubmitRequest{
 		Program:      "python",

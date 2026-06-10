@@ -313,19 +313,21 @@ func localSSHResourceDefaults(name string, rootDir string) (store.Resource, erro
 
 	keyPath := firstDefaultSSHKey()
 	condaBase, condaInit := detectLocalConda()
+	osType := localOSType()
 	return store.Resource{
-		Name:      name,
-		Type:      store.ResourceTypeSSH,
-		Host:      "127.0.0.1",
-		OSType:    localOSType(),
-		Port:      22,
-		User:      userName,
-		AuthRef:   keyPath,
-		RootDir:   rootDir,
-		CondaBase: condaBase,
-		CondaInit: condaInit,
-		Status:    store.ResourceStatusUnknown,
-		Tags:      "local",
+		Name:       name,
+		Type:       store.ResourceTypeSSH,
+		Host:       "127.0.0.1",
+		OSType:     osType,
+		Port:       22,
+		User:       userName,
+		AuthRef:    keyPath,
+		RootDir:    rootDir,
+		RemotePath: executor.EffectiveRemotePath(&store.Resource{OSType: osType}),
+		CondaBase:  condaBase,
+		CondaInit:  condaInit,
+		Status:     store.ResourceStatusUnknown,
+		Tags:       "local",
 	}, nil
 }
 
@@ -497,6 +499,9 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if !hasField("root_dir") {
 		update.RootDir = existing.RootDir
+	}
+	if !hasField("remote_path") {
+		update.RemotePath = existing.RemotePath
 	}
 	if !hasField("conda_base") {
 		update.CondaBase = existing.CondaBase

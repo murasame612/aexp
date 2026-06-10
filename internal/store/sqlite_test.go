@@ -24,16 +24,17 @@ func TestResourceCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	r := &Resource{
-		ID:       "rsrc_test001",
-		Name:     "test-resource",
-		Type:     "ssh",
-		Host:     "192.168.1.100",
-		Port:     22,
-		User:     "root",
-		RootDir:  "/workspace",
-		CondaEnv: "base",
-		Tags:     "test,gpu",
-		Status:   ResourceStatusUnknown,
+		ID:         "rsrc_test001",
+		Name:       "test-resource",
+		Type:       "ssh",
+		Host:       "192.168.1.100",
+		Port:       22,
+		User:       "root",
+		RootDir:    "/workspace",
+		RemotePath: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+		CondaEnv:   "base",
+		Tags:       "test,gpu",
+		Status:     ResourceStatusUnknown,
 	}
 
 	if err := s.CreateResource(ctx, r); err != nil {
@@ -47,6 +48,9 @@ func TestResourceCRUD(t *testing.T) {
 	if got.Name != "test-resource" {
 		t.Errorf("name = %q, want %q", got.Name, "test-resource")
 	}
+	if got.RemotePath != "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" {
+		t.Errorf("remote_path = %q", got.RemotePath)
+	}
 
 	byName, _ := s.GetResourceByName(ctx, "test-resource")
 	if byName == nil || byName.ID != "rsrc_test001" {
@@ -59,6 +63,7 @@ func TestResourceCRUD(t *testing.T) {
 	}
 
 	r.Status = ResourceStatusIdle
+	r.RemotePath = "/usr/local/cuda/bin:/usr/bin:/bin"
 	now := time.Now()
 	r.SSHStatus = ResourceSSHStatusFailed
 	r.LastDoctorError = "ssh: EOF"
@@ -67,6 +72,9 @@ func TestResourceCRUD(t *testing.T) {
 	got2, _ := s.GetResource(ctx, "rsrc_test001")
 	if got2.Status != ResourceStatusIdle {
 		t.Errorf("status = %q, want %q", got2.Status, ResourceStatusIdle)
+	}
+	if got2.RemotePath != "/usr/local/cuda/bin:/usr/bin:/bin" {
+		t.Errorf("updated remote_path = %q", got2.RemotePath)
 	}
 	if got2.SSHStatus != ResourceSSHStatusFailed || got2.LastDoctorError != "ssh: EOF" || got2.LastCheckedAt == nil {
 		t.Errorf("ssh status fields not persisted: %#v", got2)

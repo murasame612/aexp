@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS resources (
     socks_proxy   TEXT DEFAULT '',
     proxy_command TEXT DEFAULT '',
     root_dir      TEXT NOT NULL,
+    remote_path   TEXT DEFAULT '',
     conda_base    TEXT DEFAULT '',
     conda_init    TEXT DEFAULT '',
     conda_env     TEXT DEFAULT '',

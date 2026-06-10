@@ -73,6 +73,7 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("resources", "socks_proxy", "TEXT", "''")
 	addColumn("resources", "proxy_command", "TEXT", "''")
 	addColumn("resources", "os_type", "TEXT", "''")
+	addColumn("resources", "remote_path", "TEXT", "''")
 	addColumn("resources", "conda_base", "TEXT", "''")
 	addColumn("resources", "conda_init", "TEXT", "''")
 	addColumn("resources", "ssh_status", "TEXT NOT NULL", "'unknown'")
@@ -89,7 +90,7 @@ func (s *SQLite) Close() error {
 
 // --- Resources ---
 
-const resourceColumns = "id, name, type, host, os_type, port, user, auth_ref, socks_proxy, proxy_command, root_dir, conda_base, conda_init, conda_env, gpu_indices, tags, status, ssh_status, last_doctor_error, last_checked_at, last_success_at, created_at, updated_at"
+const resourceColumns = "id, name, type, host, os_type, port, user, auth_ref, socks_proxy, proxy_command, root_dir, remote_path, conda_base, conda_init, conda_env, gpu_indices, tags, status, ssh_status, last_doctor_error, last_checked_at, last_success_at, created_at, updated_at"
 
 func (s *SQLite) CreateResource(ctx context.Context, r *Resource) error {
 	r.CreatedAt = time.Now()
@@ -99,8 +100,8 @@ func (s *SQLite) CreateResource(ctx context.Context, r *Resource) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO resources (`+resourceColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.SSHStatus, r.LastDoctorError, r.LastCheckedAt, r.LastSuccessAt, r.CreatedAt, r.UpdatedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.RemotePath, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.SSHStatus, r.LastDoctorError, r.LastCheckedAt, r.LastSuccessAt, r.CreatedAt, r.UpdatedAt,
 	)
 	return err
 }
@@ -144,8 +145,8 @@ func (s *SQLite) ListResources(ctx context.Context) ([]Resource, error) {
 func (s *SQLite) UpdateResource(ctx context.Context, r *Resource) error {
 	r.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE resources SET name=?, type=?, host=?, os_type=?, port=?, user=?, auth_ref=?, socks_proxy=?, proxy_command=?, root_dir=?, conda_base=?, conda_init=?, conda_env=?, gpu_indices=?, tags=?, status=?, ssh_status=?, last_doctor_error=?, last_checked_at=?, last_success_at=?, updated_at=? WHERE id=?`,
-		r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.SSHStatus, r.LastDoctorError, r.LastCheckedAt, r.LastSuccessAt, r.UpdatedAt, r.ID,
+		`UPDATE resources SET name=?, type=?, host=?, os_type=?, port=?, user=?, auth_ref=?, socks_proxy=?, proxy_command=?, root_dir=?, remote_path=?, conda_base=?, conda_init=?, conda_env=?, gpu_indices=?, tags=?, status=?, ssh_status=?, last_doctor_error=?, last_checked_at=?, last_success_at=?, updated_at=? WHERE id=?`,
+		r.Name, r.Type, r.Host, r.OSType, r.Port, r.User, r.AuthRef, r.SocksProxy, r.ProxyCommand, r.RootDir, r.RemotePath, r.CondaBase, r.CondaInit, r.CondaEnv, r.GPUIndices, r.Tags, r.Status, r.SSHStatus, r.LastDoctorError, r.LastCheckedAt, r.LastSuccessAt, r.UpdatedAt, r.ID,
 	)
 	return err
 }
@@ -156,7 +157,7 @@ type rowScanner interface {
 
 func scanResource(r *Resource) func(rowScanner) error {
 	return func(row rowScanner) error {
-		return row.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.OSType, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.CondaBase, &r.CondaInit, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.SSHStatus, &r.LastDoctorError, &r.LastCheckedAt, &r.LastSuccessAt, &r.CreatedAt, &r.UpdatedAt)
+		return row.Scan(&r.ID, &r.Name, &r.Type, &r.Host, &r.OSType, &r.Port, &r.User, &r.AuthRef, &r.SocksProxy, &r.ProxyCommand, &r.RootDir, &r.RemotePath, &r.CondaBase, &r.CondaInit, &r.CondaEnv, &r.GPUIndices, &r.Tags, &r.Status, &r.SSHStatus, &r.LastDoctorError, &r.LastCheckedAt, &r.LastSuccessAt, &r.CreatedAt, &r.UpdatedAt)
 	}
 }
 

@@ -223,7 +223,7 @@ printf 'ok\n'
 	}
 	t.Setenv("AEXP_STUB_ARGS", argsFile)
 
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_resource_add","arguments":{"name":"mu","host":"1.2.3.4","root_dir":"/workspace","user":"root","port":2222}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_resource_add","arguments":{"name":"mu","host":"1.2.3.4","root_dir":"/workspace","user":"root","port":2222,"remote_path":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}}}` + "\n"
 	var out bytes.Buffer
 	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
@@ -234,7 +234,7 @@ printf 'ok\n'
 		t.Fatalf("read args: %v", err)
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
-	wantArgs := []string{"resource", "add", "--name", "mu", "--host", "1.2.3.4", "--root-dir", "/workspace", "--user", "root", "--port", "2222"}
+	wantArgs := []string{"resource", "add", "--name", "mu", "--host", "1.2.3.4", "--root-dir", "/workspace", "--user", "root", "--remote-path", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "--port", "2222"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}
