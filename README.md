@@ -371,6 +371,7 @@ The MCP server exposes structured tools for agents:
 - `aexp_get_run_snapshot`
 - `aexp_tail_run_events`
 - `aexp_get_run_metrics`
+- `aexp_latest_run_metrics` (alias)
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
 - `aexp_mark_run`
@@ -395,13 +396,15 @@ The current implementation wraps the local `aexp` binary instead of duplicating
 executor logic. That keeps behavior identical to the CLI: short commands still
 use `aexp exec`, including the local API fast path that can reuse a warm
 `aexp serve` SSH pool, while long tasks go through tracked `run submit`.
-For active training, agents should monitor `aexp_get_run_snapshot` or
-`aexp_tail_run_events` first; raw stdout/stderr logs are for debugging failures,
-OOMs, hangs, or missing events. Poll snapshots every 30-60 seconds, then back
-off toward 120 seconds when progress has not changed.
-`aexp_cli` is deliberately restricted to read-only commands; use the dedicated
-tools for exec, submit, cancel, sync, resources, projects, and marks. Agents
-should not need to fall back to raw CLI for normal aexp operations.
+For active training, agents should monitor `aexp_get_run_snapshot`,
+`aexp_tail_run_events`, or `aexp_get_run_metrics` first; raw stdout/stderr logs
+are for debugging failures, OOMs, hangs, or missing events. Poll snapshots every
+30-60 seconds, then back off toward 120 seconds when progress has not changed.
+`aexp_cli` is deliberately restricted to read-only commands, but it also allows
+the read-only event commands (`run snapshot`, `run events`, `run metrics`) for
+compatibility. Use the dedicated tools for exec, submit, cancel, sync,
+resources, projects, and marks. Agents should not need to fall back to raw CLI
+for normal aexp operations.
 
 ## Data Model
 

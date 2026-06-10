@@ -49,6 +49,7 @@ aexp mcp uninstall --target all
 - `aexp_get_run_snapshot`
 - `aexp_tail_run_events`
 - `aexp_get_run_metrics`
+- `aexp_latest_run_metrics`（`aexp_get_run_metrics` 别名）
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
 - `aexp_archive_run`
@@ -75,6 +76,8 @@ aexp mcp uninstall --target all
 下面的 `list_resources/create_run/...` 是目标语义草案；当前实现使用上面的 `aexp_*`
 名称，以避免和其他 MCP server 的通用工具名冲突。正常 agent 流程不应该退回裸 CLI；
 `aexp_cli` 只作为 read-only 兼容口。
+允许 `run snapshot`、`run events`、`run metrics` 这类只读事件命令；提交、
+取消、同步、标注等操作仍应使用专用 MCP tool。
 
 ### list_resources
 
@@ -223,6 +226,8 @@ UI events tail，适合作为训练过程的主监控入口。
   }
 }
 ```
+
+`aexp_latest_run_metrics` 是同等语义的别名，方便 agent 按自然命名调用。
 
 ### tail_run_logs
 

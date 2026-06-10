@@ -818,6 +818,9 @@ func allowReadOnlyCLI(args []string) error {
 		"resource explore": true,
 		"run list":         true,
 		"run status":       true,
+		"run snapshot":     true,
+		"run events":       true,
+		"run metrics":      true,
 		"run logs":         true,
 		"run marks":        true,
 		"exec history":     true,
@@ -1330,6 +1333,19 @@ func toolRegistry() []toolSpec {
 		{
 			Name:        "aexp_get_run_metrics",
 			Description: "Get latest structured metrics for a run from UI events.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"last":    numberSchema("Number of latest event lines to inspect."),
+				"last_n":  numberSchema("Alias for last."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunMetrics(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_latest_run_metrics",
+			Description: "Alias for aexp_get_run_metrics. Get latest structured metrics for a run from UI events.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"run_id":  stringSchema("Run id."),
 				"last":    numberSchema("Number of latest event lines to inspect."),

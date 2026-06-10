@@ -111,6 +111,9 @@ func TestCLIReadOnlyAllowlist(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "run list", args: []string{"run", "list", "--json"}},
+		{name: "run snapshot", args: []string{"run", "snapshot", "run_ABC", "--json"}},
+		{name: "run events", args: []string{"run", "events", "run_ABC", "--tail", "50", "--json"}},
+		{name: "run metrics", args: []string{"run", "metrics", "run_ABC", "--latest", "--json"}},
 		{name: "project doctor", args: []string{"project", "doctor", "--json"}},
 		{name: "reject submit", args: []string{"run", "submit", "--resource", "mu"}, wantErr: true},
 		{name: "reject follow", args: []string{"run", "logs", "run_ABC", "--follow"}, wantErr: true},
@@ -296,6 +299,38 @@ printf '{"ok":true}\n'
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
 	wantArgs := []string{"run", "snapshot", "run_abc123", "--json", "--tail", "25", "--refresh"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
+func TestLatestRunMetricsAliasInvokesAexpBinary(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"ok":true}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_latest_run_metrics","arguments":{"run_id":"run_abc123","last":123}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{"run", "metrics", "run_abc123", "--json", "--latest", "--tail", "123"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}
