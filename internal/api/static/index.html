@@ -1362,6 +1362,8 @@
         let allRunMarks = [];
         let allRunBookmarks = [];
         let bookmarkedRunIds = new Set();
+        const favoriteNoteDrafts = new Map();
+        let favoriteNoteEditingRunId = '';
         let selectedCompareRunIds = new Set();
         let runResourceFilterSignature = '';
         let execResourceFilterSignature = '';
@@ -2979,6 +2981,7 @@
         function renderFavorites(bookmarks) {
             const c = document.getElementById('favorites-container');
             if (!c) return;
+            if (favoriteNoteIsEditing()) return;
             const arr = asArray(bookmarks);
             if (!arr.length) {
                 c.innerHTML = '<div class="empty-state">' + escHTML(t('favorites.noFavorites')) + '</div>';
@@ -2987,12 +2990,18 @@
             c.innerHTML = arr.map(b => favoriteCardHTML(asObject(b))).join('');
         }
 
+        function favoriteNoteIsEditing() {
+            const active = document.activeElement;
+            return !!(active && active.classList && active.classList.contains('favorite-note'));
+        }
+
         function favoriteCardHTML(bookmark) {
             const run = asObject(bookmark.run);
             const runId = bookmark.run_id || run.id || '';
             const title = run.name || runId || t('favorites.missingRun');
             const command = asText(run.command);
             const updated = bookmark.updated_at ? new Date(bookmark.updated_at).toLocaleString(undefined, { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+            const note = favoriteNoteDrafts.has(runId) ? favoriteNoteDrafts.get(runId) : bookmark.note || '';
             return `<div class="favorite-card">
                 <div class="flex items-start justify-between gap-4 mb-2">
                     <div class="min-w-0">
@@ -3002,7 +3011,7 @@
                     ${runStatusPill(run.status || 'missing')}
                 </div>
                 <div class="detail-code mb-3">${escHTML(command || '—')}</div>
-                <textarea class="favorite-note" id="favorite-note-${escAttr(runId)}" placeholder="${escAttr(t('favorites.notePlaceholder'))}">${escHTML(bookmark.note || '')}</textarea>
+                <textarea class="favorite-note" id="favorite-note-${escAttr(runId)}" data-run-id="${escAttr(runId)}" placeholder="${escAttr(t('favorites.notePlaceholder'))}" onfocus="favoriteNoteEditingRunId=this.dataset.runId" oninput="favoriteNoteDrafts.set(this.dataset.runId, this.value)" onblur="if(favoriteNoteEditingRunId===this.dataset.runId)favoriteNoteEditingRunId=''">${escHTML(note)}</textarea>
                 <div class="favorite-actions mt-3">
                     <button class="btn-accent text-sm" onclick="saveFavoriteNote('${escAttr(runId)}')">${escHTML(t('common.saveNote'))}</button>
                     <button class="btn-secondary text-sm" onclick="showRunDetail('${escAttr(runId)}')">${escHTML(t('common.openRun'))}</button>
@@ -3246,7 +3255,8 @@
                 b = asObject(b);
                 const run = asObject(b.run);
                 if (query) {
-                    const haystack = [b.note, b.run_id, run.name, run.command, run.status, resourceLabel(run.resource_id)].map(asText).join('\n').toLowerCase();
+                    const note = favoriteNoteDrafts.has(b.run_id) ? favoriteNoteDrafts.get(b.run_id) : b.note;
+                    const haystack = [note, b.run_id, run.name, run.command, run.status, resourceLabel(run.resource_id)].map(asText).join('\n').toLowerCase();
                     if (!haystack.includes(query)) return false;
                 }
                 return true;
@@ -3273,6 +3283,8 @@
                 body: JSON.stringify({ note: note || '' })
             });
             if (!res.ok) return;
+            favoriteNoteDrafts.delete(runId);
+            if (favoriteNoteEditingRunId === runId) favoriteNoteEditingRunId = '';
             await loadData();
         }
 
@@ -3291,6 +3303,8 @@
                         method: 'DELETE',
                         headers: authHeaders()
                     });
+                    favoriteNoteDrafts.delete(runId);
+                    if (favoriteNoteEditingRunId === runId) favoriteNoteEditingRunId = '';
                     await loadData();
                 }
             });
