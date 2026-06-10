@@ -709,6 +709,10 @@
         <!-- Runs Tab -->
         <div id="tab-runs" class="hidden">
             <div class="runs-toolbar">
+                <div class="runs-mode-switch" role="tablist" aria-label="Run view">
+                    <button id="run-mode-active" class="runs-mode-btn active" type="button" onclick="setRunTrashMode(false)" data-i18n="runs.mainList">Runs</button>
+                    <button id="run-mode-trash" class="runs-mode-btn" type="button" onclick="setRunTrashMode(true)" data-i18n="runs.trash">Trash</button>
+                </div>
                 <div class="custom-select" id="run-filter-status">
                     <button type="button" class="custom-select-btn" onclick="toggleFilterMenu('status')">
                         <span id="run-filter-status-label" data-i18n="filters.allStatuses">All statuses</span>
@@ -742,7 +746,6 @@
                 <input id="run-filter-query" oninput="applyRunFilters()" class="filter-input"
                     placeholder="Search name or command" data-i18n-placeholder="filters.searchNameCommand">
                 <button id="compare-runs-btn" class="btn-secondary text-sm" onclick="openRunComparison()" disabled>Compare (0)</button>
-                <button id="run-trash-toggle" class="btn-secondary text-sm" onclick="toggleRunTrashMode()" data-i18n="runs.trash">Trash</button>
             </div>
             <div id="runs-table-container"></div>
         </div>
@@ -1021,10 +1024,51 @@
         }
         .runs-toolbar {
             display: flex;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             align-items: center;
             gap: 12px;
             margin-bottom: 20px;
+        }
+        .runs-toolbar .custom-select {
+            flex: 0 0 170px;
+        }
+        .runs-toolbar .filter-input {
+            flex: 1 1 260px;
+            width: auto;
+            min-width: 220px;
+        }
+        .runs-mode-switch {
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
+            padding: 3px;
+            border: 1px solid #d8d3c8;
+            border-radius: 0.75rem;
+            background: #f7f4ec;
+        }
+        .runs-mode-btn {
+            min-width: 72px;
+            padding: 7px 12px;
+            border-radius: 0.55rem;
+            font-size: 13px;
+            color: #5f5b53;
+            white-space: nowrap;
+        }
+        .runs-mode-btn:hover {
+            color: #191817;
+        }
+        .runs-mode-btn.active {
+            background: #fffdf8;
+            color: #c96545;
+            box-shadow: 0 1px 4px rgba(40, 35, 28, 0.08);
+        }
+        @media (max-width: 1100px) {
+            .runs-toolbar {
+                flex-wrap: wrap;
+            }
+            .runs-toolbar .filter-input {
+                flex-basis: 100%;
+            }
         }
 
         /* Table */
@@ -1059,6 +1103,25 @@
         .resource-actions { display: flex; justify-content: flex-end; gap: 10px; white-space: nowrap; }
         .link-btn { font-size: 12px; color: #5f5b53; }
         .link-btn:hover { color: #c96545; }
+        .runs-table {
+            table-layout: fixed;
+        }
+        .runs-table th,
+        .runs-table td {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .runs-table .run-command-cell {
+            white-space: nowrap;
+            max-width: none;
+        }
+        .runs-table .run-actions-cell {
+            overflow: visible;
+        }
+        .runs-table .resource-actions {
+            justify-content: flex-end;
+            gap: 8px;
+        }
 
         /* Run detail */
         .detail-card {
@@ -1386,6 +1449,7 @@
                 'runs.noActive': 'No active runs',
                 'runs.noMatching': 'No matching runs',
                 'runs.detail': 'Run Detail',
+                'runs.mainList': 'Runs',
                 'runs.addFavorite': 'Add Favorite',
                 'runs.removeFavorite': 'Remove Favorite',
                 'runs.cancelTitle': 'Cancel run',
@@ -1396,6 +1460,7 @@
                 'runs.archiveTitle': 'Move run to trash',
                 'runs.archiveMessage': 'Move "{name}" to trash? Logs, events, and findings stay unchanged.',
                 'runs.archiveAction': 'Move to trash',
+                'runs.archiveShort': 'Move',
                 'runs.restoreTitle': 'Restore run',
                 'runs.restoreMessage': 'Restore "{name}" to the main runs list?',
                 'runs.restoreAction': 'Restore',
@@ -1546,6 +1611,7 @@
                 'runs.noActive': '没有运行中的实验',
                 'runs.noMatching': '没有匹配的实验',
                 'runs.detail': '实验详情',
+                'runs.mainList': '实验',
                 'runs.addFavorite': '加入收藏',
                 'runs.removeFavorite': '取消收藏',
                 'runs.cancelTitle': '取消实验',
@@ -1556,6 +1622,7 @@
                 'runs.archiveTitle': '移入回收站',
                 'runs.archiveMessage': '把“{name}”移入回收站？日志、事件和 Agent 发现都会保留。',
                 'runs.archiveAction': '移入回收站',
+                'runs.archiveShort': '移入',
                 'runs.restoreTitle': '恢复实验',
                 'runs.restoreMessage': '把“{name}”恢复到实验列表？',
                 'runs.restoreAction': '恢复',
@@ -1668,10 +1735,8 @@
                 runKindLabelEl.textContent = runKindFilterLabel(runFilterKind);
                 updateFilterMenuActive('run-filter-kind-menu', runFilterKind);
             }
-            const trashBtn = document.getElementById('run-trash-toggle');
-            if (trashBtn) {
-                trashBtn.textContent = runTrashMode ? t('runs.backToRuns') : t('runs.trash');
-            }
+            document.getElementById('run-mode-active')?.classList.toggle('active', !runTrashMode);
+            document.getElementById('run-mode-trash')?.classList.toggle('active', runTrashMode);
             const execResourceLabel = document.getElementById('exec-filter-resource-label');
             if (execResourceLabel) {
                 execResourceLabel.textContent = execFilterResource ? resourceLabel(execFilterResource) : t('filters.allResources');
@@ -2815,9 +2880,22 @@
             const c = document.getElementById('runs-table-container');
             if (!runs.length) { c.innerHTML = '<div class="empty-state">' + escHTML(t('runs.noMatching')) + '</div>'; return; }
             c.innerHTML = `
-            <table class="data-table">
+            <div class="table-scroll">
+            <table class="data-table runs-table">
+                <colgroup>
+                    <col style="width:52px">
+                    <col style="width:100px">
+                    <col style="width:180px">
+                    <col style="width:24%">
+                    <col style="width:110px">
+                    <col style="width:86px">
+                    <col style="width:96px">
+                    <col style="width:64px">
+                    <col>
+                    <col style="width:104px">
+                </colgroup>
                 <thead><tr>
-                    <th style="width:56px">${escHTML(t('table.compare'))}</th><th>${escHTML(t('table.time'))}</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:130px">${escHTML(t('table.actions'))}</th>
+                    <th>${escHTML(t('table.compare'))}</th><th>${escHTML(t('table.time'))}</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th>${escHTML(t('table.actions'))}</th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
@@ -2833,7 +2911,7 @@
                         ? `<button class="link-btn" onclick="event.stopPropagation(); restoreRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.restore'))}</button>
                            <button class="link-btn hover:text-state-red" onclick="event.stopPropagation(); deleteRunLogically('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.delete'))}</button>`
                         : `<button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button>
-                           ${active ? '' : `<button class="link-btn hover:text-state-red" title="${escAttr(t('runs.archiveAction'))}" onclick="event.stopPropagation(); archiveRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('runs.trash'))}</button>`}`;
+                           ${active ? '' : `<button class="link-btn hover:text-state-red" title="${escAttr(t('runs.archiveAction'))}" onclick="event.stopPropagation(); archiveRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('runs.archiveShort'))}</button>`}`;
                     return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
                         <td onclick="event.stopPropagation()" title="${escAttr(t('table.compare'))}">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
                         <td class="tabular-nums text-xs text-ink-secondary whitespace-nowrap">${escHTML(time)}</td>
@@ -2845,11 +2923,12 @@
                         <td class="whitespace-nowrap">${runKindPill(kind)}</td>
                         <td class="whitespace-nowrap">${runStatusPill(r.status)}</td>
                         <td class="tabular-nums text-xs">${escHTML(runGPULabel(r.gpu_index))}</td>
-                        <td class="truncate max-w-xs text-ink-secondary">${escHTML(asText(r.command).substring(0, 80))}</td>
-                        <td><div class="resource-actions">${actions}</div></td>
+                        <td class="run-command-cell text-ink-secondary" title="${escAttr(asText(r.command))}">${escHTML(asText(r.command))}</td>
+                        <td class="run-actions-cell"><div class="resource-actions">${actions}</div></td>
                     </tr>`;
                 }).join('')}</tbody>
-            </table>`;
+            </table>
+            </div>`;
             updateCompareButton();
         }
 
@@ -3118,11 +3197,15 @@
             renderRunsTable(filtered);
         }
 
-        function toggleRunTrashMode() {
-            runTrashMode = !runTrashMode;
+        function setRunTrashMode(enabled) {
+            runTrashMode = !!enabled;
             selectedCompareRunIds.clear();
             refreshFilterLabels();
             applyRunFilters();
+        }
+
+        function toggleRunTrashMode() {
+            setRunTrashMode(!runTrashMode);
         }
 
         function applyExecFilters() {
