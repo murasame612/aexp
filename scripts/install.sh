@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="${AEXP_REPO:-ziwu/aexp}"
+REPO="${AEXP_REPO:-murasame612/aexp}"
 VERSION="${AEXP_VERSION:-latest}"
 INSTALL_DIR="${AEXP_INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="${AEXP_BINARY_NAME:-aexp}"

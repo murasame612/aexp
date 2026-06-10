@@ -51,7 +51,7 @@ simple: one local binary, one SQLite database, remote machines with SSH + tmux.
 ### Binary Release
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh | sh
 aexp --help
 ```
 
@@ -61,14 +61,14 @@ installs `aexp` plus the `aexp-event` helper into `~/.local/bin`.
 To install a specific version or directory:
 
 ```bash
-AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh)"
-AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh)"
+AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
+AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/ziwu/aexp.git
+git clone https://github.com/murasame612/aexp.git
 cd aexp
 go build -o aexp ./cmd/aexp
 ./aexp --help
