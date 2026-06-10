@@ -48,6 +48,23 @@ simple: one local binary, one SQLite database, remote machines with SSH + tmux.
 
 ## Install
 
+### Binary Release
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh | sh
+aexp --help
+```
+
+The installer downloads the latest GitHub Release for your OS/architecture and
+installs `aexp` plus the `aexp-event` helper into `~/.local/bin`.
+
+To install a specific version or directory:
+
+```bash
+AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh)"
+AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/ziwu/aexp/main/scripts/install.sh)"
+```
+
 ### From Source
 
 ```bash
@@ -55,13 +72,6 @@ git clone https://github.com/ziwu/aexp.git
 cd aexp
 go build -o aexp ./cmd/aexp
 ./aexp --help
-```
-
-### With `go install`
-
-```bash
-go install github.com/ziwu/aexp/cmd/aexp@latest
-aexp --help
 ```
 
 Remote machines do not need `aexp`. They need:
@@ -74,11 +84,26 @@ Remote machines do not need `aexp`. They need:
 
 ## Quick Start
 
-Initialize local state:
+Initialize local state and start the local dashboard:
 
 ```bash
 aexp init
+aexp serve --port 8080
 ```
+
+Open `http://localhost:8080`.
+
+![aexp dashboard](doc/imgs/main1_EN.png)
+
+If you use Codex or Claude Code, install the MCP tools:
+
+```bash
+aexp mcp install --target all
+```
+
+The MCP tools let agents call `aexp_exec`, `aexp_submit_run`,
+`aexp_project_run`, `aexp_sync_push`, `aexp_mark_run`, and the rest of the
+structured surface without hand-editing MCP JSON/TOML.
 
 Explore a remote host before registering it:
 
@@ -97,6 +122,10 @@ aexp resource add \
   --conda-env research \
   --gpu-indices 0
 ```
+
+You can also add resources in the browser:
+
+![add resource](doc/imgs/add_resource.png)
 
 Run a quick inspection command:
 
@@ -128,13 +157,10 @@ aexp run status run_xxx --short
 aexp run logs run_xxx --follow
 ```
 
-Open the dashboard:
+The Runs page shows run kind, status, GPU, command, favorite/trash actions, and
+highlighted findings:
 
-```bash
-aexp serve --port 8080
-```
-
-Then visit `http://localhost:8080`.
+![runs](doc/imgs/runs.png)
 
 Localhost access is token-free by default. If you bind to a non-local address,
 remote browser/API access requires the API token printed by the server.
@@ -225,6 +251,10 @@ The dashboard renders these events as progress cards, metric cards, and charts.
 
 ![metrics](doc/imgs/mertics_card.png)
 
+Runs that emit the same metric names can be compared on one chart:
+
+![metrics chart](doc/imgs/metics_svg.png)
+
 ### Web Dashboard
 
 The dashboard is embedded in the Go binary. There is no frontend build step.
@@ -239,7 +269,14 @@ It includes:
 - structured progress and metrics
 - agent findings and run marks
 
+![resources](doc/imgs/resources_EN.png)
+
 ![logs](doc/imgs/logs.png)
+
+Agents and humans can attach lightweight findings to important runs. Highlighted
+runs stay visible in the list and the finding text remains attached to the run:
+
+![agent findings](doc/imgs/agent_findings.png)
 
 ## CLI Overview
 
