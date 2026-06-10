@@ -215,11 +215,18 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) bool {
 	if ctx.Err() != nil {
 		return false
 	}
+	now := time.Now()
 	if err != nil {
 		m.logger.Warn("poll failed", "resource", r.Name, "error", err)
 		m.pool.RemoveByHost(r.Host, r.Port)
-		if r.Status != store.ResourceStatusUnreachable {
+		errText := err.Error()
+		if r.Status != store.ResourceStatusUnreachable ||
+			r.SSHStatus != store.ResourceSSHStatusFailed ||
+			r.LastDoctorError != errText {
 			r.Status = store.ResourceStatusUnreachable
+			r.SSHStatus = store.ResourceSSHStatusFailed
+			r.LastDoctorError = errText
+			r.LastCheckedAt = &now
 			m.store.UpdateResource(ctx, r)
 		}
 		return false
@@ -233,8 +240,14 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) bool {
 
 	// Derive resource status
 	newStatus := deriveStatus(snap)
-	if newStatus != r.Status {
+	if newStatus != r.Status ||
+		r.SSHStatus != store.ResourceSSHStatusOK ||
+		r.LastDoctorError != "" {
 		r.Status = newStatus
+		r.SSHStatus = store.ResourceSSHStatusOK
+		r.LastDoctorError = ""
+		r.LastCheckedAt = &now
+		r.LastSuccessAt = &now
 		m.store.UpdateResource(ctx, r)
 	}
 	return true

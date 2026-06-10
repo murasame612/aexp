@@ -1346,6 +1346,7 @@
                 'resources.noResourcesRegistered': 'No resources registered',
                 'resources.noResources': 'No resources',
                 'resources.unreachable': 'resource unreachable',
+                'resources.sshUnchecked': 'Not checked',
                 'resources.removeTitle': 'Remove resource',
                 'resources.removeMessage': 'Remove resource "{name}"? Existing runs stay in history, but this resource will no longer be available.',
                 'resources.registered': 'Registered {name}',
@@ -1491,6 +1492,7 @@
                 'resources.noResourcesRegistered': '还没有注册资源',
                 'resources.noResources': '没有资源',
                 'resources.unreachable': '资源不可达',
+                'resources.sshUnchecked': '未检查',
                 'resources.removeTitle': '移除资源',
                 'resources.removeMessage': '移除资源“{name}”？历史实验会保留，但这个资源将不可再用。',
                 'resources.registered': '已注册 {name}',
@@ -2286,7 +2288,9 @@
                 const condaLabel = r.conda_env ? 'env:' + r.conda_env : (r.conda_base ? 'conda' : '');
                 const osLabel = r.os_type || '';
                 const sub = [r.host, osLabel, condaLabel].filter(Boolean).join(' · ') || r.type || '-';
-                const sshFailed = (r.ssh_status || 'unknown') === 'failed';
+                const sshStatus = asText(r.ssh_status || 'unknown').toLowerCase();
+                const sshFailed = sshStatus === 'failed';
+                const sshPill = resourceSSHPill(r, { hideUnknown: true });
 
                 function metricRow(label, pct, valueText, extraText) {
                     return `<div class="resource-metric">
@@ -2319,7 +2323,7 @@
                 <div class="card" style="padding:14px 18px">
                     <div class="flex justify-between items-center mb-2">
                         <span class="font-medium font-heading text-sm truncate mr-2">${escHTML(r.name || '-')}</span>
-                        <span class="flex gap-1 flex-shrink-0">${resourceStatusPill(r.status)}${resourceSSHPill(r)}</span>
+                        <span class="flex gap-1 flex-shrink-0">${resourceStatusPill(r.status)}${sshPill}</span>
                     </div>
                     <div class="text-xs text-ink-muted mb-3 truncate">${escHTML(sub)}</div>
                     ${sshFailed ? '<div class="text-xs mb-3" style="color:#8a3a2a">' + escHTML(r.last_doctor_error || 'SSH control channel failed') + '</div>' : ''}
@@ -2609,11 +2613,12 @@
             return `<span class="pill pill-${escAttr(status)}${cls}" style="font-size:11px;padding:1px 8px">${escHTML(statusLabel(status))}</span>`;
         }
 
-        function resourceSSHPill(resource) {
+        function resourceSSHPill(resource, options = {}) {
             const r = asObject(resource);
             const status = asText(r.ssh_status || 'unknown').toLowerCase();
+            if (options.hideUnknown && status !== 'ok' && status !== 'failed') return '';
             const cls = status === 'ok' ? 'idle' : (status === 'failed' ? 'failed' : 'unknown');
-            const label = status === 'ok' ? 'SSH OK' : (status === 'failed' ? 'SSH FAIL' : 'SSH ?');
+            const label = status === 'ok' ? 'SSH OK' : (status === 'failed' ? 'SSH FAIL' : t('resources.sshUnchecked'));
             const title = status === 'failed' && r.last_doctor_error ? r.last_doctor_error : label;
             return `<span class="pill pill-${escAttr(cls)}" title="${escAttr(title)}" style="font-size:11px;padding:1px 8px">${escHTML(label)}</span>`;
         }
