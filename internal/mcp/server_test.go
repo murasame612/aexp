@@ -160,6 +160,51 @@ printf '{"id":"mark_123","run_id":"run_ABC","kind":"note"}\n'
 	}
 }
 
+func TestRunLifecycleToolsInvokeAexpBinary(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		want []string
+	}{
+		{name: "archive", tool: "aexp_archive_run", want: []string{"run", "archive", "run_ABC"}},
+		{name: "restore", tool: "aexp_restore_run", want: []string{"run", "restore", "run_ABC"}},
+		{name: "delete", tool: "aexp_delete_run", want: []string{"run", "delete", "run_ABC"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "args.txt")
+			stub := filepath.Join(dir, "aexp-stub")
+			script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf 'ok\n'
+`
+			if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+				t.Fatalf("write stub: %v", err)
+			}
+			t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tt.tool + `","arguments":{"run_id":"run_ABC"}}}` + "\n"
+			var out bytes.Buffer
+			if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+				t.Fatalf("Serve returned error: %v", err)
+			}
+
+			rawArgs, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+			if strings.Join(gotArgs, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", tt.want, gotArgs)
+			}
+		})
+	}
+}
+
 func TestResourceAddToolInvokesAexpBinary(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args.txt")

@@ -332,10 +332,24 @@ func (s *Server) toolListRuns(ctx context.Context, args map[string]interface{}) 
 	if v := stringArg(args, "resource", ""); v != "" {
 		cli = append(cli, "--resource", v)
 	}
+	if boolArg(args, "trash", false) {
+		cli = append(cli, "--trash")
+	}
+	if boolArg(args, "deleted", false) {
+		cli = append(cli, "--deleted")
+	}
 	if boolArg(args, "no_refresh", false) {
 		cli = append(cli, "--no-refresh")
 	}
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolRunLifecycle(ctx context.Context, args map[string]interface{}, action string) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "run", action, runID)
 }
 
 func (s *Server) toolTailRunLogs(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -1216,6 +1230,8 @@ func toolRegistry() []toolSpec {
 			InputSchema: objectSchema(map[string]interface{}{
 				"status":     stringSchema("Optional status filter."),
 				"resource":   stringSchema("Optional resource name filter."),
+				"trash":      boolSchema("List runs in trash."),
+				"deleted":    boolSchema("List logically deleted runs."),
 				"no_refresh": boolSchema("Avoid refreshing running runs."),
 				"timeout":    numberSchema("Tool timeout in seconds."),
 			}, nil),
@@ -1278,6 +1294,39 @@ func toolRegistry() []toolSpec {
 					return "", err
 				}
 				return s.runAexp(ctx, timeoutFromArgs(args, 20), "run", "cancel", runID)
+			},
+		},
+		{
+			Name:        "aexp_archive_run",
+			Description: "Move a finished aexp run to trash. Active runs are rejected by aexp.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunLifecycle(ctx, args, "archive")
+			},
+		},
+		{
+			Name:        "aexp_restore_run",
+			Description: "Restore an aexp run from trash.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunLifecycle(ctx, args, "restore")
+			},
+		},
+		{
+			Name:        "aexp_delete_run",
+			Description: "Logically delete an aexp run from trash. Remote files are not removed.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":  stringSchema("Run id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunLifecycle(ctx, args, "delete")
 			},
 		},
 		{

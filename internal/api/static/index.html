@@ -1292,6 +1292,24 @@
         .favorite-toggle.off {
             color: #7a766d;
         }
+        .icon-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 0.5rem;
+            color: #7a766d;
+        }
+        .icon-btn:hover {
+            color: #c96545;
+            background: #f0ede5;
+        }
+        .icon-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
+        }
         .lang-switch {
             display: inline-flex;
             align-items: center;
@@ -1460,7 +1478,6 @@
                 'runs.archiveTitle': 'Move run to trash',
                 'runs.archiveMessage': 'Move "{name}" to trash? Logs, events, and findings stay unchanged.',
                 'runs.archiveAction': 'Move to trash',
-                'runs.archiveShort': 'Move',
                 'runs.restoreTitle': 'Restore run',
                 'runs.restoreMessage': 'Restore "{name}" to the main runs list?',
                 'runs.restoreAction': 'Restore',
@@ -1622,7 +1639,6 @@
                 'runs.archiveTitle': '移入回收站',
                 'runs.archiveMessage': '把“{name}”移入回收站？日志、事件和 Agent 发现都会保留。',
                 'runs.archiveAction': '移入回收站',
-                'runs.archiveShort': '移入',
                 'runs.restoreTitle': '恢复实验',
                 'runs.restoreMessage': '把“{name}”恢复到实验列表？',
                 'runs.restoreAction': '恢复',
@@ -2911,7 +2927,7 @@
                         ? `<button class="link-btn" onclick="event.stopPropagation(); restoreRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.restore'))}</button>
                            <button class="link-btn hover:text-state-red" onclick="event.stopPropagation(); deleteRunLogically('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('common.delete'))}</button>`
                         : `<button class="favorite-toggle ${fav ? '' : 'off'}" title="${escAttr(fav ? t('runs.removeFavorite') : t('runs.addFavorite'))}" onclick="event.stopPropagation(); toggleRunBookmark('${escAttr(r.id)}')">${fav ? '★' : '☆'}</button>
-                           ${active ? '' : `<button class="link-btn hover:text-state-red" title="${escAttr(t('runs.archiveAction'))}" onclick="event.stopPropagation(); archiveRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${escHTML(t('runs.archiveShort'))}</button>`}`;
+                           ${active ? '' : `<button class="icon-btn" title="${escAttr(t('runs.archiveAction'))}" aria-label="${escAttr(t('runs.archiveAction'))}" onclick="event.stopPropagation(); archiveRun('${escAttr(r.id)}','${escAttr(r.name || r.id)}')">${trashIcon()}</button>`}`;
                     return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
                         <td onclick="event.stopPropagation()" title="${escAttr(t('table.compare'))}">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
                         <td class="tabular-nums text-xs text-ink-secondary whitespace-nowrap">${escHTML(time)}</td>
@@ -3701,6 +3717,15 @@
         }
         function escAttr(s) {
             return escHTML(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function trashIcon() {
+            return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4h8v2"></path>
+                <path d="M19 6l-1 14H6L5 6"></path>
+                <path d="M10 11v5"></path>
+                <path d="M14 11v5"></path>
+            </svg>`;
         }
 
         function openConfirmModal({ title, message, actionLabel, action }) {

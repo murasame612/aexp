@@ -34,6 +34,9 @@ MCP 工具调用会转成同一个本地 `aexp` 二进制的 CLI 子命令，因
 - `aexp_get_run_status`
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
+- `aexp_archive_run`
+- `aexp_restore_run`
+- `aexp_delete_run`
 - `aexp_mark_run`
 - `aexp_list_run_marks`
 - `aexp_exec_history`
