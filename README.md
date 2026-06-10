@@ -267,7 +267,7 @@ aexp run events run_xxx --tail 50 --json
 
 Runs that emit the same metric names can be compared on one chart:
 
-![metrics chart](doc/imgs/metics_svg.png)
+![metric comparison](doc/imgs/metic_compare.png)
 
 ### Web Dashboard
 

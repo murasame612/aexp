@@ -247,7 +247,7 @@ note("first checkpoint written")
 
 多个 run 只要写了同名指标，就可以放到同一张图里比较：
 
-![metrics chart](doc/imgs/metics_svg.png)
+![指标对比](doc/imgs/metic_compare.png)
 
 对 Agent 来说，正常监控应该优先读事件，而不是狂刷日志：
 
@@ -349,4 +349,3 @@ go build -o aexp ./cmd/aexp
 ## 状态
 
 `aexp` 还在早期阶段，但已经能解决真实 SSH 实验工作流里的很多痛点。它适合个人和小团队把远程实验跑得更可追踪，也适合让 Agent 少猜环境、少刷日志、少丢上下文。
-
