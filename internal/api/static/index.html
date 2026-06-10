@@ -1317,6 +1317,7 @@
                 'sections.agentFindings': 'Agent Findings',
                 'sections.recentExec': 'Recent Exec',
                 'table.time': 'Time',
+                'table.compare': 'Compare',
                 'table.resource': 'Resource',
                 'table.actor': 'Actor',
                 'table.command': 'Command',
@@ -1463,6 +1464,7 @@
                 'sections.agentFindings': 'Agent 发现',
                 'sections.recentExec': '最近执行',
                 'table.time': '时间',
+                'table.compare': '对比',
                 'table.resource': '资源',
                 'table.actor': '执行者',
                 'table.command': '命令',
@@ -1701,6 +1703,13 @@
         function asObject(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
         function asText(v) { return v == null ? '' : String(v); }
         function logLines(logs) { return asArray(asObject(logs).lines); }
+        function formatShortTime(value) {
+            const text = asText(value);
+            if (!text) return '-';
+            const d = new Date(text);
+            if (Number.isNaN(d.getTime())) return '-';
+            return d.toLocaleString(undefined, { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+        }
         function logLineNumber(line, fallback) {
             const n = Number(asObject(line).line_no);
             return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -2588,7 +2597,7 @@
             c.innerHTML = `
             <table class="data-table">
                 <thead><tr>
-                    <th style="width:42px">Cmp</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
+                    <th style="width:56px">${escHTML(t('table.compare'))}</th><th>${escHTML(t('table.time'))}</th><th>${escHTML(t('table.id'))}</th><th>${escHTML(t('table.name'))}</th><th>${escHTML(t('table.resource'))}</th><th>${escHTML(t('table.kind'))}</th><th>${escHTML(t('table.status'))}</th><th>${escHTML(t('table.gpu'))}</th><th>${escHTML(t('table.command'))}</th><th style="width:70px"></th>
                 </tr></thead>
                 <tbody>${runs.map(r => {
                     r = asObject(r);
@@ -2598,8 +2607,10 @@
                     const findingCount = runMarkCount(r.id);
                     const canCompare = isCompareRunEligible(r);
                     const checked = selectedCompareRunIds.has(r.id);
+                    const time = formatShortTime(r.created_at || r.started_at);
                     return `<tr class="cursor-pointer ${kind === 'setup' ? 'opacity-75' : ''} ${findingCount ? 'has-findings' : ''}" onclick="showRunDetail('${r.id}')">
-                        <td onclick="event.stopPropagation()">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
+                        <td onclick="event.stopPropagation()" title="${escAttr(t('table.compare'))}">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
+                        <td class="tabular-nums text-xs text-ink-secondary whitespace-nowrap">${escHTML(time)}</td>
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>
                             <span>${escHTML(r.name || '-')}</span>
