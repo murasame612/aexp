@@ -2441,7 +2441,6 @@
                         <div class="flex gap-2 flex-wrap justify-end">
                             ${runKindPill(kind)}
                             ${runStatusPill('running')}
-                            ${findingBadge(findingCount)}
                         </div>
                     </div>
                     <div class="text-xs text-ink-secondary font-mono mt-1">${cmd.substring(0, 70)}${cmd.length > 70 ? '...' : ''}</div>
@@ -2603,10 +2602,7 @@
                         <td onclick="event.stopPropagation()">${canCompare ? `<input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleCompareRun('${escAttr(r.id)}', this.checked)">` : ''}</td>
                         <td class="mono">${escHTML(r.id || '-')}</td>
                         <td>
-                            <div class="flex items-center gap-2 flex-wrap">
-                                <span>${escHTML(r.name || '-')}</span>
-                                ${findingBadge(findingCount)}
-                            </div>
+                            <span>${escHTML(r.name || '-')}</span>
                         </td>
                         <td title="${escAttr(r.resource_id || '')}">${escHTML(resLabel)}</td>
                         <td class="whitespace-nowrap">${runKindPill(kind)}</td>
