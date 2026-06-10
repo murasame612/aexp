@@ -1760,6 +1760,21 @@
             return rows;
         }
 
+        function terminalRowFromContent(source, content) {
+            const text = asText(content);
+            const m = text.match(/^\[(stdout|stderr)\]\s?(.*)$/);
+            if (m) return { source: m[1], content: m[2] };
+            return { source: asText(source || 'terminal'), content: text };
+        }
+
+        function terminalLogRows(logs) {
+            return logLines(logs).map((line, idx) => {
+                const obj = asObject(line);
+                const row = terminalRowFromContent(obj.source || 'terminal', obj.content);
+                return { ...row, order: logLineNumber(obj, idx + 1) };
+            });
+        }
+
         function stripAnsi(s) {
             return asText(s).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
         }
@@ -1848,6 +1863,19 @@
 
         function renderCombinedLogBlock(stdoutLogs, stderrLogs, paneId = 'log-pane-combined') {
             const merged = compactTerminalRows(combinedLogLines(stdoutLogs, stderrLogs), LIVE_LOG_MAX_LINES);
+            const body = merged.map(renderTerminalRow).join('');
+            return `
+                <div class="mb-4">
+                    <div class="flex items-center justify-between gap-3 mb-2">
+                        <h3 class="text-sm font-medium font-heading">${escHTML(t('logs.cleanTail'))}</h3>
+                    </div>
+                    <div class="log-pane terminal-pane" id="${escAttr(paneId)}" data-lines="${escAttr(String(merged.length))}">${body}</div>
+                </div>`;
+        }
+
+        function renderTerminalLogBlock(terminalLogs, fallbackHTML = '', paneId = 'log-pane-terminal') {
+            const merged = compactTerminalRows(terminalLogRows(terminalLogs), LIVE_LOG_MAX_LINES);
+            if (!merged.length) return fallbackHTML;
             const body = merged.map(renderTerminalRow).join('');
             return `
                 <div class="mb-4">
@@ -3019,10 +3047,17 @@
             });
 
             const eventPath = uiEventsPath(run);
-            const preferredLogPath = eventPath || preferredRunLogPath(run);
-            const logPromise = preferredLogPath
-                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(preferredLogPath) + '&limit=5000&tail=true')
+            const agentLogPath = eventPath ? '' : preferredRunLogPath(run);
+            const terminalPromise = fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=terminal&limit=500&tail=true').catch(() => ({ lines: [] }));
+            const logPromise = eventPath
+                ? Promise.all([
+                    fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(eventPath) + '&limit=5000&tail=true'),
+                    terminalPromise
+                ])
+                : agentLogPath
+                ? fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?path=' + encodeURIComponent(agentLogPath) + '&limit=5000&tail=true')
                 : Promise.all([
+                    terminalPromise,
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stdout&limit=300&tail=true'),
                     fetchJSON('/runs/' + encodeURIComponent(id) + '/logs?source=stderr&limit=300&tail=true')
                 ]);
@@ -3031,20 +3066,20 @@
                 const el = document.getElementById('run-logs-detail');
                 if (el) {
                     const logHTML = eventPath
-                        ? renderRunEventsBlock(run.id, eventPath, asObject(result))
-                        : preferredLogPath
-                        ? renderAgentLogBlock(run.id, preferredLogPath, asObject(result))
-                        : renderCombinedLogBlock(asObject(result[0]), asObject(result[1]));
+                        ? renderRunEventsBlock(run.id, eventPath, asObject(result[0])) + renderTerminalLogBlock(asObject(result[1]))
+                        : agentLogPath
+                        ? renderAgentLogBlock(run.id, agentLogPath, asObject(result))
+                        : renderTerminalLogBlock(asObject(result[0]), renderCombinedLogBlock(asObject(result[1]), asObject(result[2])));
                     el.innerHTML = logHTML + `
                         <div class="log-actions">
                             <button type="button" class="btn-secondary text-xs" onclick="loadRawLogs('${escAttr(run.id)}')">${escHTML(t('logs.loadRaw'))}</button>
-                            ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}','${escAttr(preferredLogPath)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
+                            ${run.status === 'running' ? `<button type="button" class="btn-secondary text-xs" id="live-log-toggle" onclick="toggleLiveLogs('${escAttr(run.id)}','${escAttr(eventPath || agentLogPath)}')">${escHTML(t('logs.followLive'))}</button>` : ''}
                         </div>
                         <div id="raw-log-streams"></div>`;
                 }
-                const lp = document.getElementById('log-pane-events') || document.getElementById('log-pane-agent') || document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
+                const lp = document.getElementById('log-pane-events') || document.getElementById('log-pane-agent') || document.getElementById('log-pane-terminal') || document.getElementById('log-pane-combined') || document.getElementById('log-pane-stdout');
                 if (lp) lp.scrollTop = lp.scrollHeight;
-                if (run.status === 'running') startLiveLogs(run.id, preferredLogPath);
+                if (run.status === 'running') startLiveLogs(run.id, eventPath || agentLogPath);
             }).catch(() => {
                 const el = document.getElementById('run-logs-detail');
                 if (el) el.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('status.unknown')) + '</div>';
@@ -3083,15 +3118,17 @@
             const target = document.getElementById('raw-log-streams');
             if (!target) return;
             target.innerHTML = '<div class="empty-state" style="padding:10px 0">' + escHTML(t('state.loading')) + '</div>';
-            const [logsRaw, errLogsRaw] = await Promise.all([
+            const [terminalRaw, logsRaw, errLogsRaw] = await Promise.all([
+                fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=terminal&limit=1000&tail=true').catch(() => ({ lines: [] })),
                 fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stdout&limit=1000&tail=true'),
                 fetchJSON('/runs/' + encodeURIComponent(runId) + '/logs?source=stderr&limit=1000&tail=true')
             ]);
             if (currentDetailRunId !== runId) return;
+            const terminalLogs = asObject(terminalRaw);
             const logs = asObject(logsRaw);
             const errLogs = asObject(errLogsRaw);
             target.innerHTML = `
-                ${renderCombinedLogBlock(logs, errLogs, 'log-pane-combined-raw')}
+                ${renderTerminalLogBlock(terminalLogs, renderCombinedLogBlock(logs, errLogs, 'log-pane-combined-raw'), 'log-pane-terminal-raw')}
                 <details class="raw-log-streams">
                     <summary>${escHTML(t('logs.rawStreams'))}</summary>
                     ${renderLogBlock(runId, 'stdout', logs, '', true)}
@@ -3166,6 +3203,11 @@
             pane.scrollTop = pane.scrollHeight;
         }
 
+        function appendTerminalLogLine(pane, source, content) {
+            const row = terminalRowFromContent(source, content);
+            appendCombinedLogLine(pane, row.source, row.content);
+        }
+
         function toggleLiveLogs(runId, logPath) {
             if (liveLogFollowing) {
                 logSockets.forEach(sock => sock.close());
@@ -3208,6 +3250,27 @@
                             appendPlainLogLine(document.getElementById('log-pane-agent'), content);
                         }
                     }
+                };
+                logSockets.push(sock);
+                const terminalPane = logPath === currentUIEventsPath ? document.getElementById('log-pane-terminal') : null;
+                if (terminalPane) {
+                    const terminalSock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ source: 'terminal', snapshot: 'false' }));
+                    terminalSock.onmessage = (e) => {
+                        if (!liveLogFollowing || currentDetailRunId !== runId) return;
+                        const msg = JSON.parse(e.data);
+                        if (msg.type === 'log.line') appendTerminalLogLine(terminalPane, msg.source || 'terminal', msg.content);
+                    };
+                    logSockets.push(terminalSock);
+                }
+                return;
+            }
+            const terminalPane = document.getElementById('log-pane-terminal');
+            if (terminalPane) {
+                const sock = new WebSocket(proto + '//' + location.host + '/ws/runs/' + runId + '/logs' + wsQuery({ source: 'terminal', snapshot: 'false' }));
+                sock.onmessage = (e) => {
+                    if (!liveLogFollowing || currentDetailRunId !== runId) return;
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'log.line') appendTerminalLogLine(terminalPane, msg.source || 'terminal', msg.content);
                 };
                 logSockets.push(sock);
                 return;
