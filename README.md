@@ -1,5 +1,11 @@
 # aexp
 
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Release](https://img.shields.io/github/v/release/murasame612/aexp?display_name=tag&sort=semver)](https://github.com/murasame612/aexp/releases)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555)](https://github.com/murasame612/aexp/releases)
+
+[English](README.md) | [中文](README_zh.md)
+
 Agent-friendly experiment control for SSH machines.
 
 `aexp` gives humans and coding agents a small control plane for running research
