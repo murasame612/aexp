@@ -142,6 +142,40 @@ func TestProjectInitWritesAndRefusesOverwrite(t *testing.T) {
 	})
 }
 
+func TestTopLevelInitProjectDryRun(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("torch\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var text string
+	withWorkingDir(t, dir, func() {
+		out, err := runInitForTest("--project", "--resource", "mu", "--cwd", "/remote/project", "--dry-run")
+		if err != nil {
+			t.Fatalf("top-level init --project failed: %v\n%s", err, out)
+		}
+		text = out
+	})
+	for _, want := range []string{
+		"Database created at " + filepath.Join(home, ".aexp", "aexp.db"),
+		"Project config: run 'aexp project init' or 'aexp init --project'",
+		"Creating project config...",
+		"resource: mu",
+		"cwd: /remote/project",
+		"command: python -m pip install -r requirements.txt",
+		"aexp project run train --dry-run",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("init --project output missing %q:\n%s", want, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".aexp.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not write .aexp.yaml, stat err=%v", err)
+	}
+}
+
 func TestProjectDoctorConfigRecommendations(t *testing.T) {
 	cfg := &projectFileConfig{
 		Path:     filepath.Join(t.TempDir(), ".aexp.yaml"),
@@ -315,6 +349,16 @@ func TestResolveSyncExcludesRejectsUnknownProfile(t *testing.T) {
 
 func runProjectInitForTest(args ...string) (string, error) {
 	cmd := projectInitCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runInitForTest(args ...string) (string, error) {
+	cmd := initCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs(args)

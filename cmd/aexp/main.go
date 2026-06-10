@@ -862,60 +862,16 @@ func projectInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Create a project .aexp.yaml recipe file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if envStrategy == "" {
-				envStrategy = executor.ProjectEnvAuto
-			}
-			if envStrategy != executor.ProjectEnvAuto && envStrategy != executor.ProjectEnvRaw {
-				return fmt.Errorf("--env must be auto or raw")
-			}
-			localDir, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("get current directory: %w", err)
-			}
-			if outputPath == "" {
-				outputPath = filepath.Join(localDir, ".aexp.yaml")
-			} else {
-				outputPath = expandPath(outputPath)
-				if !filepath.IsAbs(outputPath) {
-					outputPath = filepath.Join(localDir, outputPath)
-				}
-			}
-			if cwd == "" {
-				cwd = localDir
-			}
-			guess := guessProjectInit(localDir)
-			content := renderProjectInitConfig(projectInitConfig{
-				Resource:    resourceName,
-				Cwd:         cwd,
-				Env:         envStrategy,
-				CondaEnv:    condaEnv,
-				DefaultGPU:  defaultGPU,
-				SetupCmd:    guess.SetupCmd,
-				TrainCmd:    guess.TrainCmd,
-				Logs:        guess.Logs,
-				Metrics:     guess.Metrics,
-				SyncProfile: guess.SyncProfile,
+			return runProjectInit(projectInitOptions{
+				Resource:   resourceName,
+				Cwd:        cwd,
+				Env:        envStrategy,
+				CondaEnv:   condaEnv,
+				OutputPath: outputPath,
+				DefaultGPU: defaultGPU,
+				Force:      force,
+				DryRun:     dryRun,
 			})
-			if dryRun {
-				fmt.Printf("target: %s\n", outputPath)
-				fmt.Println(content)
-				printProjectInitNextSteps()
-				return nil
-			}
-			if _, err := os.Stat(outputPath); err == nil && !force {
-				return fmt.Errorf("%s already exists; pass --force to overwrite", outputPath)
-			} else if err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("check output file: %w", err)
-			}
-			if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-				return fmt.Errorf("create output directory: %w", err)
-			}
-			if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
-				return fmt.Errorf("write project config: %w", err)
-			}
-			fmt.Printf("Created %s\n", outputPath)
-			printProjectInitNextSteps()
-			return nil
 		},
 	}
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Default resource name")
@@ -927,6 +883,76 @@ func projectInitCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the config without writing it")
 	return cmd
+}
+
+type projectInitOptions struct {
+	Resource   string
+	Cwd        string
+	Env        string
+	CondaEnv   string
+	OutputPath string
+	DefaultGPU int
+	Force      bool
+	DryRun     bool
+}
+
+func runProjectInit(opts projectInitOptions) error {
+	if opts.Env == "" {
+		opts.Env = executor.ProjectEnvAuto
+	}
+	if opts.Env != executor.ProjectEnvAuto && opts.Env != executor.ProjectEnvRaw {
+		return fmt.Errorf("--env must be auto or raw")
+	}
+	localDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	outputPath := opts.OutputPath
+	if outputPath == "" {
+		outputPath = filepath.Join(localDir, ".aexp.yaml")
+	} else {
+		outputPath = expandPath(outputPath)
+		if !filepath.IsAbs(outputPath) {
+			outputPath = filepath.Join(localDir, outputPath)
+		}
+	}
+	cwd := opts.Cwd
+	if cwd == "" {
+		cwd = localDir
+	}
+	guess := guessProjectInit(localDir)
+	content := renderProjectInitConfig(projectInitConfig{
+		Resource:    opts.Resource,
+		Cwd:         cwd,
+		Env:         opts.Env,
+		CondaEnv:    opts.CondaEnv,
+		DefaultGPU:  opts.DefaultGPU,
+		SetupCmd:    guess.SetupCmd,
+		TrainCmd:    guess.TrainCmd,
+		Logs:        guess.Logs,
+		Metrics:     guess.Metrics,
+		SyncProfile: guess.SyncProfile,
+	})
+	if opts.DryRun {
+		fmt.Printf("target: %s\n", outputPath)
+		fmt.Println(content)
+		printProjectInitNextSteps()
+		return nil
+	}
+	if _, err := os.Stat(outputPath); err == nil && !opts.Force {
+		return fmt.Errorf("%s already exists; pass --force to overwrite", outputPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("check output file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write project config: %w", err)
+	}
+	fmt.Printf("Created %s\n", outputPath)
+	printProjectInitNextSteps()
+	return nil
 }
 
 type projectInitConfig struct {
@@ -2797,7 +2823,12 @@ func parseEventValue(value string) interface{} {
 // --- init ---
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var project bool
+	var resourceName, cwd, envStrategy, condaEnv, outputPath string
+	var defaultGPU int
+	var force, dryRun bool
+
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize aexp (create config dir, generate SSH key)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2826,9 +2857,34 @@ func initCmd() *cobra.Command {
 
 			fmt.Println("Database created at", dbPath)
 			fmt.Println("Ready. Run 'aexp serve' to start the server.")
+			fmt.Println("Project config: run 'aexp project init' or 'aexp init --project' inside a repo to create .aexp.yaml.")
+			if project {
+				fmt.Println()
+				fmt.Println("Creating project config...")
+				return runProjectInit(projectInitOptions{
+					Resource:   resourceName,
+					Cwd:        cwd,
+					Env:        envStrategy,
+					CondaEnv:   condaEnv,
+					OutputPath: outputPath,
+					DefaultGPU: defaultGPU,
+					Force:      force,
+					DryRun:     dryRun,
+				})
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&project, "project", false, "Also create a project .aexp.yaml in the current directory")
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Project default resource name (with --project)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Project remote working directory (with --project; default: current directory)")
+	cmd.Flags().StringVar(&envStrategy, "env", executor.ProjectEnvAuto, "Project runtime env strategy: auto or raw (with --project)")
+	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Project default conda environment (with --project)")
+	cmd.Flags().IntVar(&defaultGPU, "default-gpu", 0, "Project default GPU index for formal recipes (with --project)")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Project config output path (with --project; default: .aexp.yaml)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing project config (with --project)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the project config without writing it (with --project)")
+	return cmd
 }
 
 // --- resource ---
