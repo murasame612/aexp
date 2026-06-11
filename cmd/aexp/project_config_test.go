@@ -383,6 +383,23 @@ func TestProjectDoctorConfigFixesMissingRemoteCWD(t *testing.T) {
 	}
 }
 
+func TestDetectResourceEnvFixSuggestsUpdateCommand(t *testing.T) {
+	fix := detectResourceEnvFix(func(command string) (string, string, error) {
+		return "remote_path|/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nconda_base|/opt/conda\nconda_init|/opt/conda/etc/profile.d/conda.sh\nconda_env|base\n", "", nil
+	}, "szu")
+	for _, want := range []string{
+		"aexp resource update 'szu'",
+		"--remote-path '/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'",
+		"--conda-base '/opt/conda'",
+		"--conda-init '/opt/conda/etc/profile.d/conda.sh'",
+		"--conda-env 'base'",
+	} {
+		if !strings.Contains(fix, want) {
+			t.Fatalf("fix missing %q:\n%s", want, fix)
+		}
+	}
+}
+
 func TestProjectRunDryRunShowsRefreshEnv(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ".aexp.yaml")

@@ -665,6 +665,9 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 		}
 		if profile.ResolvedEnv == executor.ProjectEnvRaw {
 			report.RecommendedFixes = append(report.RecommendedFixes, "python missing in project env; create .venv or set resource conda_env, then use --project-env auto")
+			if fix := detectResourceEnvFix(execRemote, res.Name); fix != "" {
+				report.RecommendedFixes = append(report.RecommendedFixes, fix)
+			}
 		}
 	}
 
@@ -691,6 +694,72 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 
 	report.RecommendedSubmitCommand = recommendedSubmitCommand(res.Name, cwd, condaEnv, gpuIndex)
 	return report
+}
+
+func detectResourceEnvFix(execRemote func(string) (string, string, error), resourceName string) string {
+	if execRemote == nil {
+		return ""
+	}
+	out, _, err := execRemote(resourceEnvProbeScript())
+	if err != nil {
+		return ""
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "|")
+		if ok {
+			values[key] = strings.TrimSpace(value)
+		}
+	}
+	remotePath := values["remote_path"]
+	if remotePath == "" {
+		return ""
+	}
+	parts := []string{"aexp resource update", cliShellQuote(resourceName), "--remote-path", cliShellQuote(remotePath)}
+	if values["conda_base"] != "" {
+		parts = append(parts, "--conda-base", cliShellQuote(values["conda_base"]))
+	}
+	if values["conda_init"] != "" {
+		parts = append(parts, "--conda-init", cliShellQuote(values["conda_init"]))
+	}
+	if values["conda_env"] != "" {
+		parts = append(parts, "--conda-env", cliShellQuote(values["conda_env"]))
+	}
+	return "detected usable Python/Conda; persist it with: " + strings.Join(parts, " ")
+}
+
+func resourceEnvProbeScript() string {
+	return `set +e
+CONDA_EXE=""
+for conda_bin in conda /opt/conda/bin/conda "$HOME/miniforge3/bin/conda" "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda"; do
+  if command -v "$conda_bin" >/dev/null 2>&1 || [ -x "$conda_bin" ]; then
+    CONDA_EXE="$conda_bin"
+    break
+  fi
+done
+if [ -n "$CONDA_EXE" ]; then
+  CONDA_BASE="$("$CONDA_EXE" info --base 2>/dev/null)"
+  if [ -n "$CONDA_BASE" ]; then
+    echo "remote_path|$CONDA_BASE/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    echo "conda_base|$CONDA_BASE"
+    if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+      echo "conda_init|$CONDA_BASE/etc/profile.d/conda.sh"
+    fi
+    if "$CONDA_BASE/bin/python" -V >/dev/null 2>&1; then
+      echo "conda_env|base"
+    else
+      "$CONDA_EXE" env list 2>/dev/null | awk 'NF >= 2 && $1 !~ /^#/ { print "conda_env|" $1; exit }'
+    fi
+    exit 0
+  fi
+fi
+for py in /opt/conda/bin/python "$HOME/miniforge3/bin/python" "$HOME/miniconda3/bin/python" "$HOME/anaconda3/bin/python" /usr/bin/python3 /usr/bin/python; do
+  if [ -x "$py" ]; then
+    bin_dir="$(dirname "$py")"
+    echo "remote_path|$bin_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    exit 0
+  fi
+done`
 }
 
 func defaultDoctorEvents(projectHelper string) doctorEvents {

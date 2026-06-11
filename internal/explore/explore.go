@@ -11,17 +11,18 @@ import (
 
 // Discovery contains the discovered environment info of a remote host.
 type Discovery struct {
-	Host       string      `json:"host"`
-	OS         string      `json:"os"`
-	Arch       string      `json:"arch"`
-	GPUs       []GPUInfo   `json:"gpus"`
-	CondaBase  string      `json:"conda_base,omitempty"`
-	CondaInit  string      `json:"conda_init,omitempty"`
-	CondaEnvs  []CondaEnv  `json:"conda_envs"`
-	Pythons    []PythonBin `json:"pythons"`
-	Workspaces []Workspace `json:"workspaces"`
-	TmuxCount  int         `json:"tmux_sessions"`
-	AexpRuns   int         `json:"aexp_runs"`
+	Host              string                  `json:"host"`
+	OS                string                  `json:"os"`
+	Arch              string                  `json:"arch"`
+	GPUs              []GPUInfo               `json:"gpus"`
+	CondaBase         string                  `json:"conda_base,omitempty"`
+	CondaInit         string                  `json:"conda_init,omitempty"`
+	CondaEnvs         []CondaEnv              `json:"conda_envs"`
+	Pythons           []PythonBin             `json:"pythons"`
+	Workspaces        []Workspace             `json:"workspaces"`
+	TmuxCount         int                     `json:"tmux_sessions"`
+	AexpRuns          int                     `json:"aexp_runs"`
+	RecommendedConfig *ResourceRecommendation `json:"recommended_config,omitempty"`
 }
 
 type GPUInfo struct {
@@ -46,6 +47,15 @@ type Workspace struct {
 	SubdirCount int    `json:"subdir_count"`
 }
 
+type ResourceRecommendation struct {
+	RemotePath string `json:"remote_path,omitempty"`
+	CondaBase  string `json:"conda_base,omitempty"`
+	CondaInit  string `json:"conda_init,omitempty"`
+	CondaEnv   string `json:"conda_env,omitempty"`
+	AddFlags   string `json:"add_flags,omitempty"`
+	UpdateHint string `json:"update_hint,omitempty"`
+}
+
 // Explore runs discovery probes on a remote host and returns the results.
 func Explore(ctx context.Context, pool *executor.SSHPool, host string, port int, user string, keyPath string, socksProxy string, proxyCommand string) (*Discovery, error) {
 	d := &Discovery{Host: host}
@@ -59,6 +69,7 @@ func Explore(ctx context.Context, pool *executor.SSHPool, host string, port int,
 	}
 
 	parseProbeOutput(stdout, d)
+	d.RecommendedConfig = RecommendResourceConfig(d)
 	return d, nil
 }
 
@@ -349,6 +360,84 @@ func FormatDiscovery(d *Discovery) string {
 
 	b.WriteString(fmt.Sprintf("tmux:       %d session(s)\n", d.TmuxCount))
 	b.WriteString(fmt.Sprintf("aexp runs:  %d active\n", d.AexpRuns))
+	if d.RecommendedConfig != nil && d.RecommendedConfig.AddFlags != "" {
+		b.WriteString("\nRecommended resource config:\n")
+		if d.RecommendedConfig.RemotePath != "" {
+			b.WriteString(fmt.Sprintf("  remote_path: %s\n", d.RecommendedConfig.RemotePath))
+		}
+		if d.RecommendedConfig.CondaBase != "" {
+			b.WriteString(fmt.Sprintf("  conda_base:  %s\n", d.RecommendedConfig.CondaBase))
+		}
+		if d.RecommendedConfig.CondaInit != "" {
+			b.WriteString(fmt.Sprintf("  conda_init:  %s\n", d.RecommendedConfig.CondaInit))
+		}
+		if d.RecommendedConfig.CondaEnv != "" {
+			b.WriteString(fmt.Sprintf("  conda_env:   %s\n", d.RecommendedConfig.CondaEnv))
+		}
+		b.WriteString("  add/update flags:\n")
+		b.WriteString("    " + d.RecommendedConfig.AddFlags + "\n")
+	}
 
 	return b.String()
+}
+
+func RecommendResourceConfig(d *Discovery) *ResourceRecommendation {
+	if d == nil {
+		return nil
+	}
+	base := strings.TrimSpace(d.CondaBase)
+	env := preferredCondaEnv(d.CondaEnvs)
+	remotePath := defaultRemotePath(base)
+	rec := &ResourceRecommendation{
+		RemotePath: remotePath,
+		CondaBase:  base,
+		CondaEnv:   env,
+	}
+	if base != "" {
+		rec.CondaInit = strings.TrimRight(base, "/") + "/etc/profile.d/conda.sh"
+	}
+	var flags []string
+	if rec.RemotePath != "" {
+		flags = append(flags, "--remote-path "+shellQuote(rec.RemotePath))
+	}
+	if rec.CondaBase != "" {
+		flags = append(flags, "--conda-base "+shellQuote(rec.CondaBase))
+	}
+	if rec.CondaInit != "" {
+		flags = append(flags, "--conda-init "+shellQuote(rec.CondaInit))
+	}
+	if rec.CondaEnv != "" {
+		flags = append(flags, "--conda-env "+shellQuote(rec.CondaEnv))
+	}
+	if len(flags) == 0 {
+		return nil
+	}
+	rec.AddFlags = strings.Join(flags, " ")
+	rec.UpdateHint = "aexp resource update <name> " + rec.AddFlags
+	return rec
+}
+
+func preferredCondaEnv(envs []CondaEnv) string {
+	for _, env := range envs {
+		if env.Name == "base" {
+			return "base"
+		}
+	}
+	if len(envs) > 0 {
+		return envs[0].Name
+	}
+	return ""
+}
+
+func defaultRemotePath(condaBase string) string {
+	parts := []string{}
+	if strings.TrimSpace(condaBase) != "" {
+		parts = append(parts, strings.TrimRight(condaBase, "/")+"/bin")
+	}
+	parts = append(parts, "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+	return strings.Join(parts, ":")
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
