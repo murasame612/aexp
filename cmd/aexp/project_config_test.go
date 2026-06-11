@@ -269,6 +269,9 @@ func TestProjectDoctorConfigRecommendations(t *testing.T) {
 	if report.ProjectConfig != cfg.Path {
 		t.Fatalf("project config = %q, want %q", report.ProjectConfig, cfg.Path)
 	}
+	if !report.Events.Ready || !strings.Contains(report.Events.Helper, "injects aexp_events.py") {
+		t.Fatalf("expected event readiness guidance: %#v", report.Events)
+	}
 	if report.RecommendedSubmitCommand != "aexp project run 'train'" {
 		t.Fatalf("recommended submit = %q", report.RecommendedSubmitCommand)
 	}

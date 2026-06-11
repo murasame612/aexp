@@ -509,11 +509,21 @@ type doctorReport struct {
 	CondaEnv                 string                `json:"conda_env"`
 	Project                  *store.ProjectProfile `json:"project,omitempty"`
 	ProjectConfig            string                `json:"project_config,omitempty"`
+	Events                   doctorEvents          `json:"events"`
 	Checks                   []doctorCheck         `json:"checks"`
 	RecommendedSubmitCommand string                `json:"recommended_submit_command"`
 	Recommended              []string              `json:"recommended,omitempty"`
 	RecommendedFixes         []string              `json:"recommended_fixes,omitempty"`
 	Recipes                  []doctorRecipe        `json:"recipes,omitempty"`
+}
+
+type doctorEvents struct {
+	Ready              bool     `json:"ready"`
+	UIEvents           string   `json:"ui_events"`
+	Helper             string   `json:"helper"`
+	ProjectHelper      string   `json:"project_helper,omitempty"`
+	RecommendedImports []string `json:"recommended_imports"`
+	Monitor            []string `json:"monitor"`
 }
 
 type doctorRecipe struct {
@@ -591,6 +601,7 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 		Resource: res.Name,
 		Cwd:      cwd,
 		CondaEnv: condaEnv,
+		Events:   defaultDoctorEvents(""),
 	}
 	add := func(name string, ok bool, detail string) int {
 		severity := "fail"
@@ -680,6 +691,20 @@ func runDoctorChecks(ctx context.Context, pool *executor.SSHPool, res *store.Res
 
 	report.RecommendedSubmitCommand = recommendedSubmitCommand(res.Name, cwd, condaEnv, gpuIndex)
 	return report
+}
+
+func defaultDoctorEvents(projectHelper string) doctorEvents {
+	events := doctorEvents{
+		Ready:              true,
+		UIEvents:           ".aexp/events/<run_id>.jsonl (default unless --ui-events off)",
+		Helper:             "run submit injects aexp_events.py into $AEXP_RUN_DIR and exports PYTHONPATH",
+		RecommendedImports: []string{"from aexp_events import metric, progress, param, note"},
+		Monitor:            []string{"aexp run snapshot <run_id> --json", "aexp run events <run_id> --tail 50 --json", "aexp run metrics <run_id> --latest --json"},
+	}
+	if projectHelper != "" {
+		events.ProjectHelper = projectHelper
+	}
+	return events
 }
 
 func updateResourceControlStatus(ctx context.Context, db store.Store, res *store.Resource, report doctorReport) error {
@@ -827,6 +852,18 @@ func printDoctorReport(report doctorReport) {
 		}
 		fmt.Println()
 	}
+	if report.Events.Ready {
+		fmt.Println("structured events:")
+		fmt.Printf("ui_events: %s\n", report.Events.UIEvents)
+		fmt.Printf("helper:    %s\n", report.Events.Helper)
+		if report.Events.ProjectHelper != "" {
+			fmt.Printf("project helper: %s\n", report.Events.ProjectHelper)
+		}
+		if len(report.Events.RecommendedImports) > 0 {
+			fmt.Printf("python:    %s\n", strings.Join(report.Events.RecommendedImports, "; "))
+		}
+		fmt.Println()
+	}
 	if len(report.Recommended) > 0 {
 		fmt.Println("recommended:")
 		for _, command := range report.Recommended {
@@ -840,6 +877,7 @@ func printDoctorReport(report doctorReport) {
 
 func applyProjectDoctorConfigRecommendations(report *doctorReport, cfg *projectFileConfig, recipeName string) {
 	report.ProjectConfig = cfg.Path
+	report.Events = defaultDoctorEvents(projectDoctorProjectHelper(cfg))
 	if recipeName == "" {
 		recipeName = defaultProjectRecipeName(cfg)
 	}
@@ -861,6 +899,17 @@ func applyProjectDoctorConfigRecommendations(report *doctorReport, cfg *projectF
 	report.Recipes = projectDoctorRecipeReports(cfg, recipeName)
 	report.Recommended = projectDoctorRecommendedCommands(cfg, recipeName)
 	applyProjectDoctorConfigIssues(report, cfg)
+}
+
+func projectDoctorProjectHelper(cfg *projectFileConfig) string {
+	if cfg == nil || cfg.Path == "" {
+		return ""
+	}
+	helperPath := filepath.Join(filepath.Dir(cfg.Path), "aexp_events.py")
+	if _, err := os.Stat(helperPath); err == nil {
+		return helperPath
+	}
+	return "missing in repo; run 'aexp project init' to create a local helper, or rely on run-time injection"
 }
 
 func printProjectDoctorRecipes(cfg *projectFileConfig, selected string) {
@@ -2004,8 +2053,28 @@ func submitConfiguredRun(ctx context.Context, resourceName string, submitReq exe
 		return err
 	}
 	fmt.Printf("Launched run %s on %s\n", run.ID, resourceName)
+	printRunEventGuidance(run)
 	fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
 	return nil
+}
+
+func printRunEventGuidance(run *store.Run) {
+	if run == nil {
+		return
+	}
+	if run.UIEventsPath == "" {
+		if run.Kind == store.RunKindFormal || run.Kind == store.RunKindAblation {
+			fmt.Println("Warning: this evidence run has structured events disabled; prefer leaving --ui-events at its default.")
+		}
+		return
+	}
+	fmt.Println("Structured events:")
+	fmt.Printf("  AEXP_UI_EVENTS=%s\n", run.UIEventsPath)
+	fmt.Println("  Python helper: from aexp_events import metric, progress, param, note")
+	fmt.Printf("  Monitor: aexp run snapshot %s --json\n", run.ID)
+	fmt.Printf("  Events:  aexp run events %s --tail 50 --json\n", run.ID)
+	fmt.Printf("  Metrics: aexp run metrics %s --latest --json\n", run.ID)
+	fmt.Println("  Poll every 30-60s, then back off toward 120s if progress has not changed.")
 }
 
 func runSyncPushFromProject(ctx context.Context, resourceName, source, target, profile string, excludes []string, dryRun, deleteExtra, noDefaultExcludes bool, timeoutSec int) error {
@@ -3835,6 +3904,7 @@ elsewhere, register the resource with that root_dir first.
 			}
 
 			fmt.Printf("Launched run %s on %s\n", run.ID, resource)
+			printRunEventGuidance(run)
 			fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
 			return nil
 		},

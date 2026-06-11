@@ -157,6 +157,17 @@ func TestCLIArgValidation(t *testing.T) {
 	}
 }
 
+func TestMCPRunEventGuidanceUsesStatusPath(t *testing.T) {
+	guidance := mcpRunEventGuidance("run_ABC", `{"ui_events":"events/custom.jsonl"}`)
+	if got := guidance["ui_events"]; got != "events/custom.jsonl" {
+		t.Fatalf("ui_events = %#v", got)
+	}
+	monitor, ok := guidance["monitor"].([]string)
+	if !ok || len(monitor) == 0 || !strings.Contains(monitor[0], "run_ABC") {
+		t.Fatalf("unexpected monitor guidance: %#v", guidance["monitor"])
+	}
+}
+
 func TestMarkRunToolInvokesAexpBinary(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args.txt")

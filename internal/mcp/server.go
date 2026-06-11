@@ -249,15 +249,17 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	status, statusErr := s.runAexp(ctx, 20*time.Second, "run", "status", runID, "--short", "--json")
 	if statusErr != nil {
 		return jsonText(map[string]interface{}{
-			"run_id":        runID,
-			"submit_output": output,
-			"status_error":  statusErr.Error(),
+			"run_id":         runID,
+			"submit_output":  output,
+			"status_error":   statusErr.Error(),
+			"event_guidance": mcpRunEventGuidance(runID, ""),
 		}), nil
 	}
 	return jsonText(map[string]interface{}{
-		"run_id":        runID,
-		"submit_output": output,
-		"status":        json.RawMessage(status),
+		"run_id":         runID,
+		"submit_output":  output,
+		"status":         json.RawMessage(status),
+		"event_guidance": mcpRunEventGuidance(runID, status),
 	}), nil
 }
 
@@ -505,7 +507,32 @@ func (s *Server) toolProjectRun(ctx context.Context, args map[string]interface{}
 	if v, ok := optionalIntArg(args, "launch_timeout"); ok {
 		cli = append(cli, "--launch-timeout", strconv.Itoa(v))
 	}
-	return s.runAexp(ctx, timeoutFromArgs(args, 90), cli...)
+	output, err := s.runAexp(ctx, timeoutFromArgs(args, 90), cli...)
+	if err != nil {
+		return output, err
+	}
+	if boolArg(args, "dry_run", false) {
+		return output, nil
+	}
+	runID := firstRunID(output)
+	if runID == "" {
+		return output, nil
+	}
+	status, statusErr := s.runAexp(ctx, 20*time.Second, "run", "status", runID, "--short", "--json")
+	if statusErr != nil {
+		return jsonText(map[string]interface{}{
+			"run_id":         runID,
+			"submit_output":  output,
+			"status_error":   statusErr.Error(),
+			"event_guidance": mcpRunEventGuidance(runID, ""),
+		}), nil
+	}
+	return jsonText(map[string]interface{}{
+		"run_id":         runID,
+		"submit_output":  output,
+		"status":         json.RawMessage(status),
+		"event_guidance": mcpRunEventGuidance(runID, status),
+	}), nil
 }
 
 func (s *Server) toolProjectSync(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -867,6 +894,35 @@ var runIDPattern = regexp.MustCompile(`run_[0-9A-Za-z]+`)
 
 func firstRunID(s string) string {
 	return runIDPattern.FindString(s)
+}
+
+func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
+	uiEvents := ".aexp/events/" + runID + ".jsonl"
+	if statusJSON != "" {
+		var status map[string]interface{}
+		if err := json.Unmarshal([]byte(statusJSON), &status); err == nil {
+			if v, ok := status["ui_events"].(string); ok && strings.TrimSpace(v) != "" {
+				uiEvents = v
+			}
+		}
+	}
+	return map[string]interface{}{
+		"ui_events": uiEvents,
+		"env": map[string]string{
+			"AEXP_UI_EVENTS": uiEvents,
+		},
+		"python": []string{
+			"from aexp_events import metric, progress, param, note",
+			"metric(\"train/loss\", loss, epoch=epoch, step=step)",
+			"progress(\"epoch\", epoch, total=max_epochs)",
+		},
+		"monitor": []string{
+			"aexp_get_run_snapshot(run_id=\"" + runID + "\")",
+			"aexp_tail_run_events(run_id=\"" + runID + "\", last=50)",
+			"aexp_get_run_metrics(run_id=\"" + runID + "\")",
+		},
+		"polling": "Prefer snapshot/events/metrics. Poll every 30-60s, then back off toward 120s when progress has not changed. Use raw logs only for failures or missing events.",
+	}
 }
 
 func jsonText(v interface{}) string {
