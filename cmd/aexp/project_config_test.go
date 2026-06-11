@@ -390,6 +390,7 @@ func TestProjectRunDryRunShowsRefreshEnv(t *testing.T) {
 resource: mu
 cwd: /remote/project
 env: auto
+ui_events: .aexp/events/custom.jsonl
 train:
   command: python train.py
   kind: formal
@@ -404,6 +405,8 @@ train:
 	for _, want := range []string{
 		"expanded submit command:",
 		"--refresh-env",
+		"--ui-events",
+		".aexp/events/custom.jsonl",
 		"'aexp' 'run' 'submit'",
 	} {
 		if !strings.Contains(out, want) {

@@ -37,6 +37,22 @@ func TestNormalizeUIEventsPath(t *testing.T) {
 	}
 }
 
+func TestParseWrapperExitCode(t *testing.T) {
+	code, ok := parseWrapperExitCode(`[stdout] [aexp] ========================================
+[stdout] [aexp] Finished at Thu Jun 11 21:00:00 CST 2026 with exit code 0
+[stdout] [aexp] ========================================`)
+	if !ok || code != 0 {
+		t.Fatalf("exit code = %d, %v", code, ok)
+	}
+	code, ok = parseWrapperExitCode(`[aexp] Finished at Thu Jun 11 21:00:00 CST 2026 with exit code 137`)
+	if !ok || code != 137 {
+		t.Fatalf("exit code = %d, %v", code, ok)
+	}
+	if _, ok := parseWrapperExitCode("tmux vanished"); ok {
+		t.Fatalf("unexpected exit code")
+	}
+}
+
 func TestWithResourceRemotePath(t *testing.T) {
 	cmd := WithResourceRemotePath(&store.Resource{
 		OSType:     "macos",

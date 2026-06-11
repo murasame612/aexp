@@ -1100,6 +1100,7 @@ type projectFileConfig struct {
 	Env        string
 	CondaEnv   string
 	DefaultGPU *int
+	UIEvents   string
 	Logs       []string
 	Metrics    []string
 	Artifacts  []string
@@ -1113,6 +1114,7 @@ type projectFileCommand struct {
 	Kind      string
 	GPUIndex  *int
 	NoGPU     bool
+	UIEvents  string
 	Logs      []string
 	Metrics   []string
 	Artifacts []string
@@ -1424,7 +1426,7 @@ func firstExistingGlob(baseDir string, pattern string) string {
 }
 
 func projectRunCmd() *cobra.Command {
-	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv string
+	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv, uiEventsPath string
 	var gpuIndex int
 	var noGPU, force, dryRun, refreshEnv bool
 	var launchTimeoutSec int
@@ -1505,6 +1507,12 @@ Then run:
 			logPaths := mergeProjectLists(cfg.Logs, entry.Logs)
 			metricPaths := mergeProjectLists(cfg.Metrics, entry.Metrics)
 			artifactPaths := mergeProjectLists(cfg.Artifacts, entry.Artifacts)
+			if uiEventsPath == "" {
+				uiEventsPath = entry.UIEvents
+			}
+			if uiEventsPath == "" {
+				uiEventsPath = cfg.UIEvents
+			}
 			submitReq := executor.SubmitRequest{
 				ResourceID:        resourceName,
 				Name:              name,
@@ -1517,6 +1525,7 @@ Then run:
 				LogPaths:          logPaths,
 				MetricPaths:       metricPaths,
 				ArtifactPaths:     artifactPaths,
+				UIEventsPath:      uiEventsPath,
 				Program:           "bash",
 				Args:              []string{"-lc", entry.Command},
 				RefreshProjectEnv: refreshEnv,
@@ -1538,6 +1547,7 @@ Then run:
 	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Override runtime env strategy: auto or raw")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Override conda environment")
+	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Override structured UI event JSONL path; set off to disable")
 	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the resolved submit command without launching")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created")
@@ -1733,6 +1743,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 				return fmt.Errorf("%s must be an integer", key)
 			}
 			cfg.DefaultGPU = &n
+		case "uievents":
+			cfg.UIEvents = value
 		default:
 			cfg.Commands[key] = projectFileCommand{Command: value}
 		}
@@ -1772,6 +1784,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 			entry.GPUIndex = &n
 		case "nogpu":
 			entry.NoGPU = parseProjectBool(value)
+		case "uievents":
+			entry.UIEvents = value
 		}
 		cfg.Commands[section] = entry
 	}
@@ -1957,6 +1971,9 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	for _, p := range req.ArtifactPaths {
 		args = append(args, "--artifact-paths", p)
 	}
+	if req.UIEventsPath != "" {
+		args = append(args, "--ui-events", req.UIEventsPath)
+	}
 	args = append(args, "--shell", "--", req.Args[len(req.Args)-1])
 	fmt.Println("Project run plan")
 	fmt.Println()
@@ -1973,6 +1990,9 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	printStringList("logs", req.LogPaths)
 	printStringList("metrics", req.MetricPaths)
 	printStringList("artifacts", req.ArtifactPaths)
+	if req.UIEventsPath != "" {
+		fmt.Printf("ui_events: %s\n", req.UIEventsPath)
+	}
 	fmt.Println("command:")
 	printIndentedBlock(req.Args[len(req.Args)-1], "  ")
 	fmt.Println()

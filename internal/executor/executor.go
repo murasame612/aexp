@@ -422,17 +422,7 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 		// Run has finished
 		code := 0
 		fmt.Sscanf(strings.TrimSpace(out), "%d", &code)
-		run.ExitCode = sql.NullInt64{Int64: int64(code), Valid: true}
-		now := sql.NullTime{Time: time.Now(), Valid: true}
-		run.FinishedAt = now
-
-		if code == 0 {
-			run.Status = store.RunStatusSucceeded
-		} else {
-			run.Status = store.RunStatusFailed
-		}
-		e.store.UpdateRun(ctx, run)
-		e.checkResourceIdle(ctx, resource)
+		e.finishRun(ctx, resource, run, code)
 		return run, nil
 	}
 
@@ -441,6 +431,10 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 		fmt.Sprintf("tmux has-session -t %s 2>&1; echo $?", run.TmuxSession))
 
 	if strings.TrimSpace(tmuxOut) != "0" {
+		if code, ok := e.wrapperExitCodeFromLogs(ctx, resource, run); ok {
+			e.finishRun(ctx, resource, run, code)
+			return run, nil
+		}
 		// tmux session gone but no exit_code → lost
 		run.Status = store.RunStatusLost
 		now := sql.NullTime{Time: time.Now(), Valid: true}
@@ -451,6 +445,50 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 
 	_ = tmuxErr
 	return run, nil
+}
+
+func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run *store.Run, code int) {
+	run.ExitCode = sql.NullInt64{Int64: int64(code), Valid: true}
+	now := sql.NullTime{Time: time.Now(), Valid: true}
+	run.FinishedAt = now
+	if code == 0 {
+		run.Status = store.RunStatusSucceeded
+	} else {
+		run.Status = store.RunStatusFailed
+	}
+	e.store.UpdateRun(ctx, run)
+	e.checkResourceIdle(ctx, resource)
+}
+
+func (e *Executor) wrapperExitCodeFromLogs(ctx context.Context, resource *store.Resource, run *store.Run) (int, bool) {
+	if strings.TrimSpace(run.RemoteRunDir) == "" {
+		return 0, false
+	}
+	terminalLog := path.Join(run.RemoteRunDir, "logs", "terminal.log")
+	stdoutLog := path.Join(run.RemoteRunDir, "logs", "stdout.log")
+	cmd := fmt.Sprintf("tail -n 50 %s %s 2>/dev/null", shellQuote(terminalLog), shellQuote(stdoutLog))
+	out, _, err := e.exec(ctx, resource, cmd)
+	if err != nil {
+		return 0, false
+	}
+	return parseWrapperExitCode(out)
+}
+
+func parseWrapperExitCode(text string) (int, bool) {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		idx := strings.LastIndex(line, "with exit code ")
+		if idx < 0 {
+			continue
+		}
+		codeText := strings.TrimSpace(line[idx+len("with exit code "):])
+		var code int
+		if _, err := fmt.Sscanf(codeText, "%d", &code); err == nil {
+			return code, true
+		}
+	}
+	return 0, false
 }
 
 // TailLogs returns a channel that streams log lines from a run.

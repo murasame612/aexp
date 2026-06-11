@@ -497,6 +497,7 @@ func (s *Server) toolProjectRun(ctx context.Context, args map[string]interface{}
 	addOptionalStringFlag(&cli, args, "kind", "--kind")
 	addOptionalStringFlag(&cli, args, "project_env", "--project-env")
 	addOptionalStringFlag(&cli, args, "conda_env", "--conda-env")
+	addOptionalStringFlag(&cli, args, "ui_events", "--ui-events")
 	if v, ok := optionalIntArg(args, "gpu_index"); ok {
 		cli = append(cli, "--gpu-index", strconv.Itoa(v))
 	}
@@ -1603,6 +1604,7 @@ func toolRegistry() []toolSpec {
 				"kind":           stringSchema("Override run kind."),
 				"project_env":    stringSchema("Override runtime env strategy: auto or raw."),
 				"conda_env":      stringSchema("Override conda environment."),
+				"ui_events":      stringSchema("Override structured UI event JSONL path; set off to disable."),
 				"gpu_index":      numberSchema("Override GPU index."),
 				"no_gpu":         boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
 				"force":          boolSchema("Skip GPU slot lock."),
