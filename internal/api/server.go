@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/{id}", s.handleUpdateResource)
 			r.Delete("/{id}", s.handleDeleteResource)
 			r.Get("/{id}/snapshots", s.handleListSnapshots)
+			r.Post("/{id}/refresh", s.handleRefreshResource)
 			r.Post("/{id}/test", s.handleTestResource)
 		})
 
@@ -575,6 +576,43 @@ func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snaps)
+}
+
+func (s *Server) handleRefreshResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.store.GetResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if res == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "resource not found")
+		return
+	}
+	if s.monitor == nil {
+		writeError(w, http.StatusServiceUnavailable, "MONITOR_UNAVAILABLE", "resource monitor is not running")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	refreshed, snap, refreshErr := s.monitor.RefreshResource(ctx, res)
+	if refreshed == nil {
+		refreshed = res
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":              refreshErr == nil,
+		"resource":        refreshed,
+		"latest_snapshot": snap,
+		"error":           errorString(refreshErr),
+	})
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (s *Server) handleTestResource(w http.ResponseWriter, r *http.Request) {

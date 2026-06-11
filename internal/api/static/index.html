@@ -582,6 +582,7 @@
             <div class="flex items-center justify-between mb-5">
                 <h2 class="section-title mb-0" data-i18n="nav.resources">Resources</h2>
                 <div class="flex gap-2">
+                    <button onclick="refreshAllResourceStatus()" class="btn-secondary text-sm" id="refresh-resource-status-btn" data-i18n="resources.refreshStatus">Refresh Status</button>
                     <button onclick="fillLocalResourceForm()" class="btn-local text-sm" id="add-local-btn" data-i18n="resources.fillMachine">Fill This Machine</button>
                     <button onclick="toggleAddForm()" class="btn-accent text-sm" id="add-btn" data-i18n="resources.add">+ Add Resource</button>
                 </div>
@@ -1494,6 +1495,8 @@
                 'resources.fillMac': 'Fill This Mac',
                 'resources.fillLinux': 'Fill This Linux',
                 'resources.fillMachine': 'Fill This Machine',
+                'resources.refreshStatus': 'Refresh Status',
+                'resources.refreshingStatus': 'Refreshing...',
                 'resources.noResourcesRegistered': 'No resources registered',
                 'resources.noResources': 'No resources',
                 'resources.unreachable': 'resource unreachable',
@@ -1656,6 +1659,8 @@
                 'resources.fillMac': '填充本机 Mac',
                 'resources.fillLinux': '填充本机 Linux',
                 'resources.fillMachine': '填充本机',
+                'resources.refreshStatus': '立即刷新状态',
+                'resources.refreshingStatus': '刷新中...',
                 'resources.noResourcesRegistered': '还没有注册资源',
                 'resources.noResources': '没有资源',
                 'resources.unreachable': '资源不可达',
@@ -2967,6 +2972,7 @@
                         <td class="tabular-nums text-xs">${unreachable ? '' : escHTML(gpuUtil + ' ' + gpuMem)}</td>
                         <td>
                             <div class="resource-actions">
+                                <button onclick="refreshResourceStatusAndReload('${escAttr(r.id)}')" class="link-btn" title="${escAttr(t('resources.refreshStatus'))}">${escHTML(t('common.refresh'))}</button>
                                 <button onclick="editResourceById('${escAttr(r.id)}')" class="link-btn" title="${escAttr(t('common.edit'))}">${escHTML(t('common.edit'))}</button>
                                 <button onclick="copyResourceById('${escAttr(r.id)}')" class="link-btn" title="${escAttr(t('common.copy'))}">${escHTML(t('common.copy'))}</button>
                                 <button onclick="deleteResourceById('${escAttr(r.id)}')" class="link-btn hover:text-state-red" title="${escAttr(t('common.remove'))}">&times;</button>
@@ -3859,6 +3865,38 @@
         function deleteResourceById(id) {
             const r = resourcesById.get(id);
             if (r) deleteResource(r.id, r.name || r.id);
+        }
+
+        async function refreshResourceStatus(id) {
+            if (!id) return null;
+            const res = await fetch(API + '/resources/' + id + '/refresh', {
+                method: 'POST',
+                headers: authHeaders()
+            });
+            return res.ok ? res.json() : null;
+        }
+
+        async function refreshResourceStatusAndReload(id) {
+            await refreshResourceStatus(id);
+            await loadData();
+        }
+
+        async function refreshAllResourceStatus() {
+            const btn = document.getElementById('refresh-resource-status-btn');
+            if (!btn) return;
+            const oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = t('resources.refreshingStatus');
+            try {
+                const ids = Array.from(resourcesById.keys());
+                for (const id of ids) {
+                    await refreshResourceStatus(id);
+                }
+            } finally {
+                btn.disabled = false;
+                btn.textContent = oldText || t('resources.refreshStatus');
+                await loadData();
+            }
         }
 
         // --- SSH Command Parser ---

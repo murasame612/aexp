@@ -164,6 +164,7 @@ func resourcePollSignature(r *store.Resource) string {
 		r.SocksProxy,
 		r.ProxyCommand,
 		r.RootDir,
+		r.RemotePath,
 	}, "\x00")
 }
 
@@ -211,13 +212,23 @@ func pollBackoffDelay(base time.Duration, failures int) time.Duration {
 }
 
 func (m *Manager) poll(ctx context.Context, r *store.Resource) bool {
-	snap, err := m.PollResource(ctx, r)
+	_, _, err := m.RefreshResource(ctx, r)
 	if ctx.Err() != nil {
 		return false
 	}
-	now := time.Now()
 	if err != nil {
 		m.logger.Warn("poll failed", "resource", r.Name, "error", err)
+		return false
+	}
+	return true
+}
+
+// RefreshResource probes a resource immediately and persists the resulting
+// snapshot/control-channel status, bypassing the background polling backoff.
+func (m *Manager) RefreshResource(ctx context.Context, r *store.Resource) (*store.Resource, *store.Snapshot, error) {
+	snap, err := m.PollResource(ctx, r)
+	now := time.Now()
+	if err != nil {
 		m.pool.RemoveByHost(r.Host, r.Port)
 		errText := err.Error()
 		if r.Status != store.ResourceStatusUnreachable ||
@@ -229,34 +240,33 @@ func (m *Manager) poll(ctx context.Context, r *store.Resource) bool {
 			r.LastCheckedAt = &now
 			m.store.UpdateResource(ctx, r)
 		}
-		return false
+		refreshed, _ := m.store.GetResource(ctx, r.ID)
+		return refreshed, nil, err
 	}
 
 	// Save snapshot
 	if err := m.store.SaveSnapshot(ctx, snap); err != nil {
 		m.logger.Error("save snapshot", "error", err)
-		return true
+		refreshed, _ := m.store.GetResource(ctx, r.ID)
+		return refreshed, snap, err
 	}
 
 	// Derive resource status
 	newStatus := deriveStatus(snap)
-	if newStatus != r.Status ||
-		r.SSHStatus != store.ResourceSSHStatusOK ||
-		r.LastDoctorError != "" {
-		r.Status = newStatus
-		r.SSHStatus = store.ResourceSSHStatusOK
-		r.LastDoctorError = ""
-		r.LastCheckedAt = &now
-		r.LastSuccessAt = &now
-		m.store.UpdateResource(ctx, r)
-	}
-	return true
+	r.Status = newStatus
+	r.SSHStatus = store.ResourceSSHStatusOK
+	r.LastDoctorError = ""
+	r.LastCheckedAt = &now
+	r.LastSuccessAt = &now
+	m.store.UpdateResource(ctx, r)
+	refreshed, _ := m.store.GetResource(ctx, r.ID)
+	return refreshed, snap, nil
 }
 
 // PollResource executes the probe script and parses the result.
 func (m *Manager) PollResource(ctx context.Context, r *store.Resource) (*store.Snapshot, error) {
 	probeScript := buildProbeScript(r.RootDir)
-	stdout, stderr, err := m.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, probeScript, r.SocksProxy, r.ProxyCommand)
+	stdout, stderr, err := m.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, executor.WithResourceRemotePath(r, probeScript), r.SocksProxy, r.ProxyCommand)
 	if err != nil {
 		return nil, fmt.Errorf("exec probe: %w (stderr: %s)", err, stderr)
 	}

@@ -3,6 +3,8 @@ package monitor
 import (
 	"testing"
 	"time"
+
+	"github.com/ziwu/aexp/internal/store"
 )
 
 func TestPollBackoffDelay(t *testing.T) {
@@ -31,5 +33,21 @@ func TestPollBackoffDelay(t *testing.T) {
 func TestPollBackoffDelayUsesSafeBase(t *testing.T) {
 	if got := pollBackoffDelay(0, 1); got != time.Second {
 		t.Fatalf("zero base delay = %s, want 1s", got)
+	}
+}
+
+func TestResourcePollSignatureIncludesRemotePath(t *testing.T) {
+	base := &store.Resource{
+		Host:       "mu",
+		Port:       22,
+		User:       "ziwu",
+		RootDir:    "/workspace",
+		RemotePath: "/usr/bin:/bin",
+	}
+	changed := *base
+	changed.RemotePath = "/opt/homebrew/bin:/usr/bin:/bin"
+
+	if resourcePollSignature(base) == resourcePollSignature(&changed) {
+		t.Fatal("resource poll signature should change when remote_path changes")
 	}
 }
