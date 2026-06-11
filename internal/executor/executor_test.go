@@ -53,6 +53,27 @@ func TestParseWrapperExitCode(t *testing.T) {
 	}
 }
 
+func TestParseRemoteStatusCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		code int
+		ok   bool
+	}{
+		{name: "plain zero", out: "0\n", code: 0, ok: true},
+		{name: "last line", out: "warning\n1\n", code: 1, ok: true},
+		{name: "empty", out: "", ok: false},
+		{name: "nonnumeric", out: "ssh timeout\n", ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, ok := parseRemoteStatusCode(tc.out)
+			if ok != tc.ok || code != tc.code {
+				t.Fatalf("parseRemoteStatusCode(%q) = %d, %v; want %d, %v", tc.out, code, ok, tc.code, tc.ok)
+			}
+		})
+	}
+}
+
 func TestWithResourceRemotePath(t *testing.T) {
 	cmd := WithResourceRemotePath(&store.Resource{
 		OSType:     "macos",

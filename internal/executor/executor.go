@@ -415,8 +415,12 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 
 	// Check if exit_code file exists
 	exitCodeFile := run.RemoteRunDir + "/exit_code"
-	out, _, _ := e.exec(ctx, resource,
-		fmt.Sprintf("cat %s 2>/dev/null", exitCodeFile))
+	quotedExitCodeFile := shellQuote(exitCodeFile)
+	out, _, err := e.exec(ctx, resource,
+		fmt.Sprintf("if [ -f %s ]; then cat %s; fi", quotedExitCodeFile, quotedExitCodeFile))
+	if err != nil {
+		return run, err
+	}
 
 	if strings.TrimSpace(out) != "" {
 		// Run has finished
@@ -428,9 +432,16 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 
 	// Check if tmux session still exists
 	tmuxOut, _, tmuxErr := e.exec(ctx, resource,
-		fmt.Sprintf("tmux has-session -t %s 2>&1; echo $?", run.TmuxSession))
+		fmt.Sprintf("tmux has-session -t %s >/dev/null 2>&1; printf '%%s\\n' \"$?\"", shellQuote(run.TmuxSession)))
+	if tmuxErr != nil {
+		return run, tmuxErr
+	}
+	tmuxStatus, ok := parseRemoteStatusCode(tmuxOut)
+	if !ok {
+		return run, fmt.Errorf("unexpected tmux status output for run %s: %q", run.ID, tmuxOut)
+	}
 
-	if strings.TrimSpace(tmuxOut) != "0" {
+	if tmuxStatus != 0 {
 		if code, ok := e.wrapperExitCodeFromLogs(ctx, resource, run); ok {
 			e.finishRun(ctx, resource, run, code)
 			return run, nil
@@ -443,8 +454,23 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 		e.checkResourceIdle(ctx, resource)
 	}
 
-	_ = tmuxErr
 	return run, nil
+}
+
+func parseRemoteStatusCode(out string) (int, bool) {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var code int
+		if _, err := fmt.Sscanf(line, "%d", &code); err == nil {
+			return code, true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run *store.Run, code int) {

@@ -1408,6 +1408,7 @@
         let currentUIEventsPath = '';
         let currentEventLines = [];
         let eventRenderScheduled = false;
+        let loadDataSeq = 0;
         let resourcesById = new Map();
         let allRuns = [];
         let trashRuns = [];
@@ -2722,6 +2723,7 @@
         let pollTimer = null;
 
         async function loadData() {
+            const seq = ++loadDataSeq;
             const [stats, resources, runs, trash, execEvents, runMarks, runBookmarks] = await Promise.all([
                 fetchJSON('/stats'),
                 fetchJSON('/resources'),
@@ -2731,6 +2733,7 @@
                 fetchJSON('/run-marks?limit=500'),
                 fetchJSON('/run-bookmarks?limit=200')
             ]);
+            if (seq !== loadDataSeq) return;
 
             const s = asObject(stats);
             document.getElementById('stat-resources').textContent = s.total_resources ?? '–';
@@ -3312,6 +3315,33 @@
             renderRunsTable(filtered);
         }
 
+        function mergeRunSnapshot(run) {
+            const r = asObject(run);
+            if (!r.id) return;
+
+            function mergeInto(list) {
+                const idx = list.findIndex(item => asObject(item).id === r.id);
+                if (idx === -1) return false;
+                list[idx] = { ...asObject(list[idx]), ...r };
+                return true;
+            }
+
+            const isSetTime = value => {
+                if (!value) return false;
+                if (typeof value === 'string') return value.length > 0;
+                if (typeof value === 'object') return !!value.Valid;
+                return false;
+            };
+            const inTrash = isSetTime(r.archived_at) || isSetTime(r.deleted_at);
+            const mergedActive = mergeInto(allRuns);
+            const mergedTrash = mergeInto(trashRuns);
+
+            if (!inTrash && !mergedActive && !mergedTrash) {
+                allRuns.unshift(r);
+            }
+            applyRunFilters();
+        }
+
         function setRunTrashMode(enabled) {
             runTrashMode = !!enabled;
             selectedCompareRunIds.clear();
@@ -3467,6 +3497,7 @@
                 document.getElementById('detail-content').innerHTML = '<div class="empty-state">' + escHTML(t('status.missing')) + '</div>';
                 return;
             }
+            mergeRunSnapshot(run);
             const resLabel = resourceLabel(run.resource_id);
             const isFavorite = bookmarkedRunIds.has(run.id);
             const activeRun = run.status === 'running' || run.status === 'starting';
