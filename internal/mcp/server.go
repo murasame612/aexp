@@ -130,6 +130,12 @@ func (s *Server) toolExec(ctx context.Context, args map[string]interface{}) (str
 	}
 
 	timeoutSec := intArg(args, "timeout", 30)
+	if timeoutSec <= 0 {
+		timeoutSec = 20
+	}
+	if timeoutSec > 45 {
+		return "", fmt.Errorf("aexp_exec is for short bounded inspection commands and caps timeout at 45s; use aexp_submit_run for setup, training, data prep, installs, or any command that may run longer")
+	}
 	cli := []string{"exec", "--json", "--resource", resource, "--timeout", strconv.Itoa(timeoutSec)}
 	if v := stringArg(args, "api", ""); v != "" {
 		cli = append(cli, "--api", v)
@@ -159,7 +165,7 @@ func (s *Server) toolExec(ctx context.Context, args map[string]interface{}) (str
 		cli = append(cli, "--dry-run")
 	}
 	cli = append(cli, "--", command)
-	return s.runAexp(ctx, time.Duration(timeoutSec+15)*time.Second, cli...)
+	return s.runAexp(ctx, time.Duration(timeoutSec+5)*time.Second, cli...)
 }
 
 func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -1214,7 +1220,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_exec",
-			Description: "Run a short bounded command on a resource. This uses the aexp exec fast path: local API if available, direct SSH fallback otherwise.",
+			Description: "Run a short bounded inspection command on a resource. Timeout is capped at 45s; use aexp_submit_run for setup, installs, data prep, training, or long commands.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"resource":    stringSchema("Resource name."),
 				"command":     stringSchema("Remote command string."),
@@ -1222,7 +1228,7 @@ func toolRegistry() []toolSpec {
 				"cwd":         stringSchema("Optional remote working directory."),
 				"project_env": stringSchema("Optional runtime strategy: auto or raw."),
 				"conda_env":   stringSchema("Optional conda environment override."),
-				"timeout":     numberSchema("Command timeout in seconds."),
+				"timeout":     numberSchema("Command timeout in seconds, capped at 45."),
 				"shell":       boolSchema("Join command through shell mode."),
 				"force":       boolSchema("Allow command even if aexp detects a long-running pattern."),
 				"dry_run":     boolSchema("Preview command and long-running check without executing."),

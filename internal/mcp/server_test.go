@@ -104,6 +104,32 @@ printf '{"exit_code":0,"stdout":"ok\n","stderr":""}\n'
 	}
 }
 
+func TestExecToolRejectsLongTimeout(t *testing.T) {
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_exec","arguments":{"resource":"mu","command":"sleep 120","timeout":120}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer("/bin/false").Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+		t.Fatalf("decode tool response: %v\n%s", err, out.String())
+	}
+	if !resp.Result.IsError {
+		t.Fatalf("expected tool error, got %s", out.String())
+	}
+	if len(resp.Result.Content) == 0 || !strings.Contains(resp.Result.Content[0].Text, "aexp_submit_run") {
+		t.Fatalf("expected submit_run guidance, got %#v", resp.Result.Content)
+	}
+}
+
 func TestCLIReadOnlyAllowlist(t *testing.T) {
 	tests := []struct {
 		name    string
