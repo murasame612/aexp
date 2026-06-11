@@ -410,7 +410,7 @@ func (s *Server) toolCLI(ctx context.Context, args map[string]interface{}) (stri
 	if len(cliArgs) == 0 {
 		return "", errors.New("args is required")
 	}
-	if err := allowReadOnlyCLI(cliArgs); err != nil {
+	if err := validateCLIArgs(cliArgs); err != nil {
 		return "", err
 	}
 	return s.runAexp(ctx, timeoutFromArgs(args, 30), cliArgs...)
@@ -804,41 +804,16 @@ func addEventCommonFlags(cli *[]string, args map[string]interface{}) {
 	}
 }
 
-func allowReadOnlyCLI(args []string) error {
+func validateCLIArgs(args []string) error {
 	if len(args) == 0 {
 		return errors.New("args is required")
 	}
 	if strings.HasPrefix(args[0], "-") {
 		return fmt.Errorf("first arg must be a command, got %q", args[0])
 	}
-	if len(args) == 1 {
-		switch args[0] {
-		case "agent":
-			return nil
-		default:
-			return fmt.Errorf("aexp_cli does not allow %q", strings.Join(args, " "))
-		}
-	}
-	allowed := map[string]bool{
-		"doctor":           true,
-		"resource list":    true,
-		"resource explore": true,
-		"run list":         true,
-		"run status":       true,
-		"run snapshot":     true,
-		"run events":       true,
-		"run metrics":      true,
-		"run logs":         true,
-		"run marks":        true,
-		"exec history":     true,
-		"exec show":        true,
-		"project detect":   true,
-		"project doctor":   true,
-		"sync doctor":      true,
-	}
-	key := args[0] + " " + args[1]
-	if !allowed[key] {
-		return fmt.Errorf("aexp_cli only allows read-only commands; %q is not allowed", key)
+	switch args[0] {
+	case "mcp", "serve":
+		return fmt.Errorf("aexp_cli does not start long-lived %q; run it outside MCP", args[0])
 	}
 	for _, arg := range args {
 		if arg == "--follow" {
@@ -1659,7 +1634,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_cli",
-			Description: "Run a restricted read-only aexp CLI command. Use dedicated tools for exec, submit, cancel, sync, and marks.",
+			Description: "Run an aexp CLI command through MCP. Mutating commands are allowed; long-lived serve/mcp and unbounded --follow are blocked.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"args":    arrayStringSchema("CLI arguments after aexp, e.g. [\"run\", \"list\", \"--json\"]."),
 				"timeout": numberSchema("Tool timeout in seconds."),

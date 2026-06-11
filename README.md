@@ -406,11 +406,12 @@ For active training, agents should monitor `aexp_get_run_snapshot`,
 `aexp_tail_run_events`, or `aexp_get_run_metrics` first; raw stdout/stderr logs
 are for debugging failures, OOMs, hangs, or missing events. Poll snapshots every
 30-60 seconds, then back off toward 120 seconds when progress has not changed.
-`aexp_cli` is deliberately restricted to read-only commands, but it also allows
-the read-only event commands (`run snapshot`, `run events`, `run metrics`) for
-compatibility. Use the dedicated tools for exec, submit, cancel, sync,
-resources, projects, and marks. Agents should not need to fall back to raw CLI
-for normal aexp operations.
+`aexp_cli` is a compatibility escape hatch for the full `aexp` CLI, including
+mutating operations such as `run cancel`, `run submit`, `sync push`, and
+`resource update`. It only blocks commands that would hang the MCP process
+itself (`serve`, `mcp`, and unbounded `--follow`). Prefer the dedicated tools
+for common workflows because their schemas are easier for agents to call
+correctly, but the generic CLI path is intentionally not read-only.
 
 ## Data Model
 

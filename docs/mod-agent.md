@@ -71,13 +71,13 @@ aexp mcp uninstall --target all
 - `aexp_sync_push`
 - `aexp_sync_pull`
 - `aexp_sync_remote_pull`
-- `aexp_cli`（只允许 read-only CLI 子命令）
+- `aexp_cli`（通用 CLI 兼容口，允许修改类命令）
 
 下面的 `list_resources/create_run/...` 是目标语义草案；当前实现使用上面的 `aexp_*`
 名称，以避免和其他 MCP server 的通用工具名冲突。正常 agent 流程不应该退回裸 CLI；
-`aexp_cli` 只作为 read-only 兼容口。
-允许 `run snapshot`、`run events`、`run metrics` 这类只读事件命令；提交、
-取消、同步、标注等操作仍应使用专用 MCP tool。
+`aexp_cli` 只作为兼容口。它允许 `run cancel`、`run submit`、`sync push`、
+`resource update` 等修改类命令，只拦截会挂住 MCP 进程的 `serve`、`mcp` 和
+无限 `--follow`。常见操作仍优先使用专用 MCP tool，因为参数 schema 更稳定。
 
 ### list_resources
 

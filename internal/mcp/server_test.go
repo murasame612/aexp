@@ -130,23 +130,23 @@ func TestExecToolRejectsLongTimeout(t *testing.T) {
 	}
 }
 
-func TestCLIReadOnlyAllowlist(t *testing.T) {
+func TestCLIArgValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
 		wantErr bool
 	}{
 		{name: "run list", args: []string{"run", "list", "--json"}},
-		{name: "run snapshot", args: []string{"run", "snapshot", "run_ABC", "--json"}},
-		{name: "run events", args: []string{"run", "events", "run_ABC", "--tail", "50", "--json"}},
-		{name: "run metrics", args: []string{"run", "metrics", "run_ABC", "--latest", "--json"}},
-		{name: "project doctor", args: []string{"project", "doctor", "--json"}},
-		{name: "reject submit", args: []string{"run", "submit", "--resource", "mu"}, wantErr: true},
+		{name: "allow cancel", args: []string{"run", "cancel", "run_ABC"}},
+		{name: "allow submit", args: []string{"run", "submit", "--resource", "mu", "--", "echo ok"}},
+		{name: "allow resource update", args: []string{"resource", "update", "mu", "--remote-path", "/usr/bin:/bin"}},
+		{name: "reject serve", args: []string{"serve", "--port", "8080"}, wantErr: true},
+		{name: "reject mcp", args: []string{"mcp"}, wantErr: true},
 		{name: "reject follow", args: []string{"run", "logs", "run_ABC", "--follow"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := allowReadOnlyCLI(tt.args)
+			err := validateCLIArgs(tt.args)
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error")
 			}
