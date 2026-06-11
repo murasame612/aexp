@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ziwu/aexp/internal/executor"
+	"github.com/ziwu/aexp/internal/store"
 )
 
 func TestExecViaLocalAPISendsRequest(t *testing.T) {
@@ -149,5 +153,54 @@ func TestExecViaLocalAPIReturnsServerError(t *testing.T) {
 	}
 	if result != nil {
 		t.Fatalf("expected nil result on API error, got %#v", result)
+	}
+}
+
+func TestLocalSSHArgsIncludesProxyCommand(t *testing.T) {
+	args := localSSHArgs(&store.Resource{
+		Host:         "gpu.example",
+		Port:         2222,
+		User:         "root",
+		AuthRef:      "/tmp/key",
+		ProxyCommand: "nc -X 5 -x proxy:3000 %h %p",
+	})
+	got := strings.Join(args, "\x00")
+	for _, want := range []string{
+		"ssh",
+		"-p\x002222",
+		"-i\x00/tmp/key",
+		"-o\x00ProxyCommand=nc -X 5 -x proxy:3000 %h %p",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ssh args missing %q in %#v", want, args)
+		}
+	}
+}
+
+func TestBuildTarCreateArgsForDirectory(t *testing.T) {
+	dir := t.TempDir()
+	args, err := buildTarCreateArgs(dir, []string{".venv/", "runs/detect/"})
+	if err != nil {
+		t.Fatalf("buildTarCreateArgs: %v", err)
+	}
+	want := []string{"-czf", "-", "--exclude", ".venv/", "--exclude", "runs/detect/", "-C", dir, "."}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("tar args = %#v, want %#v", args, want)
+	}
+}
+
+func TestBuildTarCreateArgsForFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "data.jsonl")
+	if err := os.WriteFile(file, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	args, err := buildTarCreateArgs(file, nil)
+	if err != nil {
+		t.Fatalf("buildTarCreateArgs: %v", err)
+	}
+	want := []string{"-czf", "-", "-C", dir, "data.jsonl"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("tar args = %#v, want %#v", args, want)
 	}
 }

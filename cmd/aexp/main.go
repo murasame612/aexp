@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -2019,15 +2020,13 @@ func runSyncPushFromProject(ctx context.Context, resourceName, source, target, p
 	if err != nil {
 		return err
 	}
+	useTarFallback := false
+	var localRsyncErr, remoteRsyncErr error
 	if !dryRun {
-		if _, err := osexec.LookPath("rsync"); err != nil {
-			return fmt.Errorf("local rsync not found: %w", err)
-		}
-		if err := checkRemoteRsyncViaExec(ctx, exec, res, 20); err != nil {
-			return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
-		}
-		if err := ensureRemoteDir(ctx, exec, res, target); err != nil {
-			return err
+		_, localRsyncErr = osexec.LookPath("rsync")
+		remoteRsyncErr = checkRemoteRsyncViaExec(ctx, exec, res, 20)
+		if localRsyncErr != nil || remoteRsyncErr != nil {
+			useTarFallback = true
 		}
 	}
 	rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, resolvedExcludes, nil)
@@ -2036,6 +2035,27 @@ func runSyncPushFromProject(ctx context.Context, resourceName, source, target, p
 		printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
 		fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
 		return nil
+	}
+	if useTarFallback {
+		if deleteExtra {
+			return fmt.Errorf("remote rsync unavailable and tar fallback cannot preserve --delete semantics")
+		}
+		if _, err := osexec.LookPath("tar"); err != nil {
+			return fmt.Errorf("rsync unavailable and local tar not found: %w", err)
+		}
+		if err := checkRemoteTarViaExec(ctx, exec, res, 20); err != nil {
+			return fmt.Errorf("rsync unavailable and remote tar missing on %s: %w", res.Name, err)
+		}
+		if localRsyncErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: local rsync unavailable; falling back to ssh tar stream\n")
+		}
+		if remoteRsyncErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: remote rsync unavailable on %s; falling back to ssh tar stream\n", res.Name)
+		}
+		return runLocalTarPush(ctx, res, source, target, resolvedExcludes, timeoutSec)
+	}
+	if err := ensureRemoteDir(ctx, exec, res, target); err != nil {
+		return err
 	}
 	return runLocalRsync(ctx, timeoutSec, rsyncArgs)
 }
@@ -2311,7 +2331,7 @@ func syncPushCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "push [flags] <local-source> <remote-target-dir>",
-		Short: "Push local files to a resource with rsync",
+		Short: "Push local files to a resource with rsync or ssh tar fallback",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, exec, cleanup, err := syncResourceExecutor(resourceName)
@@ -2325,15 +2345,13 @@ func syncPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			useTarFallback := false
+			var localRsyncErr, remoteRsyncErr error
 			if !dryRun {
-				if _, err := osexec.LookPath("rsync"); err != nil {
-					return fmt.Errorf("local rsync not found: %w", err)
-				}
-				if err := checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20); err != nil {
-					return fmt.Errorf("remote rsync missing. Install rsync on %s or use remote-pull from a source with rsync: %w", res.Name, err)
-				}
-				if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
-					return err
+				_, localRsyncErr = osexec.LookPath("rsync")
+				remoteRsyncErr = checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20)
+				if localRsyncErr != nil || remoteRsyncErr != nil {
+					useTarFallback = true
 				}
 			}
 			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, resolvedExcludes, extraArgs)
@@ -2342,6 +2360,30 @@ func syncPushCmd() *cobra.Command {
 				printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
 				fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
 				return nil
+			}
+			if useTarFallback {
+				if deleteExtra {
+					return fmt.Errorf("remote rsync unavailable and tar fallback cannot preserve --delete semantics")
+				}
+				if len(extraArgs) > 0 {
+					return fmt.Errorf("remote rsync unavailable and tar fallback cannot apply --rsync-arg")
+				}
+				if _, err := osexec.LookPath("tar"); err != nil {
+					return fmt.Errorf("rsync unavailable and local tar not found: %w", err)
+				}
+				if err := checkRemoteTarViaExec(cmd.Context(), exec, res, 20); err != nil {
+					return fmt.Errorf("rsync unavailable and remote tar missing on %s: %w", res.Name, err)
+				}
+				if localRsyncErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: local rsync unavailable; falling back to ssh tar stream\n")
+				}
+				if remoteRsyncErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: remote rsync unavailable on %s; falling back to ssh tar stream\n", res.Name)
+				}
+				return runLocalTarPush(cmd.Context(), res, source, target, resolvedExcludes, timeoutSec)
+			}
+			if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
+				return err
 			}
 			return runLocalRsync(cmd.Context(), timeoutSec, rsyncArgs)
 		},
@@ -2655,6 +2697,26 @@ func checkRemoteRsyncViaExec(ctx context.Context, exec *executor.Executor, res *
 	return nil
 }
 
+func checkRemoteTarViaExec(ctx context.Context, exec *executor.Executor, res *store.Resource, timeoutSec int) error {
+	result, err := exec.Exec(ctx, executor.ExecRequest{
+		ResourceID: res.ID,
+		Command:    "command -v tar >/dev/null 2>&1",
+		TimeoutSec: timeoutSec,
+		Actor:      "cli",
+	})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = "tar not found on remote"
+		}
+		return fmt.Errorf("%s", detail)
+	}
+	return nil
+}
+
 func ensureRemoteDir(ctx context.Context, exec *executor.Executor, res *store.Resource, target string) error {
 	if target == "" {
 		return fmt.Errorf("remote target is required")
@@ -2822,6 +2884,10 @@ func buildRsyncArgs(res *store.Resource, dryRun bool, deleteExtra bool, excludes
 }
 
 func rsyncSSHCommand(res *store.Resource) string {
+	return joinShellArgs(localSSHArgs(res))
+}
+
+func localSSHArgs(res *store.Resource) []string {
 	parts := []string{
 		"ssh",
 		"-p", fmt.Sprintf("%d", res.Port),
@@ -2836,7 +2902,7 @@ func rsyncSSHCommand(res *store.Resource) string {
 	} else if res.SocksProxy != "" {
 		parts = append(parts, "-o", "ProxyCommand=nc -X 5 -x "+res.SocksProxy+" %h %p")
 	}
-	return joinShellArgs(parts)
+	return parts
 }
 
 func remoteRsyncSpec(res *store.Resource, remotePath string) string {
@@ -2871,6 +2937,72 @@ func runLocalRsync(ctx context.Context, timeoutSec int, args []string) error {
 		return fmt.Errorf("rsync failed: %w", err)
 	}
 	return nil
+}
+
+func runLocalTarPush(ctx context.Context, res *store.Resource, source string, target string, excludes []string, timeoutSec int) error {
+	if timeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+	}
+	tarArgs, err := buildTarCreateArgs(source, excludes)
+	if err != nil {
+		return err
+	}
+	remoteCommand := executor.WithResourceRemotePath(res,
+		"mkdir -p "+cliShellQuote(target)+" && tar -xzf - -C "+cliShellQuote(target))
+	sshArgs := append(localSSHArgs(res), res.User+"@"+res.Host, remoteCommand)
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+
+	tarCmd := osexec.CommandContext(ctx, "tar", tarArgs...)
+	tarCmd.Stdout = pw
+	tarCmd.Stderr = os.Stderr
+
+	sshCmd := osexec.CommandContext(ctx, "ssh", sshArgs[1:]...)
+	sshCmd.Stdin = pr
+	sshCmd.Stdout = os.Stdout
+	sshCmd.Stderr = os.Stderr
+
+	if err := sshCmd.Start(); err != nil {
+		pw.Close()
+		return fmt.Errorf("start ssh tar extract: %w", err)
+	}
+	if err := tarCmd.Start(); err != nil {
+		pw.Close()
+		sshCmd.Process.Kill()
+		sshCmd.Wait()
+		return fmt.Errorf("start local tar: %w", err)
+	}
+
+	tarErr := tarCmd.Wait()
+	_ = pw.CloseWithError(tarErr)
+	sshErr := sshCmd.Wait()
+	if tarErr != nil {
+		return fmt.Errorf("local tar failed: %w", tarErr)
+	}
+	if sshErr != nil {
+		return fmt.Errorf("remote tar extract failed: %w", sshErr)
+	}
+	return nil
+}
+
+func buildTarCreateArgs(source string, excludes []string) ([]string, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return nil, fmt.Errorf("stat source: %w", err)
+	}
+	args := []string{"-czf", "-"}
+	for _, pattern := range excludes {
+		if strings.TrimSpace(pattern) != "" {
+			args = append(args, "--exclude", pattern)
+		}
+	}
+	if info.IsDir() {
+		return append(args, "-C", source, "."), nil
+	}
+	return append(args, "-C", filepath.Dir(source), filepath.Base(source)), nil
 }
 
 func joinShellArgs(args []string) string {

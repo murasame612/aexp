@@ -1620,7 +1620,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_sync_push",
-			Description: "Push local files to a resource with rsync.",
+			Description: "Push local files to a resource with rsync; falls back to an SSH tar stream when remote rsync is unavailable.",
 			InputSchema: objectSchema(syncSchema(map[string]interface{}{
 				"resource": stringSchema("Resource name."),
 				"source":   stringSchema("Local source path."),
