@@ -878,6 +878,9 @@ func printDoctorReport(report doctorReport) {
 func applyProjectDoctorConfigRecommendations(report *doctorReport, cfg *projectFileConfig, recipeName string) {
 	report.ProjectConfig = cfg.Path
 	report.Events = defaultDoctorEvents(projectDoctorProjectHelper(cfg))
+	for _, warning := range cfg.Warnings {
+		report.Checks = append(report.Checks, doctorCheck{Name: "project config warning", OK: false, Severity: "warn", Detail: warning})
+	}
 	if recipeName == "" {
 		recipeName = defaultProjectRecipeName(cfg)
 	}
@@ -1106,6 +1109,7 @@ type projectFileConfig struct {
 	Artifacts  []string
 	Commands   map[string]projectFileCommand
 	Sync       projectFileSync
+	Warnings   []string
 }
 
 type projectFileCommand struct {
@@ -1531,6 +1535,7 @@ Then run:
 				RefreshProjectEnv: refreshEnv,
 			}
 			if dryRun {
+				printProjectConfigWarnings(cfg)
 				printProjectRunPlan(cfg.Path, commandName, resourceName, submitReq)
 				return nil
 			}
@@ -1662,7 +1667,7 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 			listKey = ""
 			if value == "" {
 				switch normalizeProjectKey(key) {
-				case "logs", "metrics", "artifacts":
+				case "logs", "logpaths", "metrics", "metricpaths", "artifacts", "artifactpaths":
 					listKey = key
 				case "sync":
 					section = key
@@ -1766,6 +1771,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 				return fmt.Errorf("%s must be an integer", key)
 			}
 			cfg.Sync.TimeoutSec = n
+		default:
+			cfg.Warnings = append(cfg.Warnings, "unknown sync field ignored: "+key)
 		}
 	default:
 		entry := ensureProjectCommand(cfg, section)
@@ -1786,6 +1793,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 			entry.NoGPU = parseProjectBool(value)
 		case "uievents":
 			entry.UIEvents = value
+		default:
+			cfg.Warnings = append(cfg.Warnings, "unknown recipe field ignored: "+section+"."+key)
 		}
 		cfg.Commands[section] = entry
 	}
@@ -1799,26 +1808,32 @@ func addProjectConfigListValue(cfg *projectFileConfig, section, key, value strin
 	switch section {
 	case "":
 		switch normalizeProjectKey(key) {
-		case "logs":
+		case "logs", "logpaths":
 			cfg.Logs = append(cfg.Logs, value)
-		case "metrics":
+		case "metrics", "metricpaths":
 			cfg.Metrics = append(cfg.Metrics, value)
-		case "artifacts":
+		case "artifacts", "artifactpaths":
 			cfg.Artifacts = append(cfg.Artifacts, value)
+		default:
+			cfg.Warnings = append(cfg.Warnings, "unknown project list ignored: "+key)
 		}
 	case "sync":
 		if normalizeProjectKey(key) == "exclude" || normalizeProjectKey(key) == "excludes" {
 			cfg.Sync.Excludes = append(cfg.Sync.Excludes, value)
+		} else {
+			cfg.Warnings = append(cfg.Warnings, "unknown sync list ignored: "+key)
 		}
 	default:
 		entry := ensureProjectCommand(cfg, section)
 		switch normalizeProjectKey(key) {
-		case "logs":
+		case "logs", "logpaths":
 			entry.Logs = append(entry.Logs, value)
-		case "metrics":
+		case "metrics", "metricpaths":
 			entry.Metrics = append(entry.Metrics, value)
-		case "artifacts":
+		case "artifacts", "artifactpaths":
 			entry.Artifacts = append(entry.Artifacts, value)
+		default:
+			cfg.Warnings = append(cfg.Warnings, "unknown recipe list ignored: "+section+"."+key)
 		}
 		cfg.Commands[section] = entry
 	}
@@ -1940,6 +1955,17 @@ func mergeProjectLists(base, override []string) []string {
 	return append(out, override...)
 }
 
+func printProjectConfigWarnings(cfg *projectFileConfig) {
+	if cfg == nil || len(cfg.Warnings) == 0 {
+		return
+	}
+	fmt.Println("Project config warnings")
+	for _, warning := range cfg.Warnings {
+		fmt.Printf("- %s\n", warning)
+	}
+	fmt.Println()
+}
+
 func printProjectRunPlan(configPath, commandName, resourceName string, req executor.SubmitRequest) {
 	args := []string{
 		"aexp", "run", "submit",
@@ -1992,6 +2018,8 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	printStringList("artifacts", req.ArtifactPaths)
 	if req.UIEventsPath != "" {
 		fmt.Printf("ui_events: %s\n", req.UIEventsPath)
+	} else {
+		fmt.Println("ui_events: .aexp/events/<run_id>.jsonl (default)")
 	}
 	fmt.Println("command:")
 	printIndentedBlock(req.Args[len(req.Args)-1], "  ")
@@ -2867,7 +2895,9 @@ func syncProfileExcludes(profile string) ([]string, error) {
 	switch profile {
 	case "all", "none":
 		return nil, nil
-	case "code", "code-data":
+	case "code":
+		return append(append([]string(nil), defaultSyncExcludes...), codeOnlySyncExcludes...), nil
+	case "code-data":
 		return append([]string(nil), defaultSyncExcludes...), nil
 	default:
 		return nil, fmt.Errorf("unknown sync profile %q (expected code, code-data, or all)", profile)
@@ -2889,6 +2919,24 @@ var defaultSyncExcludes = []string{
 	"runs/val/",
 	"runs/predict/",
 	"runs/**/weights/",
+}
+
+var codeOnlySyncExcludes = []string{
+	"data/",
+	"dataset/",
+	"datasets/",
+	"outputs/",
+	"output/",
+	"results/",
+	"checkpoints/",
+	"*.pt",
+	"*.pth",
+	"*.safetensors",
+	"*.ckpt",
+	"*.zip",
+	"*.tar",
+	"*.tar.gz",
+	"*.tgz",
 }
 
 func syncIgnorePath(source string) string {

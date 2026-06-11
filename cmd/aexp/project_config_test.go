@@ -415,6 +415,64 @@ train:
 	}
 }
 
+func TestProjectRunDryRunShowsDefaultUIEvents(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+resource: mu
+cwd: /remote/project
+env: auto
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runProjectRunForTest("--config", configPath, "train", "--dry-run")
+	if err != nil {
+		t.Fatalf("project run dry-run failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ui_events: .aexp/events/<run_id>.jsonl (default)") {
+		t.Fatalf("dry-run output missing default ui_events:\n%s", out)
+	}
+}
+
+func TestProjectConfigWarnsUnknownRecipeKeys(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+resource: mu
+cwd: /remote/project
+train:
+  command: python train.py
+  kind: formal
+  metric_paths:
+    - results.csv
+  strange_list:
+    - ignored.csv
+  mystery: value
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadProjectFileConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Commands["train"].Metrics; len(got) != 1 || got[0] != "results.csv" {
+		t.Fatalf("metric_paths alias not parsed: %#v", got)
+	}
+	for _, want := range []string{
+		"unknown recipe list ignored: train.strange_list",
+		"unknown recipe field ignored: train.mystery",
+	} {
+		if !containsString(cfg.Warnings, want) {
+			t.Fatalf("warning missing %q: %#v", want, cfg.Warnings)
+		}
+	}
+}
+
 func TestResolveSyncExcludesUsesProfileIgnoreAndFlags(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".aexpignore"), []byte(`
@@ -433,6 +491,8 @@ dataset/raw/
 	for _, want := range []string{
 		".venv/",
 		"__pycache__/",
+		"dataset/",
+		"outputs/",
 		"runs/detect/",
 		"dataset/raw/",
 		"*.tmp",
@@ -446,6 +506,21 @@ dataset/raw/
 		if !containsString(sources, want) {
 			t.Fatalf("sources missing %q: %#v", want, sources)
 		}
+	}
+}
+
+func TestResolveSyncExcludesCodeDataKeepsDataDirs(t *testing.T) {
+	excludes, _, err := resolveSyncExcludes(t.TempDir(), "code-data", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"dataset/", "outputs/", "*.zip"} {
+		if containsString(excludes, unwanted) {
+			t.Fatalf("code-data should not exclude %q by default: %#v", unwanted, excludes)
+		}
+	}
+	if !containsString(excludes, ".venv/") {
+		t.Fatalf("code-data should still exclude env/cache dirs: %#v", excludes)
 	}
 }
 
