@@ -891,7 +891,7 @@ func (e *Executor) Exec(ctx context.Context, req ExecRequest) (*ExecResult, erro
 
 	// Execute
 	start := time.Now()
-	stdout, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, cmd, resource.SocksProxy, resource.ProxyCommand)
+	stdout, stderr, err := e.pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, WithResourceRemotePath(resource, cmd), resource.SocksProxy, resource.ProxyCommand)
 	duration := time.Since(start)
 
 	// Truncate output if too large
