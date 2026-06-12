@@ -513,6 +513,7 @@
         <nav class="flex gap-1 mb-8 border-b border-border">
             <div class="tab-btn active" onclick="showTab('dashboard', this)" data-i18n="nav.dashboard">Dashboard</div>
             <div class="tab-btn" onclick="showTab('resources', this)" data-i18n="nav.resources">Resources</div>
+            <div class="tab-btn" onclick="showTab('projects', this)" data-i18n="nav.projects">Projects</div>
             <div class="tab-btn" onclick="showTab('runs', this)" data-i18n="nav.runs">Runs</div>
             <div class="tab-btn" onclick="showTab('favorites', this)" data-i18n="nav.favorites">Favorites</div>
             <div class="tab-btn" onclick="showTab('execs', this)" data-i18n="nav.execs">Execs</div>
@@ -673,6 +674,15 @@
                 </div>
             </div>
             <div id="resources-table-container"></div>
+        </div>
+
+        <!-- Projects Tab -->
+        <div id="tab-projects" class="hidden">
+            <div class="runs-toolbar">
+                <input id="project-filter-query" oninput="applyProjectFilters()" class="filter-input"
+                    placeholder="Search projects, verdicts, metrics, runs" data-i18n-placeholder="filters.searchProjects">
+            </div>
+            <div id="projects-container" class="project-list"></div>
         </div>
 
         <!-- Edit Resource Modal -->
@@ -1313,6 +1323,130 @@
             line-height: 1.55;
             overflow-wrap: anywhere;
         }
+        .project-list {
+            display: grid;
+            gap: 18px;
+        }
+        .project-panel {
+            border: 1px solid #d8d3c8;
+            border-radius: 0.875rem;
+            background: #fffdf8;
+            overflow: hidden;
+        }
+        .project-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 18px 20px;
+            border-bottom: 1px solid #e8e5dc;
+            background: #faf9f5;
+        }
+        .project-title {
+            font-family: 'Poppins', Arial, sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            color: #191817;
+        }
+        .project-meta {
+            margin-top: 4px;
+            font-size: 12px;
+            color: #7a766d;
+        }
+        .project-stats {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .project-runs {
+            display: grid;
+            gap: 0;
+        }
+        .project-run-row {
+            display: grid;
+            grid-template-columns: minmax(180px, 1.05fr) minmax(220px, 1.35fr) minmax(180px, 1fr);
+            gap: 16px;
+            padding: 16px 20px;
+            border-bottom: 1px solid #ece8df;
+        }
+        .project-run-row:last-child {
+            border-bottom: none;
+        }
+        .project-run-row.important {
+            border-left: 4px solid #c96545;
+            background: #fff8f4;
+        }
+        .project-run-main {
+            min-width: 0;
+        }
+        .project-run-name {
+            font-weight: 600;
+            color: #191817;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .project-run-id {
+            margin-top: 3px;
+            font-family: 'Menlo', monospace;
+            font-size: 11px;
+            color: #7a766d;
+        }
+        .project-question,
+        .project-verdict {
+            font-size: 13px;
+            line-height: 1.45;
+            color: #5f5b53;
+            overflow-wrap: anywhere;
+        }
+        .project-verdict {
+            color: #191817;
+            font-weight: 500;
+            margin-top: 6px;
+        }
+        .project-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .project-metric-chip {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            border-radius: 999px;
+            background: #eef5f0;
+            color: #35644a;
+            font-family: 'Menlo', monospace;
+            font-size: 11px;
+            padding: 4px 8px;
+        }
+        .project-mark-list {
+            display: grid;
+            gap: 6px;
+        }
+        .project-mark-chip {
+            border: 1px solid #e8e5dc;
+            border-radius: 0.625rem;
+            padding: 7px 9px;
+            color: #5f5b53;
+            font-size: 12px;
+            line-height: 1.4;
+            background: #fffdf8;
+            overflow-wrap: anywhere;
+        }
+        @media (max-width: 1100px) {
+            .project-run-row {
+                grid-template-columns: 1fr;
+            }
+            .project-head {
+                flex-direction: column;
+            }
+            .project-stats {
+                justify-content: flex-start;
+            }
+        }
         .favorite-card {
             border: 1px solid #d8d3c8;
             border-radius: 0.75rem;
@@ -1415,6 +1549,7 @@
         let allExecEvents = [];
         let allRunMarks = [];
         let allRunBookmarks = [];
+        let allProjects = [];
         let bookmarkedRunIds = new Set();
         const favoriteNoteDrafts = new Map();
         let favoriteNoteEditingRunId = '';
@@ -1450,6 +1585,7 @@
                 'auth.tokenPlaceholder': 'API token',
                 'nav.dashboard': 'Dashboard',
                 'nav.resources': 'Resources',
+                'nav.projects': 'Projects',
                 'nav.runs': 'Runs',
                 'nav.favorites': 'Favorites',
                 'nav.execs': 'Execs',
@@ -1519,7 +1655,18 @@
                 'filters.allKinds': 'All kinds',
                 'filters.searchNameCommand': 'Search name or command',
                 'filters.searchFavorites': 'Search favorite runs or notes',
+                'filters.searchProjects': 'Search projects, verdicts, metrics, runs',
                 'filters.searchExecs': 'Search command, resource, actor, event id',
+                'projects.noProjects': 'No project cards yet',
+                'projects.cards': 'cards',
+                'projects.important': 'important',
+                'projects.formal': 'formal',
+                'projects.running': 'running',
+                'projects.copyDigest': 'Copy digest',
+                'projects.openRun': 'Open run',
+                'projects.noMarks': 'No marks',
+                'projects.noMetrics': 'No key metrics',
+                'projects.promote': 'promote',
                 'state.loading': 'Loading...',
                 'state.enterToken': 'Enter API token',
                 'state.invalidToken': 'Invalid token',
@@ -1614,6 +1761,7 @@
                 'auth.tokenPlaceholder': 'API Token',
                 'nav.dashboard': '仪表盘',
                 'nav.resources': '资源',
+                'nav.projects': '项目',
                 'nav.runs': '实验',
                 'nav.favorites': '收藏',
                 'nav.execs': '执行',
@@ -1683,7 +1831,18 @@
                 'filters.allKinds': '全部类型',
                 'filters.searchNameCommand': '搜索名称或命令',
                 'filters.searchFavorites': '搜索收藏实验或标注',
+                'filters.searchProjects': '搜索项目、结论、指标、实验',
                 'filters.searchExecs': '搜索命令、资源、执行者、事件 ID',
+                'projects.noProjects': '还没有项目实验卡片',
+                'projects.cards': '卡片',
+                'projects.important': '重要',
+                'projects.formal': '正式',
+                'projects.running': '运行中',
+                'projects.copyDigest': '复制摘要',
+                'projects.openRun': '打开实验',
+                'projects.noMarks': '无批注',
+                'projects.noMetrics': '无关键指标',
+                'projects.promote': '提升',
                 'state.loading': '加载中...',
                 'state.enterToken': '输入 API Token',
                 'state.invalidToken': 'Token 无效',
@@ -1794,6 +1953,7 @@
             renderExecEvents('exec-events-body', allExecEvents.slice(0, 10), t('exec.noRecent'));
             renderRunResourceFilter(Array.from(resourcesById.values()), true);
             renderExecResourceFilter(Array.from(resourcesById.values()), true);
+            applyProjectFilters();
             applyFavoriteFilters();
             applyExecFilters();
             applyRunFilters();
@@ -2724,14 +2884,15 @@
 
         async function loadData() {
             const seq = ++loadDataSeq;
-            const [stats, resources, runs, trash, execEvents, runMarks, runBookmarks] = await Promise.all([
+            const [stats, resources, runs, trash, execEvents, runMarks, runBookmarks, projects] = await Promise.all([
                 fetchJSON('/stats'),
                 fetchJSON('/resources'),
                 fetchJSON('/runs?limit=50'),
                 fetchJSON('/runs?trash=true&limit=100'),
                 fetchJSON('/exec-events?limit=500'),
                 fetchJSON('/run-marks?limit=500'),
-                fetchJSON('/run-bookmarks?limit=200')
+                fetchJSON('/run-bookmarks?limit=200'),
+                fetchJSON('/projects?limit=500')
             ]);
             if (seq !== loadDataSeq) return;
 
@@ -2748,6 +2909,7 @@
             allExecEvents = asArray(execEvents).map(asObject);
             allRunMarks = asArray(runMarks).map(asObject);
             allRunBookmarks = asArray(runBookmarks).map(asObject);
+            allProjects = asArray(projects).map(asObject);
             bookmarkedRunIds = new Set(allRunBookmarks.map(b => asObject(b).run_id).filter(Boolean));
             renderRunResourceFilter(resArr);
             renderExecResourceFilter(resArr);
@@ -2757,6 +2919,7 @@
             renderResourcesTable(resArr);
             renderExecEvents('exec-events-body', allExecEvents.slice(0, 10), t('exec.noRecent'));
             refreshFilterLabels();
+            applyProjectFilters();
             applyFavoriteFilters();
             applyExecFilters();
             applyRunFilters();
@@ -3069,6 +3232,150 @@
             const count = selectedCompareRuns().length;
             btn.textContent = 'Compare (' + count + ')';
             btn.disabled = count < 2;
+        }
+
+        function applyProjectFilters() {
+            const query = (document.getElementById('project-filter-query')?.value || '').trim().toLowerCase();
+            const filtered = allProjects.filter(project => {
+                project = asObject(project);
+                if (!query) return true;
+                const cards = asArray(project.cards).map(asObject);
+                const haystack = [
+                    project.project_id,
+                    project.project_name,
+                    ...cards.flatMap(card => {
+                        const run = asObject(card.run);
+                        const marks = asArray(card.marks).map(asObject);
+                        return [
+                            card.run_id, card.question, card.verdict, card.key_metrics, card.next_action,
+                            run.name, run.command, run.status, run.kind,
+                            ...marks.flatMap(mark => [mark.title, mark.reason, mark.evidence, mark.kind]),
+                        ];
+                    }),
+                ].map(asText).join('\n').toLowerCase();
+                return haystack.includes(query);
+            });
+            renderProjects(filtered);
+        }
+
+        function renderProjects(projects) {
+            const c = document.getElementById('projects-container');
+            if (!c) return;
+            const arr = asArray(projects).map(asObject);
+            if (!arr.length) {
+                c.innerHTML = '<div class="empty-state">' + escHTML(t('projects.noProjects')) + '</div>';
+                return;
+            }
+            c.innerHTML = arr.map(projectPanelHTML).join('');
+        }
+
+        function projectPanelHTML(project) {
+            project = asObject(project);
+            const cards = asArray(project.cards).map(asObject);
+            const updated = formatShortTime(project.updated_at);
+            return `<section class="project-panel">
+                <div class="project-head">
+                    <div class="min-w-0">
+                        <div class="project-title">${escHTML(project.project_name || project.project_id || 'Project')}</div>
+                        <div class="project-meta"><span class="mono">${escHTML(project.project_id || '-')}</span> · ${escHTML(updated)}</div>
+                    </div>
+                    <div class="project-stats">
+                        <span class="pill pill-unknown">${escHTML((project.total_cards || cards.length) + ' ' + t('projects.cards'))}</span>
+                        ${project.important_runs ? `<span class="pill pill-finding">${escHTML(project.important_runs + ' ' + t('projects.important'))}</span>` : ''}
+                        ${project.formal_runs ? `<span class="pill pill-formal">${escHTML(project.formal_runs + ' ' + t('projects.formal'))}</span>` : ''}
+                        ${project.running_runs ? `<span class="pill pill-running">${escHTML(project.running_runs + ' ' + t('projects.running'))}</span>` : ''}
+                        <button class="btn-secondary text-xs" onclick="${escAttr('copyProjectDigest(' + jsArg(project.project_id || '') + ')')}">${escHTML(t('projects.copyDigest'))}</button>
+                    </div>
+                </div>
+                <div class="project-runs">${cards.map(projectRunCardHTML).join('')}</div>
+            </section>`;
+        }
+
+        function projectRunCardHTML(card) {
+            const run = asObject(card.run);
+            const marks = asArray(card.marks).map(asObject);
+            const title = run.name || card.run_id || card.id || '-';
+            const level = asText(card.evidence_level || 'C').toUpperCase();
+            const metrics = projectMetricLines(card);
+            const markHTML = marks.length
+                ? marks.slice(0, 3).map(mark => {
+                    const text = mark.title || mark.reason || mark.evidence || mark.kind || 'mark';
+                    return `<div class="project-mark-chip">${formatMarkText(text)}</div>`;
+                }).join('')
+                : `<div class="project-mark-chip">${escHTML(t('projects.noMarks'))}</div>`;
+            return `<div class="project-run-row ${card.important ? 'important' : ''}">
+                <div class="project-run-main">
+                    <div class="project-run-name" title="${escAttr(title)}">${escHTML(title)}</div>
+                    <div class="project-run-id">${escHTML(card.run_id || '-')}</div>
+                    <div class="flex gap-2 flex-wrap mt-2">
+                        <span class="pill pill-unknown">${escHTML('L' + level)}</span>
+                        ${run.kind ? runKindPill(run.kind) : ''}
+                        ${run.status ? runStatusPill(run.status) : ''}
+                        ${card.should_promote ? `<span class="pill pill-finding">${escHTML(t('projects.promote'))}</span>` : ''}
+                    </div>
+                    <button class="link-btn mt-3" onclick="${escAttr('showRunDetail(' + jsArg(card.run_id || '') + ')')}">${escHTML(t('projects.openRun'))}</button>
+                </div>
+                <div>
+                    ${card.question ? `<div class="project-question">${formatMarkText(card.question)}</div>` : ''}
+                    ${card.verdict ? `<div class="project-verdict">${formatMarkText(card.verdict)}</div>` : ''}
+                    ${card.next_action ? `<div class="project-question mt-2">${formatMarkText(card.next_action)}</div>` : ''}
+                    <div class="project-metrics">
+                        ${metrics.length ? metrics.map(line => `<span class="project-metric-chip" title="${escAttr(line)}">${escHTML(line)}</span>`).join('') : `<span class="project-metric-chip">${escHTML(t('projects.noMetrics'))}</span>`}
+                    </div>
+                </div>
+                <div class="project-mark-list">${markHTML}</div>
+            </div>`;
+        }
+
+        function projectMetricLines(card) {
+            return asText(asObject(card).key_metrics)
+                .split(/\n|;/)
+                .map(s => s.trim())
+                .filter(Boolean)
+                .slice(0, 8);
+        }
+
+        function projectDigestMarkdown(project) {
+            project = asObject(project);
+            const lines = ['# ' + (project.project_name || project.project_id || 'Project'), ''];
+            asArray(project.cards).map(asObject).forEach(card => {
+                const run = asObject(card.run);
+                lines.push('## ' + (run.name || card.run_id || card.id || 'run'));
+                lines.push('- run_id: ' + (card.run_id || ''));
+                lines.push('- level: ' + asText(card.evidence_level || 'C').toUpperCase() + (card.important ? ' important' : ''));
+                if (card.question) lines.push('- question: ' + asText(card.question));
+                if (card.verdict) lines.push('- verdict: ' + asText(card.verdict));
+                const metrics = projectMetricLines(card);
+                if (metrics.length) lines.push('- metrics: ' + metrics.join('; '));
+                if (card.next_action) lines.push('- next: ' + asText(card.next_action));
+                const marks = asArray(card.marks).map(asObject);
+                if (marks.length) {
+                    lines.push('- marks: ' + marks.slice(0, 3).map(m => asText(m.title || m.reason || m.evidence || m.kind)).filter(Boolean).join('; '));
+                }
+                lines.push('');
+            });
+            return lines.join('\n').trim() + '\n';
+        }
+
+        async function copyProjectDigest(projectId) {
+            const project = allProjects.map(asObject).find(p => p.project_id === projectId);
+            if (!project) return;
+            await copyText(projectDigestMarkdown(project));
+        }
+
+        async function copyText(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch {
+                const el = document.createElement('textarea');
+                el.value = text;
+                el.style.position = 'fixed';
+                el.style.opacity = '0';
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            }
         }
 
         function renderFavorites(bookmarks) {
@@ -3852,6 +4159,9 @@
         }
         function escAttr(s) {
             return escHTML(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function jsArg(s) {
+            return JSON.stringify(asText(s)).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
         }
         function trashIcon() {
             return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

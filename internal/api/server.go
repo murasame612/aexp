@@ -117,6 +117,10 @@ func (s *Server) Handler() http.Handler {
 		// Human-curated favorite runs
 		r.Get("/run-bookmarks", s.handleListRunBookmarks)
 
+		// Project-level experiment memory
+		r.Get("/projects", s.handleListProjects)
+		r.Get("/projects/{id}", s.handleGetProject)
+
 		// Exec (one-shot remote command)
 		r.Post("/exec", s.handleExec)
 
@@ -1223,6 +1227,118 @@ func (s *Server) enrichRunBookmark(ctx context.Context, b store.RunBookmark) run
 		UpdatedAt: b.UpdatedAt,
 		Run:       run,
 	}
+}
+
+// --- Projects ---
+
+type projectRunCardView struct {
+	store.ProjectRunCard
+	Run   *store.Run      `json:"run,omitempty"`
+	Marks []store.RunMark `json:"marks"`
+}
+
+type projectView struct {
+	ProjectID     string               `json:"project_id"`
+	ProjectName   string               `json:"project_name"`
+	UpdatedAt     time.Time            `json:"updated_at"`
+	TotalCards    int                  `json:"total_cards"`
+	ImportantRuns int                  `json:"important_runs"`
+	PromotedRuns  int                  `json:"promoted_runs"`
+	FormalRuns    int                  `json:"formal_runs"`
+	RunningRuns   int                  `json:"running_runs"`
+	Cards         []projectRunCardView `json:"cards"`
+}
+
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	views, err := s.projectViews(r.Context(), "", projectLimitFromQuery(r, 200))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	views, err := s.projectViews(r.Context(), projectID, projectLimitFromQuery(r, 500))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if len(views) == 0 {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, views[0])
+}
+
+func projectLimitFromQuery(r *http.Request, def int) int {
+	limit := def
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	return limit
+}
+
+func (s *Server) projectViews(ctx context.Context, projectID string, limit int) ([]projectView, error) {
+	cards, err := s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{
+		ProjectID: projectID,
+		Limit:     limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	byProject := map[string]*projectView{}
+	order := make([]string, 0)
+	for _, card := range cards {
+		id := strings.TrimSpace(card.ProjectID)
+		if id == "" {
+			id = "aexp-project"
+		}
+		view := byProject[id]
+		if view == nil {
+			name := strings.TrimSpace(card.ProjectName)
+			if name == "" {
+				name = id
+			}
+			view = &projectView{ProjectID: id, ProjectName: name}
+			byProject[id] = view
+			order = append(order, id)
+		}
+		run, _ := s.store.GetRun(ctx, card.RunID)
+		marks, _ := s.store.ListRunMarks(ctx, store.RunMarkFilter{RunID: card.RunID, Limit: 20})
+		view.Cards = append(view.Cards, projectRunCardView{
+			ProjectRunCard: card,
+			Run:            run,
+			Marks:          marks,
+		})
+		view.TotalCards++
+		if card.Important {
+			view.ImportantRuns++
+		}
+		if card.ShouldPromote {
+			view.PromotedRuns++
+		}
+		if card.UpdatedAt.After(view.UpdatedAt) {
+			view.UpdatedAt = card.UpdatedAt
+		}
+		if run != nil {
+			kind := strings.ToLower(strings.TrimSpace(run.Kind))
+			if kind == "" || kind == store.RunKindFormal || kind == store.RunKindAblation {
+				view.FormalRuns++
+			}
+			if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+				view.RunningRuns++
+			}
+		}
+	}
+	views := make([]projectView, 0, len(order))
+	for _, id := range order {
+		views = append(views, *byProject[id])
+	}
+	return views, nil
 }
 
 // --- Exec ---
