@@ -1325,6 +1325,7 @@
         }
         .project-list {
             display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 18px;
         }
         .project-panel {
@@ -1332,6 +1333,16 @@
             border-radius: 0.875rem;
             background: #fffdf8;
             overflow: hidden;
+        }
+        .project-summary-card {
+            min-height: 190px;
+            cursor: pointer;
+            transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+        }
+        .project-summary-card:hover {
+            border-color: #c96545;
+            background: #fffaf4;
+            transform: translateY(-1px);
         }
         .project-head {
             display: flex;
@@ -1363,8 +1374,34 @@
             display: grid;
             gap: 0;
         }
-        .project-panel.collapsed .project-runs {
-            display: none;
+        .project-detail {
+            display: grid;
+            gap: 18px;
+        }
+        .project-detail-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .project-detail-title {
+            font-family: 'Poppins', Arial, sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            color: #191817;
+        }
+        .project-summary-body {
+            padding: 16px 20px 20px;
+            display: grid;
+            gap: 12px;
+        }
+        .project-summary-text {
+            color: #5f5b53;
+            line-height: 1.45;
+            font-size: 13px;
+            min-height: 38px;
+            overflow-wrap: anywhere;
         }
         .project-run-row {
             display: grid;
@@ -1553,7 +1590,7 @@
         let allRunMarks = [];
         let allRunBookmarks = [];
         let allProjects = [];
-        const collapsedProjectIds = new Set();
+        let selectedProjectId = '';
         let bookmarkedRunIds = new Set();
         const favoriteNoteDrafts = new Map();
         let favoriteNoteEditingRunId = '';
@@ -1668,13 +1705,14 @@
                 'projects.running': 'running',
                 'projects.copyDigest': 'Copy digest',
                 'projects.openRun': 'Open run',
+                'projects.openProject': 'Open project',
+                'projects.back': 'Back to projects',
+                'projects.latest': 'Latest note',
                 'projects.noMarks': 'No marks',
                 'projects.noMetrics': 'No key metrics',
                 'projects.promote': 'promote',
                 'projects.unassigned': 'Unassigned / temporary runs',
                 'projects.unassignedRun': 'unassigned',
-                'projects.expand': 'Expand',
-                'projects.collapse': 'Collapse',
                 'state.loading': 'Loading...',
                 'state.enterToken': 'Enter API token',
                 'state.invalidToken': 'Invalid token',
@@ -1848,13 +1886,14 @@
                 'projects.running': '运行中',
                 'projects.copyDigest': '复制摘要',
                 'projects.openRun': '打开实验',
+                'projects.openProject': '打开项目',
+                'projects.back': '返回项目',
+                'projects.latest': '最新记录',
                 'projects.noMarks': '无批注',
                 'projects.noMetrics': '无关键指标',
                 'projects.promote': '提升',
                 'projects.unassigned': '未归档 / 临时运行',
                 'projects.unassignedRun': '未归档',
-                'projects.expand': '展开',
-                'projects.collapse': '收起',
                 'state.loading': '加载中...',
                 'state.enterToken': '输入 API Token',
                 'state.invalidToken': 'Token 无效',
@@ -3275,9 +3314,20 @@
             if (!c) return;
             const arr = asArray(projects).map(asObject);
             if (!arr.length) {
+                c.className = 'project-list';
                 c.innerHTML = '<div class="empty-state">' + escHTML(t('projects.noProjects')) + '</div>';
                 return;
             }
+            if (selectedProjectId) {
+                const selected = arr.find(project => project.project_id === selectedProjectId);
+                if (selected) {
+                    c.className = 'project-detail';
+                    c.innerHTML = projectDetailHTML(selected);
+                    return;
+                }
+                selectedProjectId = '';
+            }
+            c.className = 'project-list';
             c.innerHTML = arr.map(projectPanelHTML).join('');
         }
 
@@ -3287,9 +3337,11 @@
             const updated = formatShortTime(project.updated_at);
             const projectId = project.project_id || '';
             const isUnassigned = projectId === '__unassigned__';
-            const collapsed = isProjectCollapsed(project);
             const projectName = isUnassigned ? t('projects.unassigned') : (project.project_name || project.project_id || 'Project');
-            return `<section class="project-panel ${collapsed ? 'collapsed' : ''}">
+            const latest = projectLatestCard(project);
+            const metrics = latest ? projectMetricLines(latest).slice(0, 3) : [];
+            const latestText = latest ? (latest.verdict || latest.question || latest.next_action || '') : '';
+            return `<section class="project-panel project-summary-card" onclick="${escAttr('openProjectPage(' + jsArg(projectId) + ')')}">
                 <div class="project-head">
                     <div class="min-w-0">
                         <div class="project-title">${escHTML(projectName)}</div>
@@ -3300,35 +3352,56 @@
                         ${project.important_runs ? `<span class="pill pill-finding">${escHTML(project.important_runs + ' ' + t('projects.important'))}</span>` : ''}
                         ${project.formal_runs ? `<span class="pill pill-formal">${escHTML(project.formal_runs + ' ' + t('projects.formal'))}</span>` : ''}
                         ${project.running_runs ? `<span class="pill pill-running">${escHTML(project.running_runs + ' ' + t('projects.running'))}</span>` : ''}
-                        <button class="btn-secondary text-xs" onclick="${escAttr('toggleProjectPanel(' + jsArg(projectId) + ')')}">${escHTML(collapsed ? t('projects.expand') : t('projects.collapse'))}</button>
-                        <button class="btn-secondary text-xs" onclick="${escAttr('copyProjectDigest(' + jsArg(project.project_id || '') + ')')}">${escHTML(t('projects.copyDigest'))}</button>
                     </div>
                 </div>
+                <div class="project-summary-body">
+                    <div class="project-meta">${escHTML(t('projects.latest'))}</div>
+                    <div class="project-summary-text">${latestText ? formatMarkText(latestText) : escHTML(t('projects.noMetrics'))}</div>
+                    <div class="project-metrics">
+                        ${metrics.length ? metrics.map(line => `<span class="project-metric-chip" title="${escAttr(line)}">${escHTML(line)}</span>`).join('') : `<span class="project-metric-chip">${escHTML(t('projects.noMetrics'))}</span>`}
+                    </div>
+                    <button class="btn-secondary text-xs" onclick="${escAttr('event.stopPropagation(); openProjectPage(' + jsArg(projectId) + ')')}">${escHTML(t('projects.openProject'))}</button>
+                </div>
+            </section>`;
+        }
+
+        function projectDetailHTML(project) {
+            project = asObject(project);
+            const cards = asArray(project.cards).map(asObject);
+            const projectId = project.project_id || '';
+            const isUnassigned = projectId === '__unassigned__';
+            const projectName = isUnassigned ? t('projects.unassigned') : (project.project_name || project.project_id || 'Project');
+            return `<div class="project-detail-toolbar">
+                <div>
+                    <button class="link-btn mb-2" onclick="backToProjectList()">${escHTML(t('projects.back'))}</button>
+                    <div class="project-detail-title">${escHTML(projectName)}</div>
+                    <div class="project-meta"><span class="mono">${escHTML(project.project_id || '-')}</span> · ${escHTML(formatShortTime(project.updated_at))}</div>
+                </div>
+                <div class="project-stats">
+                    <span class="pill pill-unknown">${escHTML((project.total_cards || cards.length) + ' ' + t('projects.cards'))}</span>
+                    ${project.important_runs ? `<span class="pill pill-finding">${escHTML(project.important_runs + ' ' + t('projects.important'))}</span>` : ''}
+                    ${project.formal_runs ? `<span class="pill pill-formal">${escHTML(project.formal_runs + ' ' + t('projects.formal'))}</span>` : ''}
+                    ${project.running_runs ? `<span class="pill pill-running">${escHTML(project.running_runs + ' ' + t('projects.running'))}</span>` : ''}
+                    <button class="btn-secondary text-xs" onclick="${escAttr('copyProjectDigest(' + jsArg(projectId) + ')')}">${escHTML(t('projects.copyDigest'))}</button>
+                </div>
+            </div>
+            <section class="project-panel">
                 <div class="project-runs">${cards.map(projectRunCardHTML).join('')}</div>
             </section>`;
         }
 
-        function isProjectCollapsed(project) {
-            const id = asObject(project).project_id || '';
-            if (collapsedProjectIds.has(id)) return true;
-            if (collapsedProjectIds.has('!' + id)) return false;
-            return id === '__unassigned__';
+        function projectLatestCard(project) {
+            const cards = asArray(asObject(project).cards).map(asObject);
+            return cards.find(card => card.important) || cards.find(card => card.verdict || card.key_metrics || card.question) || cards[0] || null;
         }
 
-        function toggleProjectPanel(projectId) {
-            const id = asText(projectId);
-            if (!id) return;
-            if (collapsedProjectIds.has(id)) {
-                collapsedProjectIds.delete(id);
-                collapsedProjectIds.add('!' + id);
-            } else if (collapsedProjectIds.has('!' + id)) {
-                collapsedProjectIds.delete('!' + id);
-                collapsedProjectIds.add(id);
-            } else if (id === '__unassigned__') {
-                collapsedProjectIds.add('!' + id);
-            } else {
-                collapsedProjectIds.add(id);
-            }
+        function openProjectPage(projectId) {
+            selectedProjectId = asText(projectId);
+            applyProjectFilters();
+        }
+
+        function backToProjectList() {
+            selectedProjectId = '';
             applyProjectFilters();
         }
 
