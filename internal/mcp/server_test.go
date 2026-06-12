@@ -39,7 +39,8 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	var listResp struct {
 		Result struct {
 			Tools []struct {
-				Name string `json:"name"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
 			} `json:"tools"`
 		} `json:"result"`
 	}
@@ -51,6 +52,17 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	}
 	if listResp.Result.Tools[0].Name != "aexp_agent_card" {
 		t.Fatalf("unexpected first tool %q", listResp.Result.Tools[0].Name)
+	}
+	var statusDescription string
+	for _, tool := range listResp.Result.Tools {
+		if tool.Name == "aexp_get_run_status" {
+			statusDescription = tool.Description
+			break
+		}
+	}
+	if !strings.Contains(statusDescription, "Do not use for monitoring loops") ||
+		!strings.Contains(statusDescription, "prefer aexp_get_run_snapshot") {
+		t.Fatalf("status tool description should steer agents to snapshot monitoring, got %q", statusDescription)
 	}
 }
 
@@ -242,6 +254,67 @@ printf 'ok\n'
 				t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", tt.want, gotArgs)
 			}
 		})
+	}
+}
+
+func TestRunStatusToolReturnsSnapshotGuidance(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"id":"run_ABC","status":"running","ui_events":".aexp/events/run_ABC.jsonl"}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_get_run_status","arguments":{"run_id":"run_ABC"}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{"run", "status", "run_ABC", "--short", "--json"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+		t.Fatalf("decode tool response: %v\n%s", err, out.String())
+	}
+	if resp.Result.IsError {
+		t.Fatalf("tool returned error: %s", out.String())
+	}
+	if len(resp.Result.Content) != 1 {
+		t.Fatalf("unexpected content: %#v", resp.Result.Content)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.Result.Content[0].Text), &body); err != nil {
+		t.Fatalf("decode status body: %v\n%s", err, resp.Result.Content[0].Text)
+	}
+	monitoring, _ := body["monitoring"].(map[string]interface{})
+	if monitoring["preferred_tool"] != "aexp_get_run_snapshot" {
+		t.Fatalf("status response missing snapshot guidance: %#v", body)
+	}
+	if monitoring["avoid_for_monitoring"] != true {
+		t.Fatalf("status response should discourage monitoring loops: %#v", monitoring)
 	}
 }
 

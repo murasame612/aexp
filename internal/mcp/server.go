@@ -926,6 +926,31 @@ func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
 	}
 }
 
+func mcpStatusMonitoringHint(runID string) map[string]interface{} {
+	return map[string]interface{}{
+		"purpose":              "diagnostic_or_final_check",
+		"preferred_tool":       "aexp_get_run_snapshot",
+		"preferred_call":       "aexp_get_run_snapshot(run_id=\"" + runID + "\")",
+		"events_tool":          "aexp_tail_run_events",
+		"metrics_tool":         "aexp_get_run_metrics",
+		"suggested_interval":   "Poll snapshot every 30-60s, then back off toward 120s when progress has not changed.",
+		"avoid_for_monitoring": true,
+	}
+}
+
+func addStatusMonitoringHint(runID string, statusJSON string) string {
+	var status map[string]interface{}
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return jsonText(map[string]interface{}{
+			"run_id":     runID,
+			"raw_status": statusJSON,
+			"monitoring": mcpStatusMonitoringHint(runID),
+		})
+	}
+	status["monitoring"] = mcpStatusMonitoringHint(runID)
+	return jsonText(status)
+}
+
 func jsonText(v interface{}) string {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -1329,7 +1354,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_get_run_status",
-			Description: "Get one run's refreshed short status as JSON.",
+			Description: "Diagnostic/final status check for one run. Do not use for monitoring loops; prefer aexp_get_run_snapshot for active training progress.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"run_id":  stringSchema("Run id."),
 				"timeout": numberSchema("Tool timeout in seconds."),
@@ -1339,7 +1364,11 @@ func toolRegistry() []toolSpec {
 				if err != nil {
 					return "", err
 				}
-				return s.runAexp(ctx, timeoutFromArgs(args, 20), "run", "status", runID, "--short", "--json")
+				status, err := s.runAexp(ctx, timeoutFromArgs(args, 20), "run", "status", runID, "--short", "--json")
+				if err != nil {
+					return "", err
+				}
+				return addStatusMonitoringHint(runID, status), nil
 			},
 		},
 		{
