@@ -300,6 +300,75 @@ func TestRunMarks(t *testing.T) {
 	}
 }
 
+func TestProjectRunCards(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_card01", Name: "res-card", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_card01", ResourceID: "rsrc_card01", Status: RunStatusSucceeded, Kind: RunKindFormal, Command: "python train.py"}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	card := &ProjectRunCard{
+		ID:            "card_test001",
+		ProjectID:     "dam-imputation",
+		ProjectName:   "Dam Imputation",
+		RunID:         "run_card01",
+		Question:      "Does CAF beat IR?",
+		Verdict:       "CAF improves mAP50-95.",
+		EvidenceLevel: "B",
+		KeyMetrics:    "mAP50-95=0.606",
+		Important:     true,
+	}
+	if err := s.SaveProjectRunCard(ctx, card); err != nil {
+		t.Fatalf("SaveProjectRunCard: %v", err)
+	}
+
+	got, err := s.GetProjectRunCard(ctx, "run_card01")
+	if err != nil || got == nil {
+		t.Fatalf("GetProjectRunCard: %v", err)
+	}
+	if got.ProjectID != "dam-imputation" || got.EvidenceLevel != "B" || !got.Important {
+		t.Fatalf("unexpected card: %#v", got)
+	}
+
+	if err := s.SaveProjectRunCard(ctx, &ProjectRunCard{
+		ID:            "card_ignored",
+		ProjectID:     "dam-imputation",
+		ProjectName:   "Dam Imputation",
+		RunID:         "run_card01",
+		Question:      "Does CAF beat IR?",
+		Verdict:       "Needs rerun with seed control.",
+		EvidenceLevel: "C",
+	}); err != nil {
+		t.Fatalf("SaveProjectRunCard upsert: %v", err)
+	}
+	updated, _ := s.GetProjectRunCard(ctx, "run_card01")
+	if updated.ID != "card_test001" {
+		t.Fatalf("upsert should keep original id, got %q", updated.ID)
+	}
+	if updated.Verdict != "Needs rerun with seed control." || updated.Important {
+		t.Fatalf("unexpected updated card: %#v", updated)
+	}
+
+	cards, err := s.ListProjectRunCards(ctx, ProjectRunCardFilter{ProjectID: "dam-imputation", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListProjectRunCards: %v", err)
+	}
+	if len(cards) != 1 || cards[0].RunID != "run_card01" {
+		t.Fatalf("cards = %#v, want run_card01", cards)
+	}
+	important, err := s.ListProjectRunCards(ctx, ProjectRunCardFilter{ProjectID: "dam-imputation", ImportantOnly: true})
+	if err != nil {
+		t.Fatalf("ListProjectRunCards important: %v", err)
+	}
+	if len(important) != 0 {
+		t.Fatalf("important cards = %#v, want empty after update", important)
+	}
+}
+
 func TestRunBookmarks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

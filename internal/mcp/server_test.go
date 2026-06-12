@@ -64,6 +64,23 @@ func TestServerInitializeAndListTools(t *testing.T) {
 		!strings.Contains(statusDescription, "prefer aexp_get_run_snapshot") {
 		t.Fatalf("status tool description should steer agents to snapshot monitoring, got %q", statusDescription)
 	}
+	if !toolListed(listResp.Result.Tools, "aexp_project_card") ||
+		!toolListed(listResp.Result.Tools, "aexp_project_runs") ||
+		!toolListed(listResp.Result.Tools, "aexp_project_digest") {
+		t.Fatalf("project card tools should be listed: %#v", listResp.Result.Tools)
+	}
+}
+
+func toolListed(tools []struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExecToolInvokesAexpBinary(t *testing.T) {
@@ -207,6 +224,83 @@ printf '{"id":"mark_123","run_id":"run_ABC","kind":"note"}\n'
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
 	wantArgs := []string{"run", "mark", "run_ABC", "--json", "--kind", "note", "--title", "ok", "--reason", "checked"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
+func TestProjectCardToolInvokesAexpBinary(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"run_id":"run_ABC","project_id":"dam-imputation"}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_project_card","arguments":{"run_id":"run_ABC","config":"/tmp/.aexp.yaml","question":"Does CAF help?","verdict":"CAF improves mAP.","level":"B","metric":["mAP50-95=0.606"],"artifact":["runs/exp/summary.json"],"next_action":"rerun seeds","important":true,"promote":true,"proposal_reason":"paper table","related_run":["run_DEF"]}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{
+		"project", "card", "run_ABC", "--json",
+		"--config", "/tmp/.aexp.yaml",
+		"--question", "Does CAF help?",
+		"--verdict", "CAF improves mAP.",
+		"--level", "B",
+		"--metric", "mAP50-95=0.606",
+		"--artifact", "runs/exp/summary.json",
+		"--next-action", "rerun seeds",
+		"--important",
+		"--promote",
+		"--proposal-reason", "paper table",
+		"--related-run", "run_DEF",
+	}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
+func TestProjectDigestToolInvokesAexpBinary(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf 'ok\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_project_digest","arguments":{"config":"/tmp/.aexp.yaml","important":true,"json":true,"limit":5}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{"project", "digest", "--config", "/tmp/.aexp.yaml", "--important", "--json", "--limit", "5"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}

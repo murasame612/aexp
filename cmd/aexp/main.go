@@ -450,6 +450,8 @@ func agentCmd() *cobra.Command {
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
 		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve finding: aexp run mark <run_id> --title ... --reason ... --evidence ...",
+		"Record project card: aexp project card <run_id> --question ... --verdict ... --metric ... --important",
+		"Review project memory: aexp project digest --important",
 	}
 	rules := []string{
 		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
@@ -460,6 +462,7 @@ func agentCmd() *cobra.Command {
 		"Always provide --metric-paths and --log-paths for formal runs.",
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
 		"After interpreting logs/metrics/artifacts, write a run mark so results survive context loss.",
+		"For project-organized work, use .aexp.yaml project.id; write project cards for decision-changing runs and read project digest before drafting notes.",
 	}
 
 	cmd := &cobra.Command{
@@ -1162,11 +1165,15 @@ resource + cwd + environment strategy + result/log globs.`,
 	cmd.AddCommand(projectInitCmd())
 	cmd.AddCommand(projectRunCmd())
 	cmd.AddCommand(projectSyncCmd())
+	cmd.AddCommand(projectCardCmd())
+	cmd.AddCommand(projectRunsCmd())
+	cmd.AddCommand(projectDigestCmd())
 	return cmd
 }
 
 type projectFileConfig struct {
 	Path       string
+	Project    projectFileMeta
 	Resource   string
 	Cwd        string
 	Env        string
@@ -1179,6 +1186,15 @@ type projectFileConfig struct {
 	Commands   map[string]projectFileCommand
 	Sync       projectFileSync
 	Warnings   []string
+}
+
+type projectFileMeta struct {
+	ID               string
+	Name             string
+	Vault            string
+	RunCardIndex     string
+	ProposalDir      string
+	PromotionDefault string
 }
 
 type projectFileCommand struct {
@@ -1275,6 +1291,8 @@ func runProjectInit(opts projectInitOptions) error {
 	}
 	guess := guessProjectInit(localDir)
 	content := renderProjectInitConfig(projectInitConfig{
+		ProjectID:   defaultProjectID(localDir),
+		ProjectName: filepath.Base(localDir),
 		Resource:    opts.Resource,
 		Cwd:         cwd,
 		Env:         opts.Env,
@@ -1337,6 +1355,8 @@ func writeProjectEventsHelper(localDir string) error {
 }
 
 type projectInitConfig struct {
+	ProjectID   string
+	ProjectName string
 	Resource    string
 	Cwd         string
 	Env         string
@@ -1426,6 +1446,12 @@ func appendProjectTrainConfig(b *strings.Builder, cfg projectInitConfig) {
 
 func renderProjectInitConfig(cfg projectInitConfig) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "project:\n")
+	fmt.Fprintf(&b, "  id: %s\n", cfg.ProjectID)
+	if cfg.ProjectName != "" && cfg.ProjectName != cfg.ProjectID {
+		fmt.Fprintf(&b, "  name: %s\n", cfg.ProjectName)
+	}
+	fmt.Fprintf(&b, "  promotion_default: no_proposal\n\n")
 	fmt.Fprintf(&b, "resource: %s\n", cfg.Resource)
 	fmt.Fprintf(&b, "cwd: %s\n", cfg.Cwd)
 	fmt.Fprintf(&b, "env: %s\n", cfg.Env)
@@ -1459,6 +1485,75 @@ func writeYAMLList(b *strings.Builder, key string, values []string) {
 	fmt.Fprintf(b, "%s:\n", key)
 	for _, value := range values {
 		fmt.Fprintf(b, "  - %s\n", value)
+	}
+}
+
+func defaultProjectID(dir string) string {
+	name := strings.ToLower(filepath.Base(dir))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "aexp-project"
+	}
+	return out
+}
+
+func projectIDFromConfig(cfg *projectFileConfig) string {
+	if cfg != nil {
+		if id := strings.TrimSpace(cfg.Project.ID); id != "" {
+			return id
+		}
+		if cfg.Path != "" {
+			return defaultProjectID(filepath.Dir(cfg.Path))
+		}
+	}
+	return "aexp-project"
+}
+
+func projectNameFromConfig(cfg *projectFileConfig) string {
+	if cfg != nil {
+		if name := strings.TrimSpace(cfg.Project.Name); name != "" {
+			return name
+		}
+	}
+	return projectIDFromConfig(cfg)
+}
+
+func printProjectRunCards(cards []store.ProjectRunCard) {
+	if len(cards) == 0 {
+		fmt.Println("No project run cards found.")
+		return
+	}
+	fmt.Printf("%-14s %-15s %-5s %-9s %-30s %s\n", "UPDATED", "RUN_ID", "LVL", "IMPORTANT", "QUESTION", "VERDICT")
+	for _, card := range cards {
+		updated := card.UpdatedAt.Format("01-02 15:04")
+		if card.UpdatedAt.IsZero() {
+			updated = "-"
+		}
+		important := ""
+		if card.Important {
+			important = "yes"
+		}
+		fmt.Printf("%-14s %-15s %-5s %-9s %-30s %s\n",
+			updated,
+			truncStr(card.RunID, 15),
+			firstNonEmpty(card.EvidenceLevel, "C"),
+			important,
+			truncStr(card.Question, 30),
+			truncStr(card.Verdict, 70),
+		)
 	}
 }
 
@@ -1692,6 +1787,224 @@ func projectSyncCmd() *cobra.Command {
 	return cmd
 }
 
+func projectCardCmd() *cobra.Command {
+	var configPath, question, verdict, level, supports, weakens, nextAction, proposalReason string
+	var keyMetrics, artifactPaths, relatedRuns []string
+	var important, promote, asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "card [run_id]",
+		Short: "Create or update a project-level experiment card for a run",
+		Long: `Create a short project-level card that explains why a run matters.
+
+The card is scoped by the nearest .aexp.yaml project.id. It is intentionally
+short: experiment agents should write facts and verdicts here, while note agents
+can later read project digest/runs without scanning raw logs.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadProjectFileConfig(configPath)
+			if err != nil {
+				return err
+			}
+			projectID := projectIDFromConfig(cfg)
+			db := openDB()
+			defer db.Close()
+			card, err := db.GetProjectRunCard(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if card == nil {
+				card = &store.ProjectRunCard{
+					ID:            "card_" + strings.TrimPrefix(args[0], "run_"),
+					ProjectID:     projectID,
+					ProjectName:   projectNameFromConfig(cfg),
+					RunID:         args[0],
+					EvidenceLevel: "C",
+				}
+			}
+			card.ProjectID = projectID
+			card.ProjectName = projectNameFromConfig(cfg)
+			if cmd.Flags().Changed("question") {
+				card.Question = question
+			}
+			if cmd.Flags().Changed("verdict") {
+				card.Verdict = verdict
+			}
+			if cmd.Flags().Changed("level") {
+				card.EvidenceLevel = strings.ToUpper(strings.TrimSpace(level))
+			}
+			if len(keyMetrics) > 0 {
+				card.KeyMetrics = strings.Join(keyMetrics, "\n")
+			}
+			if len(artifactPaths) > 0 {
+				card.ArtifactPaths = strings.Join(artifactPaths, "\n")
+			}
+			if cmd.Flags().Changed("supports") {
+				card.SupportsClaim = supports
+			}
+			if cmd.Flags().Changed("weakens") {
+				card.WeakensClaim = weakens
+			}
+			if cmd.Flags().Changed("next-action") {
+				card.NextAction = nextAction
+			}
+			if cmd.Flags().Changed("important") {
+				card.Important = important
+			}
+			if cmd.Flags().Changed("promote") {
+				card.ShouldPromote = promote
+			}
+			if cmd.Flags().Changed("proposal-reason") {
+				card.ProposalReason = proposalReason
+			}
+			if len(relatedRuns) > 0 {
+				card.RelatedRuns = strings.Join(relatedRuns, "\n")
+			}
+			if card.EvidenceLevel == "" {
+				card.EvidenceLevel = "C"
+			}
+			if err := db.SaveProjectRunCard(cmd.Context(), card); err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(card)
+			}
+			fmt.Printf("Saved project card for %s in %s\n", card.RunID, card.ProjectID)
+			if card.Important {
+				fmt.Println("important: true")
+			}
+			if card.ShouldPromote {
+				fmt.Println("promote: true")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml)")
+	cmd.Flags().StringVar(&question, "question", "", "What this run was meant to answer")
+	cmd.Flags().StringVar(&verdict, "verdict", "", "One-sentence conclusion")
+	cmd.Flags().StringVar(&level, "level", "C", "Evidence level: A, B, or C")
+	cmd.Flags().StringSliceVar(&keyMetrics, "metric", nil, "Key metric line, repeatable")
+	cmd.Flags().StringSliceVar(&artifactPaths, "artifact", nil, "Artifact path, repeatable")
+	cmd.Flags().StringVar(&supports, "supports", "", "Claim this run supports")
+	cmd.Flags().StringVar(&weakens, "weakens", "", "Claim this run weakens")
+	cmd.Flags().StringVar(&nextAction, "next-action", "", "Recommended next action")
+	cmd.Flags().BoolVar(&important, "important", false, "Mark this run as important for project review")
+	cmd.Flags().BoolVar(&promote, "promote", false, "Mark this card as worth promoting to notes/proposal")
+	cmd.Flags().StringVar(&proposalReason, "proposal-reason", "", "Why this deserves promotion")
+	cmd.Flags().StringSliceVar(&relatedRuns, "related-run", nil, "Related run id, repeatable")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectRunsCmd() *cobra.Command {
+	var configPath string
+	var importantOnly, asJSON bool
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "runs",
+		Short: "List project-level experiment cards",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadProjectFileConfig(configPath)
+			if err != nil {
+				return err
+			}
+			db := openDB()
+			defer db.Close()
+			cards, err := db.ListProjectRunCards(cmd.Context(), store.ProjectRunCardFilter{
+				ProjectID:     projectIDFromConfig(cfg),
+				ImportantOnly: importantOnly,
+				Limit:         limit,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(cards)
+			}
+			printProjectRunCards(cards)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml)")
+	cmd.Flags().BoolVar(&importantOnly, "important", false, "Show only important cards")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of cards")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectDigestCmd() *cobra.Command {
+	var configPath string
+	var importantOnly, asJSON bool
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "digest",
+		Short: "Print a note-agent friendly project experiment digest",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadProjectFileConfig(configPath)
+			if err != nil {
+				return err
+			}
+			projectID := projectIDFromConfig(cfg)
+			db := openDB()
+			defer db.Close()
+			cards, err := db.ListProjectRunCards(cmd.Context(), store.ProjectRunCardFilter{
+				ProjectID:     projectID,
+				ImportantOnly: importantOnly,
+				Limit:         limit,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(map[string]interface{}{
+					"project_id":   projectID,
+					"project_name": projectNameFromConfig(cfg),
+					"cards":        cards,
+				})
+			}
+			fmt.Printf("# aexp project digest: %s\n\n", projectID)
+			if len(cards) == 0 {
+				fmt.Println("No project run cards yet.")
+				return nil
+			}
+			for _, card := range cards {
+				fmt.Printf("## %s  level=%s", card.RunID, firstNonEmpty(card.EvidenceLevel, "C"))
+				if card.Important {
+					fmt.Print("  important")
+				}
+				if card.ShouldPromote {
+					fmt.Print("  promote")
+				}
+				fmt.Println()
+				if card.Question != "" {
+					fmt.Printf("- question: %s\n", card.Question)
+				}
+				if card.Verdict != "" {
+					fmt.Printf("- verdict: %s\n", card.Verdict)
+				}
+				if card.KeyMetrics != "" {
+					fmt.Printf("- metrics: %s\n", strings.ReplaceAll(card.KeyMetrics, "\n", "; "))
+				}
+				if card.NextAction != "" {
+					fmt.Printf("- next: %s\n", card.NextAction)
+				}
+				if card.RelatedRuns != "" {
+					fmt.Printf("- related: %s\n", strings.ReplaceAll(card.RelatedRuns, "\n", ", "))
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path (default: nearest .aexp.yaml)")
+	cmd.Flags().BoolVar(&importantOnly, "important", false, "Show only important cards")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of cards")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
 func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 	resolved, err := resolveProjectConfigPath(path)
 	if err != nil {
@@ -1738,7 +2051,7 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 				switch normalizeProjectKey(key) {
 				case "logs", "logpaths", "metrics", "metricpaths", "artifacts", "artifactpaths":
 					listKey = key
-				case "sync":
+				case "sync", "project":
 					section = key
 				default:
 					section = key
@@ -1843,6 +2156,23 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 		default:
 			cfg.Warnings = append(cfg.Warnings, "unknown sync field ignored: "+key)
 		}
+	case "project":
+		switch normalizeProjectKey(key) {
+		case "id":
+			cfg.Project.ID = value
+		case "name":
+			cfg.Project.Name = value
+		case "vault":
+			cfg.Project.Vault = value
+		case "runcardindex", "runindex":
+			cfg.Project.RunCardIndex = value
+		case "proposaldir":
+			cfg.Project.ProposalDir = value
+		case "promotiondefault":
+			cfg.Project.PromotionDefault = value
+		default:
+			cfg.Warnings = append(cfg.Warnings, "unknown project field ignored: "+key)
+		}
 	default:
 		entry := ensureProjectCommand(cfg, section)
 		switch normalizeProjectKey(key) {
@@ -1892,6 +2222,8 @@ func addProjectConfigListValue(cfg *projectFileConfig, section, key, value strin
 		} else {
 			cfg.Warnings = append(cfg.Warnings, "unknown sync list ignored: "+key)
 		}
+	case "project":
+		cfg.Warnings = append(cfg.Warnings, "unknown project list ignored: "+key)
 	default:
 		entry := ensureProjectCommand(cfg, section)
 		switch normalizeProjectKey(key) {

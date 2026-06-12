@@ -54,6 +54,11 @@ type Store interface {
 	ListRunBookmarks(ctx context.Context, filter RunBookmarkFilter) ([]RunBookmark, error)
 	DeleteRunBookmark(ctx context.Context, runID string) error
 
+	// Project Run Cards
+	SaveProjectRunCard(ctx context.Context, c *ProjectRunCard) error
+	GetProjectRunCard(ctx context.Context, runID string) (*ProjectRunCard, error)
+	ListProjectRunCards(ctx context.Context, filter ProjectRunCardFilter) ([]ProjectRunCard, error)
+
 	// Exec Events
 	SaveExecEvent(ctx context.Context, e *ExecEvent) error
 	GetExecEvent(ctx context.Context, id string) (*ExecEvent, error)

@@ -80,6 +80,10 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("resources", "last_doctor_error", "TEXT", "''")
 	addColumn("resources", "last_checked_at", "DATETIME", "NULL")
 	addColumn("resources", "last_success_at", "DATETIME", "NULL")
+	addColumn("project_run_cards", "project_name", "TEXT", "''")
+	addColumn("project_run_cards", "should_promote", "INTEGER NOT NULL", "0")
+	addColumn("project_run_cards", "proposal_reason", "TEXT", "''")
+	addColumn("project_run_cards", "related_runs", "TEXT", "''")
 
 	return nil
 }
@@ -679,6 +683,110 @@ func (s *SQLite) ListRunBookmarks(ctx context.Context, filter RunBookmarkFilter)
 func (s *SQLite) DeleteRunBookmark(ctx context.Context, runID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM run_bookmarks WHERE run_id = ?`, runID)
 	return err
+}
+
+// --- Project Run Cards ---
+
+const projectRunCardColumns = "id, project_id, project_name, run_id, question, verdict, evidence_level, key_metrics, artifact_paths, supports_claim, weakens_claim, next_action, important, should_promote, proposal_reason, related_runs, created_at, updated_at"
+
+func scanProjectRunCard(c *ProjectRunCard) func(rowScanner) error {
+	return func(row rowScanner) error {
+		var important, shouldPromote int
+		if err := row.Scan(
+			&c.ID, &c.ProjectID, &c.ProjectName, &c.RunID, &c.Question, &c.Verdict, &c.EvidenceLevel,
+			&c.KeyMetrics, &c.ArtifactPaths, &c.SupportsClaim, &c.WeakensClaim, &c.NextAction,
+			&important, &shouldPromote, &c.ProposalReason, &c.RelatedRuns, &c.CreatedAt, &c.UpdatedAt,
+		); err != nil {
+			return err
+		}
+		c.Important = important != 0
+		c.ShouldPromote = shouldPromote != 0
+		return nil
+	}
+}
+
+func (s *SQLite) SaveProjectRunCard(ctx context.Context, c *ProjectRunCard) error {
+	now := time.Now()
+	if c.ID == "" {
+		c.ID = "card_" + strings.TrimPrefix(c.RunID, "run_")
+	}
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = now
+	}
+	c.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO project_run_cards (`+projectRunCardColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET
+			project_id=excluded.project_id,
+			project_name=excluded.project_name,
+			question=excluded.question,
+			verdict=excluded.verdict,
+			evidence_level=excluded.evidence_level,
+			key_metrics=excluded.key_metrics,
+			artifact_paths=excluded.artifact_paths,
+			supports_claim=excluded.supports_claim,
+			weakens_claim=excluded.weakens_claim,
+			next_action=excluded.next_action,
+			important=excluded.important,
+			should_promote=excluded.should_promote,
+			proposal_reason=excluded.proposal_reason,
+			related_runs=excluded.related_runs,
+			updated_at=excluded.updated_at`,
+		c.ID, c.ProjectID, c.ProjectName, c.RunID, c.Question, c.Verdict, c.EvidenceLevel,
+		c.KeyMetrics, c.ArtifactPaths, c.SupportsClaim, c.WeakensClaim, c.NextAction,
+		boolInt(c.Important), boolInt(c.ShouldPromote), c.ProposalReason, c.RelatedRuns, c.CreatedAt, c.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetProjectRunCard(ctx context.Context, runID string) (*ProjectRunCard, error) {
+	c := &ProjectRunCard{}
+	err := scanProjectRunCard(c)(s.db.QueryRowContext(ctx,
+		`SELECT `+projectRunCardColumns+` FROM project_run_cards WHERE run_id = ?`, runID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return c, err
+}
+
+func (s *SQLite) ListProjectRunCards(ctx context.Context, filter ProjectRunCardFilter) ([]ProjectRunCard, error) {
+	query := `SELECT ` + projectRunCardColumns + ` FROM project_run_cards WHERE 1=1`
+	var args []interface{}
+	if filter.ProjectID != "" {
+		query += " AND project_id = ?"
+		args = append(args, filter.ProjectID)
+	}
+	if filter.RunID != "" {
+		query += " AND run_id = ?"
+		args = append(args, filter.RunID)
+	}
+	if filter.ImportantOnly {
+		query += " AND important = 1"
+	}
+	query += " ORDER BY updated_at DESC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cards := make([]ProjectRunCard, 0)
+	for rows.Next() {
+		var c ProjectRunCard
+		if err := scanProjectRunCard(&c)(rows); err != nil {
+			return nil, err
+		}
+		cards = append(cards, c)
+	}
+	return cards, rows.Err()
 }
 
 // --- Exec Events ---

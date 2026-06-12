@@ -181,6 +181,37 @@ type RunBookmarkFilter struct {
 	Offset int
 }
 
+// ProjectRunCard records the project-level interpretation of a run.
+type ProjectRunCard struct {
+	ID             string    `json:"id"`
+	ProjectID      string    `json:"project_id"`
+	ProjectName    string    `json:"project_name"`
+	RunID          string    `json:"run_id"`
+	Question       string    `json:"question"`
+	Verdict        string    `json:"verdict"`
+	EvidenceLevel  string    `json:"evidence_level"`
+	KeyMetrics     string    `json:"key_metrics"`
+	ArtifactPaths  string    `json:"artifact_paths"`
+	SupportsClaim  string    `json:"supports_claim"`
+	WeakensClaim   string    `json:"weakens_claim"`
+	NextAction     string    `json:"next_action"`
+	Important      bool      `json:"important"`
+	ShouldPromote  bool      `json:"should_promote"`
+	ProposalReason string    `json:"proposal_reason"`
+	RelatedRuns    string    `json:"related_runs"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// ProjectRunCardFilter is used to filter project-level run cards.
+type ProjectRunCardFilter struct {
+	ProjectID     string
+	RunID         string
+	ImportantOnly bool
+	Limit         int
+	Offset        int
+}
+
 // ExecEvent records a one-shot exec command for audit.
 type ExecEvent struct {
 	ID         string        `json:"id"`

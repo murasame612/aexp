@@ -155,6 +155,31 @@ CREATE TABLE IF NOT EXISTS run_bookmarks (
 
 CREATE INDEX IF NOT EXISTS idx_run_bookmarks_updated ON run_bookmarks(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS project_run_cards (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    project_name    TEXT DEFAULT '',
+    run_id          TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    question        TEXT DEFAULT '',
+    verdict         TEXT DEFAULT '',
+    evidence_level  TEXT DEFAULT 'C',
+    key_metrics     TEXT DEFAULT '',
+    artifact_paths  TEXT DEFAULT '',
+    supports_claim  TEXT DEFAULT '',
+    weakens_claim   TEXT DEFAULT '',
+    next_action     TEXT DEFAULT '',
+    important       INTEGER NOT NULL DEFAULT 0,
+    should_promote  INTEGER NOT NULL DEFAULT 0,
+    proposal_reason TEXT DEFAULT '',
+    related_runs    TEXT DEFAULT '',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_run_cards_project ON project_run_cards(project_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_project_run_cards_important ON project_run_cards(project_id, important, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_project_run_cards_level ON project_run_cards(project_id, evidence_level, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS exec_events (
     id            TEXT PRIMARY KEY,
     resource_id   TEXT NOT NULL REFERENCES resources(id),

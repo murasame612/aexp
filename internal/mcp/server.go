@@ -430,6 +430,55 @@ func (s *Server) toolProjectInit(ctx context.Context, args map[string]interface{
 	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
 }
 
+func (s *Server) toolProjectCard(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"project", "card", runID, "--json"}
+	addOptionalStringFlag(&cli, args, "config", "--config")
+	addOptionalStringFlag(&cli, args, "question", "--question")
+	addOptionalStringFlag(&cli, args, "verdict", "--verdict")
+	addOptionalStringFlag(&cli, args, "level", "--level")
+	for _, metric := range stringSliceArg(args, "metric") {
+		cli = append(cli, "--metric", metric)
+	}
+	for _, artifact := range stringSliceArg(args, "artifact") {
+		cli = append(cli, "--artifact", artifact)
+	}
+	addOptionalStringFlag(&cli, args, "supports", "--supports")
+	addOptionalStringFlag(&cli, args, "weakens", "--weakens")
+	addOptionalStringFlag(&cli, args, "next_action", "--next-action")
+	addBoolFlag(&cli, args, "important", "--important")
+	addBoolFlag(&cli, args, "promote", "--promote")
+	addOptionalStringFlag(&cli, args, "proposal_reason", "--proposal-reason")
+	for _, run := range stringSliceArg(args, "related_run") {
+		cli = append(cli, "--related-run", run)
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolProjectRuns(ctx context.Context, args map[string]interface{}) (string, error) {
+	cli := []string{"project", "runs", "--json"}
+	addOptionalStringFlag(&cli, args, "config", "--config")
+	addBoolFlag(&cli, args, "important", "--important")
+	if v, ok := optionalIntArg(args, "limit"); ok {
+		cli = append(cli, "--limit", strconv.Itoa(v))
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolProjectDigest(ctx context.Context, args map[string]interface{}) (string, error) {
+	cli := []string{"project", "digest"}
+	addOptionalStringFlag(&cli, args, "config", "--config")
+	addBoolFlag(&cli, args, "important", "--important")
+	addBoolFlag(&cli, args, "json", "--json")
+	if v, ok := optionalIntArg(args, "limit"); ok {
+		cli = append(cli, "--limit", strconv.Itoa(v))
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
 func (s *Server) toolMarkRun(ctx context.Context, args map[string]interface{}) (string, error) {
 	runID, err := requiredString(args, "run_id")
 	if err != nil {
@@ -1644,6 +1693,57 @@ func toolRegistry() []toolSpec {
 			}, nil),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolProjectRun(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_project_card",
+			Description: "Create or update a concise project-level experiment card for one run. Use after meaningful runs to record the question, verdict, key metrics, and next action under the nearest .aexp.yaml project.id.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":          stringSchema("Run id."),
+				"config":          stringSchema("Optional project config path."),
+				"question":        stringSchema("What this run was meant to answer."),
+				"verdict":         stringSchema("One-sentence conclusion."),
+				"level":           stringSchema("Evidence level: A, B, or C."),
+				"metric":          arrayStringSchema("Key metric line, repeatable."),
+				"artifact":        arrayStringSchema("Artifact path, repeatable."),
+				"supports":        stringSchema("Claim this run supports."),
+				"weakens":         stringSchema("Claim this run weakens."),
+				"next_action":     stringSchema("Recommended next action."),
+				"important":       boolSchema("Mark this run as important for project review."),
+				"promote":         boolSchema("Mark this card as worth promoting to notes/proposal."),
+				"proposal_reason": stringSchema("Why this deserves promotion."),
+				"related_run":     arrayStringSchema("Related run id, repeatable."),
+				"timeout":         numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolProjectCard(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_project_runs",
+			Description: "List concise project-level experiment cards for the nearest .aexp.yaml project.id. Use this before writing project notes instead of scanning many raw runs.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"config":    stringSchema("Optional project config path."),
+				"important": boolSchema("Show only important cards."),
+				"limit":     numberSchema("Maximum number of cards."),
+				"timeout":   numberSchema("Tool timeout in seconds."),
+			}, nil),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolProjectRuns(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_project_digest",
+			Description: "Read a note-agent friendly digest of project run cards. This is the low-noise project memory layer, not raw logs.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"config":    stringSchema("Optional project config path."),
+				"important": boolSchema("Show only important cards."),
+				"limit":     numberSchema("Maximum number of cards."),
+				"json":      boolSchema("Output JSON instead of Markdown text."),
+				"timeout":   numberSchema("Tool timeout in seconds."),
+			}, nil),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolProjectDigest(ctx, args)
 			},
 		},
 		{

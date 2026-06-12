@@ -20,6 +20,10 @@ cwd: /home/ziwu/project
 env: auto
 conda_env: defect-yolo
 default_gpu: 0
+project:
+  id: dam-imputation
+  name: Dam Imputation
+  promotion_default: no_proposal
 logs:
   - logs/**/*.log
 metrics:
@@ -55,6 +59,9 @@ sync:
 	}
 	if cfg.DefaultGPU == nil || *cfg.DefaultGPU != 0 {
 		t.Fatalf("unexpected default gpu: %#v", cfg.DefaultGPU)
+	}
+	if cfg.Project.ID != "dam-imputation" || cfg.Project.Name != "Dam Imputation" || cfg.Project.PromotionDefault != "no_proposal" {
+		t.Fatalf("unexpected project config: %#v", cfg.Project)
 	}
 	if got := cfg.Commands["train"].Command; got != "python train.py --epochs 10" {
 		t.Fatalf("unexpected train command: %q", got)
@@ -105,6 +112,8 @@ func TestProjectInitDryRun(t *testing.T) {
 	}
 	for _, want := range []string{
 		"target: " + filepath.Join(resolvedDir, ".aexp.yaml"),
+		"project:",
+		"promotion_default: no_proposal",
 		"resource: mu",
 		"cwd: /remote/project",
 		"sync:",
@@ -240,6 +249,91 @@ func TestTopLevelInitProjectDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "aexp_events.py")); !os.IsNotExist(err) {
 		t.Fatalf("dry-run should not write aexp_events.py, stat err=%v", err)
+	}
+}
+
+func TestProjectCardCommandsUseProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+project:
+  id: dam-imputation
+  name: Dam Imputation
+resource: mu
+cwd: /remote/project
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(home, ".aexp", "aexp.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateResource(context.Background(), &store.Resource{
+		ID:      "rsrc_project_card",
+		Name:    "mu",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(context.Background(), &store.Run{
+		ID:         "run_project_card",
+		ResourceID: "rsrc_project_card",
+		Name:       "train",
+		Status:     store.RunStatusSucceeded,
+		Kind:       store.RunKindFormal,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	out, err := runProjectCardForTest(
+		"--config", configPath,
+		"run_project_card",
+		"--question", "Does CAF beat IR?",
+		"--verdict", "CAF improves mAP50-95.",
+		"--level", "B",
+		"--metric", "mAP50-95=0.606",
+		"--important",
+	)
+	if err != nil {
+		t.Fatalf("project card failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Saved project card for run_project_card in dam-imputation") {
+		t.Fatalf("unexpected card output:\n%s", out)
+	}
+
+	out, err = runProjectRunsForTest("--config", configPath, "--important")
+	if err != nil {
+		t.Fatalf("project runs failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"run_project_...", "B", "yes", "Does CAF beat IR?", "CAF improves mAP50-95."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("project runs output missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = runProjectDigestForTest("--config", configPath)
+	if err != nil {
+		t.Fatalf("project digest failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"# aexp project digest: dam-imputation", "- question: Does CAF beat IR?", "- metrics: mAP50-95=0.606"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("project digest output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -597,6 +691,36 @@ func runMarksForTest(args ...string) (string, error) {
 
 func runProjectRunForTest(args ...string) (string, error) {
 	cmd := projectRunCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runProjectCardForTest(args ...string) (string, error) {
+	cmd := projectCardCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runProjectRunsForTest(args ...string) (string, error) {
+	cmd := projectRunsCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runProjectDigestForTest(args ...string) (string, error) {
+	cmd := projectDigestCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs(args)
