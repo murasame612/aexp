@@ -101,3 +101,78 @@ func TestProjectViewsEnrichCardsWithRunsAndMarks(t *testing.T) {
 		t.Fatalf("card marks not enriched: %#v", project.Cards[0].Marks)
 	}
 }
+
+func TestProjectViewsIncludesUnassignedRuns(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_unassigned_api",
+		Name:    "mu",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_with_project_card",
+		ResourceID: "rsrc_unassigned_api",
+		Name:       "formal-carded",
+		Kind:       store.RunKindFormal,
+		Status:     store.RunStatusSucceeded,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_without_project_card",
+		ResourceID: "rsrc_unassigned_api",
+		Name:       "scratch-check",
+		Kind:       store.RunKindSetup,
+		Status:     store.RunStatusRunning,
+		GPUIndex:   -2,
+		Command:    "ls",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveProjectRunCard(ctx, &store.ProjectRunCard{
+		ID:          "card_assigned_api",
+		ProjectID:   "dam-imputation",
+		ProjectName: "Dam Imputation",
+		RunID:       "run_with_project_card",
+		Verdict:     "Assigned run.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	projects, err := srv.projectViews(ctx, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unassigned *projectView
+	for i := range projects {
+		if projects[i].ProjectID == unassignedProjectID {
+			unassigned = &projects[i]
+			break
+		}
+	}
+	if unassigned == nil {
+		t.Fatalf("missing unassigned project: %#v", projects)
+	}
+	if len(unassigned.Cards) != 1 {
+		t.Fatalf("unassigned cards = %#v, want exactly one", unassigned.Cards)
+	}
+	if unassigned.Cards[0].Run == nil || unassigned.Cards[0].Run.ID != "run_without_project_card" {
+		t.Fatalf("unexpected unassigned run: %#v", unassigned.Cards[0])
+	}
+	if unassigned.RunningRuns != 1 {
+		t.Fatalf("unassigned running runs = %d, want 1", unassigned.RunningRuns)
+	}
+}

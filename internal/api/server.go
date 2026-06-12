@@ -1249,6 +1249,8 @@ type projectView struct {
 	Cards         []projectRunCardView `json:"cards"`
 }
 
+const unassignedProjectID = "__unassigned__"
+
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	views, err := s.projectViews(r.Context(), "", projectLimitFromQuery(r, 200))
 	if err != nil {
@@ -1283,6 +1285,9 @@ func projectLimitFromQuery(r *http.Request, def int) int {
 }
 
 func (s *Server) projectViews(ctx context.Context, projectID string, limit int) ([]projectView, error) {
+	if limit <= 0 {
+		limit = 200
+	}
 	cards, err := s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{
 		ProjectID: projectID,
 		Limit:     limit,
@@ -1295,7 +1300,7 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 	for _, card := range cards {
 		id := strings.TrimSpace(card.ProjectID)
 		if id == "" {
-			id = "aexp-project"
+			id = unassignedProjectID
 		}
 		view := byProject[id]
 		if view == nil {
@@ -1309,29 +1314,15 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 		}
 		run, _ := s.store.GetRun(ctx, card.RunID)
 		marks, _ := s.store.ListRunMarks(ctx, store.RunMarkFilter{RunID: card.RunID, Limit: 20})
-		view.Cards = append(view.Cards, projectRunCardView{
+		appendProjectRunCard(view, projectRunCardView{
 			ProjectRunCard: card,
 			Run:            run,
 			Marks:          marks,
 		})
-		view.TotalCards++
-		if card.Important {
-			view.ImportantRuns++
-		}
-		if card.ShouldPromote {
-			view.PromotedRuns++
-		}
-		if card.UpdatedAt.After(view.UpdatedAt) {
-			view.UpdatedAt = card.UpdatedAt
-		}
-		if run != nil {
-			kind := strings.ToLower(strings.TrimSpace(run.Kind))
-			if kind == "" || kind == store.RunKindFormal || kind == store.RunKindAblation {
-				view.FormalRuns++
-			}
-			if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
-				view.RunningRuns++
-			}
+	}
+	if projectID == "" || projectID == unassignedProjectID {
+		if err := s.appendUnassignedProjectRuns(ctx, byProject, &order, limit); err != nil {
+			return nil, err
 		}
 	}
 	views := make([]projectView, 0, len(order))
@@ -1339,6 +1330,71 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 		views = append(views, *byProject[id])
 	}
 	return views, nil
+}
+
+func (s *Server) appendUnassignedProjectRuns(ctx context.Context, byProject map[string]*projectView, order *[]string, limit int) error {
+	allCards, err := s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{})
+	if err != nil {
+		return err
+	}
+	assigned := make(map[string]bool, len(allCards))
+	for _, card := range allCards {
+		if card.RunID != "" {
+			assigned[card.RunID] = true
+		}
+	}
+	runs, err := s.store.ListRuns(ctx, store.RunFilter{Limit: limit})
+	if err != nil {
+		return err
+	}
+	view := byProject[unassignedProjectID]
+	for _, run := range runs {
+		if assigned[run.ID] {
+			continue
+		}
+		if view == nil {
+			view = &projectView{ProjectID: unassignedProjectID, ProjectName: "Unassigned runs"}
+			byProject[unassignedProjectID] = view
+			*order = append(*order, unassignedProjectID)
+		}
+		marks, _ := s.store.ListRunMarks(ctx, store.RunMarkFilter{RunID: run.ID, Limit: 20})
+		runCopy := run
+		appendProjectRunCard(view, projectRunCardView{
+			ProjectRunCard: store.ProjectRunCard{
+				ProjectID:     unassignedProjectID,
+				ProjectName:   "Unassigned runs",
+				RunID:         run.ID,
+				EvidenceLevel: "",
+				UpdatedAt:     run.CreatedAt,
+			},
+			Run:   &runCopy,
+			Marks: marks,
+		})
+	}
+	return nil
+}
+
+func appendProjectRunCard(view *projectView, card projectRunCardView) {
+	view.Cards = append(view.Cards, card)
+	view.TotalCards++
+	if card.Important {
+		view.ImportantRuns++
+	}
+	if card.ShouldPromote {
+		view.PromotedRuns++
+	}
+	if card.UpdatedAt.After(view.UpdatedAt) {
+		view.UpdatedAt = card.UpdatedAt
+	}
+	if card.Run != nil {
+		kind := strings.ToLower(strings.TrimSpace(card.Run.Kind))
+		if kind == "" || kind == store.RunKindFormal || kind == store.RunKindAblation {
+			view.FormalRuns++
+		}
+		if card.Run.Status == store.RunStatusRunning || card.Run.Status == store.RunStatusStarting {
+			view.RunningRuns++
+		}
+	}
 }
 
 // --- Exec ---

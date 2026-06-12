@@ -1667,6 +1667,8 @@
                 'projects.noMarks': 'No marks',
                 'projects.noMetrics': 'No key metrics',
                 'projects.promote': 'promote',
+                'projects.unassigned': 'Unassigned / temporary runs',
+                'projects.unassignedRun': 'unassigned',
                 'state.loading': 'Loading...',
                 'state.enterToken': 'Enter API token',
                 'state.invalidToken': 'Invalid token',
@@ -1843,6 +1845,8 @@
                 'projects.noMarks': '无批注',
                 'projects.noMetrics': '无关键指标',
                 'projects.promote': '提升',
+                'projects.unassigned': '未归档 / 临时运行',
+                'projects.unassignedRun': '未归档',
                 'state.loading': '加载中...',
                 'state.enterToken': '输入 API Token',
                 'state.invalidToken': 'Token 无效',
@@ -3273,10 +3277,11 @@
             project = asObject(project);
             const cards = asArray(project.cards).map(asObject);
             const updated = formatShortTime(project.updated_at);
+            const projectName = project.project_id === '__unassigned__' ? t('projects.unassigned') : (project.project_name || project.project_id || 'Project');
             return `<section class="project-panel">
                 <div class="project-head">
                     <div class="min-w-0">
-                        <div class="project-title">${escHTML(project.project_name || project.project_id || 'Project')}</div>
+                        <div class="project-title">${escHTML(projectName)}</div>
                         <div class="project-meta"><span class="mono">${escHTML(project.project_id || '-')}</span> · ${escHTML(updated)}</div>
                     </div>
                     <div class="project-stats">
@@ -3297,6 +3302,7 @@
             const title = run.name || card.run_id || card.id || '-';
             const level = asText(card.evidence_level || 'C').toUpperCase();
             const metrics = projectMetricLines(card);
+            const unassigned = card.project_id === '__unassigned__' && !card.id;
             const markHTML = marks.length
                 ? marks.slice(0, 3).map(mark => {
                     const text = mark.title || mark.reason || mark.evidence || mark.kind || 'mark';
@@ -3308,7 +3314,7 @@
                     <div class="project-run-name" title="${escAttr(title)}">${escHTML(title)}</div>
                     <div class="project-run-id">${escHTML(card.run_id || '-')}</div>
                     <div class="flex gap-2 flex-wrap mt-2">
-                        <span class="pill pill-unknown">${escHTML('L' + level)}</span>
+                        <span class="pill pill-unknown">${escHTML(unassigned ? t('projects.unassignedRun') : ('L' + level))}</span>
                         ${run.kind ? runKindPill(run.kind) : ''}
                         ${run.status ? runStatusPill(run.status) : ''}
                         ${card.should_promote ? `<span class="pill pill-finding">${escHTML(t('projects.promote'))}</span>` : ''}
