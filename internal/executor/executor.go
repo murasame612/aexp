@@ -1182,14 +1182,13 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 
 	if projectProfile != nil {
 		lines = append(lines, fmt.Sprintf("cd %s", shellQuote(projectProfile.ResolvedCwd)))
-		lines = append(lines, projectEnvPrelude(&store.Resource{CondaBase: condaBase, CondaInit: condaInit}, projectProfile)...)
-	} else if condaEnv != "" {
-		// Activate conda environment. If an env is requested, activation must succeed.
-		for _, path := range condaInitCandidates(condaBase, condaInit) {
-			lines = append(lines, fmt.Sprintf("if [ -f %s ]; then source %s; fi", shellPath(path), shellPath(path)))
+		if projectProfile.ResolvedEnv == ProjectEnvConda {
+			lines = append(lines, condaSetupLines(condaBase, condaInit)...)
+		} else {
+			lines = append(lines, projectEnvPrelude(&store.Resource{CondaBase: condaBase, CondaInit: condaInit}, projectProfile)...)
 		}
-		lines = append(lines, `if ! command -v conda >/dev/null 2>&1; then echo "[aexp] conda not found; set resource conda_base/conda_init" >&2; exit 127; fi`)
-		lines = append(lines, fmt.Sprintf("conda activate %s", shellQuote(condaEnv)))
+	} else if condaEnv != "" {
+		lines = append(lines, condaSetupLines(condaBase, condaInit)...)
 	}
 
 	// cd to working directory
@@ -1218,9 +1217,27 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 			commandLine = "uv run bash -lc " + shellQuote(commandLine)
 		}
 	}
+	if projectProfile != nil && projectProfile.ResolvedEnv == ProjectEnvConda && projectProfile.EnvName != "" {
+		commandLine = condaRunCommand(projectProfile.EnvName, commandLine)
+	} else if projectProfile == nil && condaEnv != "" {
+		commandLine = condaRunCommand(condaEnv, commandLine)
+	}
 	lines = append(lines, commandLine)
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func condaSetupLines(condaBase, condaInit string) []string {
+	lines := make([]string, 0, 4)
+	for _, path := range condaInitCandidates(condaBase, condaInit) {
+		lines = append(lines, fmt.Sprintf("if [ -f %s ]; then source %s; fi", shellPath(path), shellPath(path)))
+	}
+	lines = append(lines, `if ! command -v conda >/dev/null 2>&1; then echo "[aexp] conda not found; set resource conda_base/conda_init" >&2; exit 127; fi`)
+	return lines
+}
+
+func condaRunCommand(env string, commandLine string) string {
+	return "conda run --no-capture-output -n " + shellQuote(env) + " " + commandLine
 }
 
 func runCommandLine(req SubmitRequest) string {

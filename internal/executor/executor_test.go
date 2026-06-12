@@ -118,6 +118,45 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 	}
 }
 
+func TestBuildCommandScriptCondaShellModeUsesCondaRun(t *testing.T) {
+	req := SubmitRequest{
+		Program: "bash",
+		Args:    []string{"-lc", "python scripts/train_mdd_yolo.py --epochs 100"},
+		Cwd:     "/workspace/project",
+	}
+	script := buildCommandScript(req, "defect-yolo", "/opt/conda", "/opt/conda/etc/profile.d/conda.sh", "/workspace", nil, nil)
+	if strings.Contains(script, "conda activate") {
+		t.Fatalf("shell-mode conda script should not rely on conda activate:\n%s", script)
+	}
+	want := "conda run --no-capture-output -n 'defect-yolo' bash '-lc' 'python scripts/train_mdd_yolo.py --epochs 100'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("command script missing conda run wrapper %q\n%s", want, script)
+	}
+	if !strings.Contains(script, `if ! command -v conda >/dev/null 2>&1; then`) {
+		t.Fatalf("command script missing conda availability check:\n%s", script)
+	}
+}
+
+func TestBuildCommandScriptProjectCondaUsesCondaRun(t *testing.T) {
+	req := SubmitRequest{
+		Program: "bash",
+		Args:    []string{"-lc", "python scripts/train.py"},
+	}
+	profile := &store.ProjectProfile{
+		ResolvedEnv: ProjectEnvConda,
+		EnvName:     "defect-yolo",
+		ResolvedCwd: "/workspace/project",
+	}
+	script := buildCommandScript(req, "", "/opt/conda", "/opt/conda/etc/profile.d/conda.sh", "/workspace", nil, profile)
+	if strings.Contains(script, "conda activate") {
+		t.Fatalf("project conda script should not rely on conda activate:\n%s", script)
+	}
+	want := "conda run --no-capture-output -n 'defect-yolo' bash '-lc' 'python scripts/train.py'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("project command script missing conda run wrapper %q\n%s", want, script)
+	}
+}
+
 func TestWrapperScriptStreamsStdoutBeforeNewline(t *testing.T) {
 	bash, err := osexec.LookPath("bash")
 	if err != nil {
