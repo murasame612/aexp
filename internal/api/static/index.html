@@ -1363,6 +1363,9 @@
             display: grid;
             gap: 0;
         }
+        .project-panel.collapsed .project-runs {
+            display: none;
+        }
         .project-run-row {
             display: grid;
             grid-template-columns: minmax(180px, 1.05fr) minmax(220px, 1.35fr) minmax(180px, 1fr);
@@ -1550,6 +1553,7 @@
         let allRunMarks = [];
         let allRunBookmarks = [];
         let allProjects = [];
+        const collapsedProjectIds = new Set();
         let bookmarkedRunIds = new Set();
         const favoriteNoteDrafts = new Map();
         let favoriteNoteEditingRunId = '';
@@ -1669,6 +1673,8 @@
                 'projects.promote': 'promote',
                 'projects.unassigned': 'Unassigned / temporary runs',
                 'projects.unassignedRun': 'unassigned',
+                'projects.expand': 'Expand',
+                'projects.collapse': 'Collapse',
                 'state.loading': 'Loading...',
                 'state.enterToken': 'Enter API token',
                 'state.invalidToken': 'Invalid token',
@@ -1847,6 +1853,8 @@
                 'projects.promote': '提升',
                 'projects.unassigned': '未归档 / 临时运行',
                 'projects.unassignedRun': '未归档',
+                'projects.expand': '展开',
+                'projects.collapse': '收起',
                 'state.loading': '加载中...',
                 'state.enterToken': '输入 API Token',
                 'state.invalidToken': 'Token 无效',
@@ -3277,8 +3285,11 @@
             project = asObject(project);
             const cards = asArray(project.cards).map(asObject);
             const updated = formatShortTime(project.updated_at);
-            const projectName = project.project_id === '__unassigned__' ? t('projects.unassigned') : (project.project_name || project.project_id || 'Project');
-            return `<section class="project-panel">
+            const projectId = project.project_id || '';
+            const isUnassigned = projectId === '__unassigned__';
+            const collapsed = isProjectCollapsed(project);
+            const projectName = isUnassigned ? t('projects.unassigned') : (project.project_name || project.project_id || 'Project');
+            return `<section class="project-panel ${collapsed ? 'collapsed' : ''}">
                 <div class="project-head">
                     <div class="min-w-0">
                         <div class="project-title">${escHTML(projectName)}</div>
@@ -3289,11 +3300,36 @@
                         ${project.important_runs ? `<span class="pill pill-finding">${escHTML(project.important_runs + ' ' + t('projects.important'))}</span>` : ''}
                         ${project.formal_runs ? `<span class="pill pill-formal">${escHTML(project.formal_runs + ' ' + t('projects.formal'))}</span>` : ''}
                         ${project.running_runs ? `<span class="pill pill-running">${escHTML(project.running_runs + ' ' + t('projects.running'))}</span>` : ''}
+                        <button class="btn-secondary text-xs" onclick="${escAttr('toggleProjectPanel(' + jsArg(projectId) + ')')}">${escHTML(collapsed ? t('projects.expand') : t('projects.collapse'))}</button>
                         <button class="btn-secondary text-xs" onclick="${escAttr('copyProjectDigest(' + jsArg(project.project_id || '') + ')')}">${escHTML(t('projects.copyDigest'))}</button>
                     </div>
                 </div>
                 <div class="project-runs">${cards.map(projectRunCardHTML).join('')}</div>
             </section>`;
+        }
+
+        function isProjectCollapsed(project) {
+            const id = asObject(project).project_id || '';
+            if (collapsedProjectIds.has(id)) return true;
+            if (collapsedProjectIds.has('!' + id)) return false;
+            return id === '__unassigned__';
+        }
+
+        function toggleProjectPanel(projectId) {
+            const id = asText(projectId);
+            if (!id) return;
+            if (collapsedProjectIds.has(id)) {
+                collapsedProjectIds.delete(id);
+                collapsedProjectIds.add('!' + id);
+            } else if (collapsedProjectIds.has('!' + id)) {
+                collapsedProjectIds.delete('!' + id);
+                collapsedProjectIds.add(id);
+            } else if (id === '__unassigned__') {
+                collapsedProjectIds.add('!' + id);
+            } else {
+                collapsedProjectIds.add(id);
+            }
+            applyProjectFilters();
         }
 
         function projectRunCardHTML(card) {
