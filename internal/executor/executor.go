@@ -1205,6 +1205,10 @@ func buildCommandScript(req SubmitRequest, condaEnv, condaBase, condaInit, rootD
 		lines = append(lines, `cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`)
 		lines = append(lines, AexpEventsPythonHelper())
 		lines = append(lines, `PY`)
+		lines = append(lines, `if [ ! -e "$PWD/aexp_events.py" ]; then cat > "$PWD/aexp_events.py" <<'PY'`)
+		lines = append(lines, AexpEventsPythonShim())
+		lines = append(lines, `PY`)
+		lines = append(lines, `fi`)
 		lines = append(lines, `export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`)
 	}
 
@@ -1324,6 +1328,20 @@ func normalizeUIEventsPath(value string, runID string, hasWorkingDir bool, remot
 	default:
 		return value
 	}
+}
+
+// AexpEventsPythonShim makes `import aexp_events` survive commands that reset
+// PYTHONPATH to "." after aexp has injected the run helper directory.
+func AexpEventsPythonShim() string {
+	return `import os
+import runpy
+
+_helper = os.path.join(os.environ.get("AEXP_RUN_DIR", ""), "aexp_events.py")
+if not _helper or not os.path.exists(_helper):
+    raise ImportError("aexp_events helper not found; AEXP_RUN_DIR is missing or stale")
+
+globals().update(runpy.run_path(_helper))
+`
 }
 
 func AexpEventsPythonHelper() string {

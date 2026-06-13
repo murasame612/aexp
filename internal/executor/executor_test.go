@@ -107,6 +107,8 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 	for _, want := range []string{
 		`mkdir -p "$(dirname -- "$AEXP_UI_EVENTS")"`,
 		`cat > "$AEXP_RUN_DIR/aexp_events.py" <<'PY'`,
+		`if [ ! -e "$PWD/aexp_events.py" ]; then cat > "$PWD/aexp_events.py" <<'PY'`,
+		`runpy.run_path(_helper)`,
 		`export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`,
 		`export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"`,
 		"def metric(name, value, **fields):",
