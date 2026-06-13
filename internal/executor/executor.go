@@ -1237,7 +1237,11 @@ func condaSetupLines(condaBase, condaInit string) []string {
 }
 
 func condaRunCommand(env string, commandLine string) string {
-	return "conda run --no-capture-output -n " + shellQuote(env) + " " + commandLine
+	flag := "-n"
+	if isCondaPrefix(env) {
+		flag = "-p"
+	}
+	return "conda run --no-capture-output " + flag + " " + shellQuote(env) + " " + commandLine
 }
 
 func runCommandLine(req SubmitRequest) string {
@@ -1251,6 +1255,11 @@ func runCommandLine(req SubmitRequest) string {
 	}
 	// Free-form command: pass through as-is
 	return req.Command
+}
+
+func isCondaPrefix(env string) bool {
+	env = strings.TrimSpace(env)
+	return strings.HasPrefix(env, "/") || strings.HasPrefix(env, "~") || strings.Contains(env, "/") || strings.Contains(env, "\\")
 }
 
 func condaInitCandidates(condaBase, condaInit string) []string {

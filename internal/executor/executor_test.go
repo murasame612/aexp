@@ -157,6 +157,29 @@ func TestBuildCommandScriptProjectCondaUsesCondaRun(t *testing.T) {
 	}
 }
 
+func TestBuildCommandScriptProjectCondaPrefixUsesCondaRunPrefix(t *testing.T) {
+	req := SubmitRequest{
+		Program: "bash",
+		Args:    []string{"-lc", "python scripts/train.py"},
+	}
+	profile := &store.ProjectProfile{
+		ResolvedEnv: ProjectEnvConda,
+		EnvName:     "/opt/conda/envs/defect-yolo",
+		ResolvedCwd: "/workspace/project",
+	}
+	script := buildCommandScript(req, "", "/opt/conda", "/opt/conda/etc/profile.d/conda.sh", "/workspace", nil, profile)
+	if strings.Contains(script, "conda activate") {
+		t.Fatalf("project conda prefix script should not rely on conda activate:\n%s", script)
+	}
+	if strings.Contains(script, " -n '/opt/conda/envs/defect-yolo' ") {
+		t.Fatalf("project conda prefix script used env-name flag:\n%s", script)
+	}
+	want := "conda run --no-capture-output -p '/opt/conda/envs/defect-yolo' bash '-lc' 'python scripts/train.py'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("project command script missing conda prefix wrapper %q\n%s", want, script)
+	}
+}
+
 func TestWrapperScriptStreamsStdoutBeforeNewline(t *testing.T) {
 	bash, err := osexec.LookPath("bash")
 	if err != nil {
