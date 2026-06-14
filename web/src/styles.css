@@ -970,9 +970,9 @@ select {
 
 .project-row {
   display: grid;
-  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 1fr);
-  gap: 14px;
-  padding: 14px;
+  grid-template-columns: minmax(260px, 0.34fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
 }
 
 .project-summary {
@@ -1076,22 +1076,39 @@ select {
 
 .project-evidence {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 10px;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   margin-top: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .project-card {
-  min-height: 188px;
-  grid-template-rows: auto auto auto auto;
-  border-left: 3px solid #d8dee5;
+  grid-template-columns: minmax(106px, 0.2fr) minmax(0, 1fr) minmax(170px, 0.32fr);
+  grid-template-areas:
+    "top main metrics"
+    "foot main metrics";
+  align-items: start;
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
+  padding: 9px 12px;
+}
+
+.project-card:first-child {
+  border-top: 0;
 }
 
 .project-card.prominent {
   grid-column: 1 / -1;
-  min-height: 176px;
-  background: #fff;
+  background: #f8fafb;
+  box-shadow: inset 3px 0 0 #8a6a5a;
 }
 
 .project-card:hover {
@@ -1100,10 +1117,13 @@ select {
 }
 
 .project-card-topline {
+  grid-area: top;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  align-content: flex-start;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1117,8 +1137,9 @@ select {
 }
 
 .project-card-main {
+  grid-area: main;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -1140,12 +1161,12 @@ select {
 }
 
 .project-card-main strong {
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .project-card-body {
   line-height: 1.45;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 1;
 }
 
 .project-card.prominent .project-card-body {
@@ -1158,19 +1179,20 @@ select {
 }
 
 .project-card-metrics {
+  grid-area: metrics;
   display: -webkit-box;
   margin: 0;
   border-radius: 10px;
   background: #f6f8fa;
   color: #4f5a65;
-  padding: 7px 8px;
+  padding: 6px 8px;
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
 }
 
 .project-card.prominent .project-card-metrics {
@@ -1178,9 +1200,11 @@ select {
 }
 
 .project-card-meta {
-  display: flex;
+  grid-area: meta;
+  display: none;
   flex-wrap: wrap;
   gap: 6px;
+  align-content: flex-start;
   min-width: 0;
 }
 
@@ -1198,12 +1222,13 @@ select {
 }
 
 .project-card-foot {
+  grid-area: foot;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
-  margin-top: auto;
+  margin-top: 0;
   min-width: 0;
 }
 
@@ -1270,23 +1295,23 @@ select {
 .project-empty {
   display: grid;
   place-items: center;
-  min-height: 128px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
+  min-height: 96px;
+  padding: 14px;
   background: #fbfcfd;
 }
 
 .project-more {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  min-height: 156px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 42px;
+  border-top: 1px solid #edf1f4;
   background: #f8fafb;
   color: var(--muted);
   text-align: center;
-  padding: 14px;
+  padding: 9px 12px;
 }
 
 .project-more strong {
@@ -2704,6 +2729,16 @@ select {
   .project-row {
     padding: 10px;
     gap: 10px;
+  }
+
+  .project-card {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "top"
+      "main"
+      "metrics"
+      "meta"
+      "foot";
   }
 
   .project-evidence,
