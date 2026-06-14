@@ -632,7 +632,7 @@ select {
 
 .dashboard-lower {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+  grid-template-columns: minmax(0, 1.85fr) minmax(280px, 0.55fr);
   gap: 18px;
   align-items: start;
 }
@@ -642,11 +642,11 @@ select {
 }
 
 .dashboard-findings {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 
 .dashboard-findings .finding {
-  min-height: 176px;
+  min-height: 228px;
 }
 
 .compact-list {
@@ -695,6 +695,7 @@ select {
 
 .finding {
   min-height: 92px;
+  border-left: 3px solid #d8dee5;
 }
 
 .finding strong,
@@ -2283,12 +2284,16 @@ select {
 
 .finding-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 10px;
 }
 
+.findings-section .finding-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .finding {
-  min-height: 156px;
+  min-height: 208px;
 }
 
 .finding-head {
@@ -2305,7 +2310,7 @@ select {
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 5;
 }
 
 .finding-evidence {
@@ -2322,7 +2327,30 @@ select {
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 6;
+}
+
+.finding-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid #edf1f4;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.finding-foot span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.finding-foot .mono {
+  color: #4f5a65;
 }
 
 .info-row strong {

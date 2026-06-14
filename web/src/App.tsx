@@ -1495,15 +1495,20 @@ function RunListCard({
 
 function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
   const body = mark.reason || mark.evidence || "";
+  const tone = mark.kind === "failure" ? "bad" : mark.kind === "key_result" ? "good" : mark.kind === "followup" ? "accent" : "neutral";
   return (
     <button className="finding" onClick={onOpenRun}>
       <div className="finding-head">
-        <Pill tone="neutral">{mark.kind || "mark"}</Pill>
+        <Pill tone={tone}>{mark.kind || "mark"}</Pill>
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
       </div>
       <strong>{mark.title || mark.kind}</strong>
       <span className="finding-reason">{body || mark.run_id}</span>
       {mark.evidence && mark.reason ? <code className="finding-evidence">{mark.evidence}</code> : null}
+      <div className="finding-foot">
+        <span className="mono">{mark.run_id}</span>
+        <span>{mark.actor || "agent"}</span>
+      </div>
     </button>
   );
 }
