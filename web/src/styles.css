@@ -1735,9 +1735,8 @@ select {
 .candidate-project strong,
 .candidate-project span {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .candidate-project span,
@@ -2829,12 +2828,11 @@ select {
   .evidence-node-tools {
     flex: 1 1 100%;
     justify-content: flex-start;
-    overflow-x: auto;
-    padding-bottom: 2px;
+    flex-wrap: wrap;
   }
 
   .evidence-node-tools button {
-    flex: none;
+    flex: 1 1 118px;
   }
 
   .evidence-sidebar {
@@ -3065,16 +3063,16 @@ select {
   }
 
   .candidate-project-list {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 7px;
-    overflow-x: auto;
     border-right: 0;
     border-bottom: 1px solid var(--border);
     padding: 0 0 8px;
   }
 
   .candidate-project {
-    flex: 0 0 150px;
+    min-width: 0;
   }
 
   .evidence-node {
