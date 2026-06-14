@@ -12,6 +12,7 @@ export interface MetricFamilySummary {
   deltaPct?: number;
   axisStart?: number;
   axisEnd?: number;
+  trend: Array<{ axis: number; value: number }>;
   series: MetricPoint[];
 }
 
@@ -87,6 +88,18 @@ function metricAxis(point: MetricPoint, fallback: number): number {
   return point.step ?? point.epoch ?? point.time ?? fallback;
 }
 
+function sampleTrend(rows: MetricPoint[], limit = 24): Array<{ axis: number; value: number }> {
+  const finiteRows = rows.filter((row) => Number.isFinite(row.value));
+  if (finiteRows.length <= limit) {
+    return finiteRows.map((row, index) => ({ axis: metricAxis(row, rows.indexOf(row)), value: row.value }));
+  }
+  return Array.from({ length: limit }, (_, index) => {
+    const sourceIndex = Math.round((index / (limit - 1)) * (finiteRows.length - 1));
+    const row = finiteRows[sourceIndex];
+    return { axis: metricAxis(row, rows.indexOf(row)), value: row.value };
+  });
+}
+
 export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySummary[] {
   const grouped = new Map<string, MetricPoint[]>();
   for (const point of points) {
@@ -116,6 +129,7 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
       deltaPct,
       axisStart: first ? metricAxis(first, firstIndex) : undefined,
       axisEnd: latest ? metricAxis(latest, latestIndex) : undefined,
+      trend: sampleTrend(rows),
       series: Array.from(latestBySeries.values()).slice(0, 5)
     };
   });

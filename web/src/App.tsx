@@ -1064,6 +1064,11 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
                 <strong>{formatMetricSpan(family.axisStart, family.axisEnd)}</strong>
               </div>
             </div>
+            {family.trend.length ? (
+              <svg className="metric-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points={metricSparklinePoints(family.trend)} />
+              </svg>
+            ) : null}
             <div className="metric-family-values">
               {family.series.map((row, index) => (
                 <div key={`${row.series || t("defaultSeries")}-${index}`}>
@@ -1586,6 +1591,20 @@ function formatMetricDelta(value: number, pct?: number) {
 function formatMetricSpan(start?: number, end?: number) {
   if (start == null || end == null) return "-";
   return `${formatMetric(start)} -> ${formatMetric(end)}`;
+}
+
+function metricSparklinePoints(points: Array<{ value: number }>) {
+  if (!points.length) return "";
+  if (points.length === 1) return `0,17 120,17`;
+  const values = points.map((point) => point.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  return points.map((point, index) => {
+    const x = (index / (points.length - 1)) * 120;
+    const y = 30 - ((point.value - min) / range) * 26;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
 }
 
 function formatExitCode(value: unknown) {

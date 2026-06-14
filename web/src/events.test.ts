@@ -51,6 +51,12 @@ describe("event parsing", () => {
       axisStart: 1,
       axisEnd: 4
     });
+    expect(loss?.trend).toEqual([
+      { axis: 1, value: 10 },
+      { axis: 2, value: 8 },
+      { axis: 3, value: 7 },
+      { axis: 4, value: 6 }
+    ]);
     expect(loss?.latest?.value).toBe(6);
     expect(loss?.series.map((point) => [point.series, point.value])).toEqual([
       ["raw", 8],
@@ -59,5 +65,14 @@ describe("event parsing", () => {
 
     const latency = families.find((family) => family.name === "latency_ms");
     expect(latency).toMatchObject({ min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
+  });
+
+  it("caps metric trend samples for dense event streams", () => {
+    const dense = summarizeMetricFamilies(
+      Array.from({ length: 60 }, (_, index) => ({ name: "train/loss", value: 100 - index, step: index }))
+    )[0];
+    expect(dense.trend).toHaveLength(24);
+    expect(dense.trend[0]).toEqual({ axis: 0, value: 100 });
+    expect(dense.trend[dense.trend.length - 1]).toEqual({ axis: 59, value: 41 });
   });
 });
