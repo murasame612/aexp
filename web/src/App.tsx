@@ -909,6 +909,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 10);
+  const metricGroups = groupMetricFamiliesByScale(metricFamilies);
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
@@ -954,43 +955,55 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
         ) : null}
       </div>
       <div className="metric-family-list" aria-label={t("metrics")}>
-        {metricFamilies.length ? metricFamilies.map((family) => (
-          <article className="metric-family-row" key={family.name}>
-            <div className="metric-family-title">
-              <strong>{family.name}</strong>
-              <span>{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}{family.latest?.unit ? ` · ${family.latest.unit}` : ""}</span>
+        {metricGroups.length ? metricGroups.map((group) => (
+          <section className="metric-scale-group" key={group.key}>
+            <div className="metric-scale-head">
+              <span className="panel-kicker">{group.label}</span>
+              <span className="muted">{group.families.length} {t("metrics")}</span>
             </div>
-            <div className="metric-family-stats">
-              <div>
-                <span>{t("latest")}</span>
-                <strong>{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
-              </div>
-              <div>
-                <span>{t("delta")}</span>
-                <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
-              </div>
-              <div>
-                <span>{t("range")}</span>
-                <strong>{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
-              </div>
-            </div>
-            {family.trend.length ? (
-              <svg className="metric-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                <polyline points={metricSparklinePoints(family.trend)} />
-              </svg>
-            ) : null}
-            <div className="metric-family-values">
-              {family.series.map((row, index) => (
-                <div key={`${row.series || t("defaultSeries")}-${index}`}>
-                  <span>{row.series || t("defaultSeries")}</span>
-                  <strong>{formatMetricValue(row)}</strong>
-                </div>
-              ))}
-            </div>
-          </article>
+            {group.families.map((family) => <MetricFamilyRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />)}
+          </section>
         )) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
       </div>
     </section>
+  );
+}
+
+function MetricFamilyRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
+  return (
+    <article className="metric-family-row">
+      <div className="metric-family-title">
+        <strong>{family.name}</strong>
+        <span>{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}</span>
+      </div>
+      <div className="metric-family-stats">
+        <div>
+          <span>{t("latest")}</span>
+          <strong>{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
+        </div>
+        <div>
+          <span>{t("delta")}</span>
+          <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+        </div>
+        <div>
+          <span>{t("range")}</span>
+          <strong>{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
+        </div>
+      </div>
+      {family.trend.length ? (
+        <svg className="metric-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+          <polyline points={metricSparklinePoints(family.trend)} />
+        </svg>
+      ) : null}
+      <div className="metric-family-values">
+        {family.series.map((row, index) => (
+          <div key={`${row.series || t("defaultSeries")}-${index}`}>
+            <span>{row.series || t("defaultSeries")}</span>
+            <strong>{formatMetricValue(row)}</strong>
+          </div>
+        ))}
+      </div>
+    </article>
   );
 }
 
@@ -1475,6 +1488,19 @@ function formatMetricDelta(value: number, pct?: number) {
 function formatMetricSpan(start?: number, end?: number) {
   if (start == null || end == null) return "-";
   return `${formatMetric(start)} -> ${formatMetric(end)}`;
+}
+
+function groupMetricFamiliesByScale(families: ReturnType<typeof summarizeMetricFamilies>) {
+  const groups = new Map<string, typeof families>();
+  for (const family of families) {
+    const key = family.scaleKey || "value";
+    groups.set(key, [...(groups.get(key) || []), family]);
+  }
+  return Array.from(groups.entries()).map(([key, rows]) => ({
+    key,
+    label: rows[0]?.unit || "value",
+    families: rows
+  }));
 }
 
 function metricSparklinePoints(points: Array<{ value: number }>) {

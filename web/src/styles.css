@@ -2368,6 +2368,32 @@ select {
   background: #fff;
 }
 
+.metric-scale-group {
+  display: grid;
+  min-width: 0;
+  border-top: 1px solid #e7ebef;
+}
+
+.metric-scale-group:first-child {
+  border-top: 0;
+}
+
+.metric-scale-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  background: #fbfcfd;
+  border-bottom: 1px solid #edf1f4;
+}
+
+.metric-scale-head span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .metric-family-row {
   display: grid;
   grid-template-columns: minmax(180px, 0.55fr) minmax(220px, 0.85fr) minmax(190px, 0.8fr) minmax(170px, 0.62fr);
@@ -2379,7 +2405,7 @@ select {
   border-top: 1px solid #edf1f4;
 }
 
-.metric-family-row:first-child {
+.metric-scale-head + .metric-family-row {
   border-top: 0;
 }
 

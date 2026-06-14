@@ -32,17 +32,21 @@ describe("event parsing", () => {
     });
   });
 
-  it("summarizes metric families across scales and series", () => {
+  it("summarizes metric families by metric name, unit, and series", () => {
     const families = summarizeMetricFamilies([
-      { name: "loss", value: 10, step: 1, series: "raw" },
-      { name: "loss", value: 8, step: 2, series: "raw" },
-      { name: "loss", value: 7, epoch: 3, series: "saits" },
-      { name: "loss", value: 6, time: 4, series: "saits" },
+      { name: "loss", value: 10, step: 1, series: "raw", unit: "mse" },
+      { name: "loss", value: 8, step: 2, series: "raw", unit: "mse" },
+      { name: "loss", value: 7, epoch: 3, series: "saits", unit: "mse" },
+      { name: "loss", value: 6, time: 4, series: "saits", unit: "mse" },
+      { name: "loss", value: 92, step: 1, series: "raw", unit: "%" },
+      { name: "loss", value: 95, step: 2, series: "raw", unit: "%" },
       { name: "latency_ms", value: 1200 },
       { name: "latency_ms", value: 900 }
     ]);
-    const loss = families.find((family) => family.name === "loss");
+    const loss = families.find((family) => family.name === "loss" && family.unit === "mse");
     expect(loss).toMatchObject({
+      unit: "mse",
+      scaleKey: "mse",
       count: 4,
       min: 6,
       max: 10,
@@ -63,8 +67,11 @@ describe("event parsing", () => {
       ["saits", 6]
     ]);
 
+    const percentLoss = families.find((family) => family.name === "loss" && family.unit === "%");
+    expect(percentLoss).toMatchObject({ count: 2, min: 92, max: 95, delta: 3, scaleKey: "%" });
+
     const latency = families.find((family) => family.name === "latency_ms");
-    expect(latency).toMatchObject({ min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
+    expect(latency).toMatchObject({ scaleKey: "value", min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
   });
 
   it("caps metric trend samples for dense event streams", () => {

@@ -3,6 +3,8 @@ import { latestMetricByName } from "./utils";
 
 export interface MetricFamilySummary {
   name: string;
+  unit?: string;
+  scaleKey: string;
   count: number;
   first?: MetricPoint;
   latest?: MetricPoint;
@@ -109,9 +111,13 @@ function sampleTrend(rows: MetricPoint[], limit = 24): Array<{ axis: number; val
 export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySummary[] {
   const grouped = new Map<string, MetricPoint[]>();
   for (const point of points) {
-    grouped.set(point.name, [...(grouped.get(point.name) || []), point]);
+    const unit = point.unit || "";
+    const key = `${point.name}\u0000${unit}`;
+    grouped.set(key, [...(grouped.get(key) || []), point]);
   }
-  return Array.from(grouped.entries()).map(([name, rows]) => {
+  return Array.from(grouped.values()).map((rows) => {
+    const name = rows[0]?.name || "";
+    const unit = rows[0]?.unit;
     const latestBySeries = new Map<string, MetricPoint>();
     for (const row of rows) {
       latestBySeries.set(row.series || "", row);
@@ -126,6 +132,8 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
     const deltaPct = first && latest && first.value !== 0 ? (delta / Math.abs(first.value)) * 100 : undefined;
     return {
       name,
+      unit,
+      scaleKey: unit || "value",
       count: rows.length,
       first,
       latest,
