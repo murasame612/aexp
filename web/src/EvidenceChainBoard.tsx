@@ -78,6 +78,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [selectedCandidateGroup, setSelectedCandidateGroup] = useState("");
   const lastSavedMeta = useRef<{ id: string; title: string; description: string } | null>(null);
+  const [chainMetaComposing, setChainMetaComposing] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<EvidenceFlowNode>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<EvidenceFlowEdge>([]);
 
@@ -136,6 +137,11 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     },
     [setEdges, setNodes]
   );
+  const clearSelection = useCallback(() => {
+    setSelected(null);
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    setNodes((current) => current.map((node) => ({ ...node, selected: false })));
+  }, [setEdges, setNodes]);
   const withNodeHandlers = useCallback((node: EvidenceFlowNode): EvidenceFlowNode => ({ ...node, data: { ...node.data, onOpenRun, onUpdateNode: updateNodeData } }), [onOpenRun, updateNodeData]);
   const withEdgeHandlers = useCallback((edge: EvidenceFlowEdge): EvidenceFlowEdge => ({ ...edge, type: "evidence", data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData } }), [selectEdge, updateEdgeData]);
 
@@ -218,6 +224,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
 
   useEffect(() => {
     if (!detail.data) return;
+    if (chainMetaComposing) return;
     const title = chainTitleDraft.trim();
     const description = chainDescriptionDraft.trim();
     const saved = lastSavedMeta.current;
@@ -227,7 +234,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
       renameChain.mutate({ id: detail.data!.id, title, description });
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [chainDescriptionDraft, chainTitleDraft, detail.data, renameChain]);
+  }, [chainDescriptionDraft, chainMetaComposing, chainTitleDraft, detail.data, renameChain]);
 
   const filteredCandidates = useMemo(() => (candidates.data || []).filter((candidate) => candidateMatches(candidate, candidateQuery)), [candidates.data, candidateQuery]);
   const candidateGroups = useMemo(() => groupRunCandidatesByProject(filteredCandidates), [filteredCandidates]);
@@ -336,6 +343,11 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
                 value={chainTitleDraft}
                 placeholder="Evidence Chain title"
                 onChange={(event) => setChainTitleDraft(event.target.value)}
+                onCompositionStart={() => setChainMetaComposing(true)}
+                onCompositionEnd={(event) => {
+                  setChainMetaComposing(false);
+                  setChainTitleDraft(event.currentTarget.value);
+                }}
               />
               <span className={`save-state ${saveState}`}>{saveState === "saving" ? "Saving" : saveState === "failed" ? "Save failed" : dirty ? "Unsaved" : "Saved"}</span>
             </div>
@@ -388,9 +400,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onNodeDoubleClick={onNodeDoubleClick}
+            onPaneClick={clearSelection}
             fitView
           >
-            <Background gap={24} color="#d7d1c4" />
+            <Background gap={24} color="#dce2e8" />
             <Controls />
             <MiniMap pannable zoomable />
           </ReactFlow>

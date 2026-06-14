@@ -120,8 +120,8 @@ export function candidateToNode(candidate: EvidenceChainRunCandidate, position: 
     id: `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     type: "evidence",
     position,
-    width: 280,
-    height: 150,
+    width: 286,
+    height: 184,
     data: {
       type: "run",
       title,
@@ -141,8 +141,8 @@ export function createTextNode(type: EvidenceNodeType, position: { x: number; y:
     id: `node_${type}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     type: "evidence",
     position,
-    width: 260,
-    height: 140,
+    width: 286,
+    height: 184,
     data: {
       type,
       title: defaultNodeTitle(type),
@@ -162,8 +162,8 @@ export function apiNodeToFlowNode(node: EvidenceChainNode): EvidenceFlowNode {
     id: node.id,
     type: "evidence",
     position: { x: node.x || 0, y: node.y || 0 },
-    width: node.width || 260,
-    height: node.height || 140,
+    width: node.width || 286,
+    height: node.height || 184,
     data: {
       type: node.type,
       title: node.title || defaultNodeTitle(node.type),
@@ -205,8 +205,8 @@ export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: Evidenc
       project_card_id: node.data.projectCardId || "",
       x: node.position.x,
       y: node.position.y,
-      width: typeof node.width === "number" ? node.width : 260,
-      height: typeof node.height === "number" ? node.height : 140,
+      width: typeof node.width === "number" ? node.width : 286,
+      height: typeof node.height === "number" ? node.height : 184,
       data_json: JSON.stringify({
         status: node.data.status || "",
         runKind: node.data.runKind || "",
