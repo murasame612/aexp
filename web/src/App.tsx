@@ -771,7 +771,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
             <section className="project-row" key={project.project_id}>
               <ProjectSummary project={project} t={t} />
               <div className="project-evidence">
-                {(project.cards || []).slice(0, 4).map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} />)}
+                {(project.cards || []).slice(0, 4).map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} t={t} />)}
                 {(project.cards || []).length > 4 ? (
                   <div className="project-more">
                     <strong>+{(project.cards || []).length - 4}</strong>
@@ -825,7 +825,7 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
   );
 }
 
-function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpenRun: (id: string) => void }) {
+function ProjectEvidenceCard({ card, onOpenRun, t }: { card: ProjectRunCard; onOpenRun: (id: string) => void; t: T }) {
   const title = card.verdict || card.question || card.run?.name || card.run_id;
   const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
   const run = card.run;
@@ -838,10 +838,10 @@ function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpen
     fmtShortTime(run?.created_at)
   ].filter((item) => item && item !== "-");
   const evidenceTags = [
-    card.important ? "important" : "",
-    card.marks?.length ? `${card.marks.length} marks` : "",
-    card.artifact_paths ? "artifacts" : "",
-    card.related_runs ? "related" : ""
+    card.important ? t("important") : "",
+    card.marks?.length ? `${card.marks.length} ${t("marks")}` : "",
+    card.artifact_paths ? t("artifacts") : "",
+    card.related_runs ? t("relatedRuns") : ""
   ].filter(Boolean);
   return (
     <button className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
@@ -852,7 +852,7 @@ function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpen
       <div className="project-card-main">
         <span className="project-card-run">{card.run?.name || card.run_id}</span>
         <strong>{title}</strong>
-        <span>{body}</span>
+        <span className="project-card-body">{body}</span>
       </div>
       {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
       {meta.length ? <div className="project-card-meta">{meta.map((item) => <span key={item}>{item}</span>)}</div> : null}

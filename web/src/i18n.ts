@@ -136,7 +136,9 @@ const dict = {
     rationale: "Rationale",
     done: "Done",
     unassignedRuns: "Unassigned runs",
-    runsWithoutProjectCards: "Runs without project cards"
+    runsWithoutProjectCards: "Runs without project cards",
+    marks: "marks",
+    relatedRuns: "related"
   },
   zh: {
     dashboard: "概览",
@@ -273,7 +275,9 @@ const dict = {
     rationale: "理由",
     done: "完成",
     unassignedRuns: "未归类实验",
-    runsWithoutProjectCards: "没有 project card 的实验"
+    runsWithoutProjectCards: "没有 project card 的实验",
+    marks: "标记",
+    relatedRuns: "相关实验"
   }
 } as const;
 
