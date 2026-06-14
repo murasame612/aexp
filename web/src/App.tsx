@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
@@ -22,8 +22,6 @@ import {
   X
 } from "lucide-react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createColumnHelper, flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import * as echarts from "echarts";
 import {
   ApiError,
@@ -92,8 +90,6 @@ import { EvidenceChainBoard } from "./EvidenceChainBoard";
 type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
 
 const pageSize = 100;
-const execColumn = createColumnHelper<ExecEvent>();
-const execTableColumns = "96px minmax(100px, 0.7fr) 78px minmax(200px, 1fr) 86px";
 
 export function App() {
   const token = useAppStore((s) => s.token);
@@ -787,25 +783,6 @@ function ExecsTab(props: {
   setQuery: (query: string) => void;
   resourceById: Map<string, Resource>;
 }) {
-  const columns = useMemo<ColumnDef<ExecEvent, any>[]>(
-    () => [
-      execColumn.accessor("created_at", { header: props.t("time"), cell: (info) => <span className="mono muted">{fmtShortTime(info.getValue())}</span> }),
-      execColumn.accessor("resource_id", { header: props.t("resource"), cell: (info) => props.resourceById.get(info.getValue())?.name || info.getValue() }),
-      execColumn.accessor("actor", { header: props.t("actor"), cell: (info) => <Pill tone="neutral">{info.getValue()}</Pill> }),
-      execColumn.accessor("command", { header: props.t("command"), cell: (info) => <span className="command-snippet">{info.getValue()}</span> }),
-      execColumn.display({
-        id: "result",
-        header: props.t("duration"),
-        cell: (info) => (
-          <div className="run-state-cell">
-            <span className="mono">exit {formatExitCode(info.row.original.exit_code)}</span>
-            <span className="muted">{fmtDuration(info.row.original.duration_ms)}</span>
-          </div>
-        )
-      })
-    ],
-    [props]
-  );
   return (
     <div className="stack">
       <div className="toolbar dense">
@@ -813,7 +790,9 @@ function ExecsTab(props: {
         <Select value={props.actor} onChange={props.setActor} options={[["", props.t("allActors")], ["cli", "cli"], ["api", "api"], ["agent", "agent"]]} />
         <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
       </div>
-      <VirtualTable columns={columns} data={props.rows} estimateSize={62} columnTemplate={execTableColumns} />
+      <div className="exec-list">
+        {props.rows.length ? props.rows.map((event) => <ExecListItem key={event.id} event={event} resourceById={props.resourceById} />) : <Empty t={props.t} />}
+      </div>
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -1130,53 +1109,6 @@ function ConfirmModal({ t, state, onClose }: { t: T; state: ConfirmState; onClos
   );
 }
 
-function VirtualTable<T>({
-  columns,
-  data,
-  estimateSize,
-  columnTemplate
-}: {
-  columns: ColumnDef<T, any>[];
-  data: T[];
-  estimateSize: number;
-  columnTemplate: string;
-}) {
-  const table = useReactTable({ data, columns, getCoreRowModel: getCoreRowModel() });
-  const parentRef = useRef<HTMLDivElement | null>(null);
-  const rows = table.getRowModel().rows;
-  const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: () => estimateSize, overscan: 12 });
-  const gridStyle = { "--table-columns": columnTemplate } as CSSProperties & Record<string, string>;
-  return (
-    <div className="table-shell" style={gridStyle}>
-      <div className="table-scroll" ref={parentRef}>
-        {table.getHeaderGroups().map((group) => (
-          <div className="virtual-header" key={group.id}>
-            {group.headers.map((header) => (
-              <div className="virtual-head-cell" key={header.id}>
-                {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-              </div>
-            ))}
-          </div>
-        ))}
-        <div className="virtual-space" style={{ height: `${virtualizer.getTotalSize()}px` }}>
-          {virtualizer.getVirtualItems().map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            return (
-              <div className="virtual-row" key={row.id} style={{ transform: `translateY(${virtualRow.start}px)`, height: `${virtualRow.size}px` }}>
-                {row.getVisibleCells().map((cell) => (
-                  <div className="virtual-cell" key={cell.id}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null) {
   const [lines, setLines] = useState<{ content: string; line_no?: number; source?: string }[]>([]);
   const [state, setState] = useState<"idle" | "live" | "reconnecting" | "error">("idle");
@@ -1445,6 +1377,23 @@ function ExecCompact({ event, resourceById }: { event: ExecEvent; resourceById: 
       <strong>{resourceById.get(event.resource_id)?.name || event.resource_id}</strong>
       <span className="truncate">{event.command}</span>
     </div>
+  );
+}
+
+function ExecListItem({ event, resourceById }: { event: ExecEvent; resourceById: Map<string, Resource> }) {
+  return (
+    <article className="exec-list-item">
+      <div className="exec-list-meta">
+        <span className="mono muted">{fmtShortTime(event.created_at)}</span>
+        <strong>{resourceById.get(event.resource_id)?.name || event.resource_id}</strong>
+        <Pill tone="neutral">{event.actor || "cli"}</Pill>
+      </div>
+      <span className="command-snippet">{event.command}</span>
+      <div className="exec-list-result">
+        <span className="mono">exit {formatExitCode(event.exit_code)}</span>
+        <span className="muted">{fmtDuration(event.duration_ms)}</span>
+      </div>
+    </article>
   );
 }
 
