@@ -659,21 +659,29 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
       </div>
       <div className="project-list">
         {projects.length ? (
-          projects.map((project) => (
-            <section className="project-row" key={project.project_id}>
-              <ProjectSummary project={project} t={t} />
-              <div className="project-evidence">
-                {(project.cards || []).slice(0, 4).map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} t={t} />)}
-                {(project.cards || []).length > 4 ? (
-                  <div className="project-more">
-                    <strong>+{(project.cards || []).length - 4}</strong>
-                    <span>{t("projectMore")}</span>
+          projects.map((project) => {
+            const cards = project.cards || [];
+            const shownCards = cards.slice(0, 8);
+            return (
+              <section className="project-row" key={project.project_id}>
+                <ProjectSummary project={project} t={t} />
+                <div className="project-evidence">
+                  <div className="project-evidence-head">
+                    <span className="panel-kicker">{t("evidenceRecords")}</span>
+                    <span className="muted">{cards.length}</span>
                   </div>
-                ) : null}
-                {!project.cards?.length ? <div className="project-empty muted">{t("noPromotedCards")}</div> : null}
-              </div>
-            </section>
-          ))
+                  {shownCards.map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} t={t} />)}
+                  {cards.length > shownCards.length ? (
+                    <div className="project-more">
+                      <strong>+{cards.length - shownCards.length}</strong>
+                      <span>{t("projectMore")}</span>
+                    </div>
+                  ) : null}
+                  {!cards.length ? <div className="project-empty muted">{t("noPromotedCards")}</div> : null}
+                </div>
+              </section>
+            );
+          })
         ) : (
           <Empty t={t} />
         )}
@@ -738,9 +746,9 @@ function ProjectEvidenceCard({ card, onOpenRun, t }: { card: ProjectRunCard; onO
   const cardClassName = card.should_promote ? "project-card prominent" : "project-card";
   return (
     <button className={cardClassName} onClick={() => card.run_id && onOpenRun(card.run_id)}>
-      <div className="project-card-topline">
+      <div className="project-card-level">
+        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
         <Pill tone={statusTone(status)}>{status}</Pill>
-        <span className="mono">{card.run_id}</span>
       </div>
       <div className="project-card-main">
         <span className="project-card-run">{card.run?.name || card.run_id}</span>
@@ -748,9 +756,11 @@ function ProjectEvidenceCard({ card, onOpenRun, t }: { card: ProjectRunCard; onO
         <span className="project-card-body">{body}</span>
       </div>
       {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
-      {meta.length ? <div className="project-card-meta">{meta.map((item) => <span key={item}>{item}</span>)}</div> : null}
+      <div className="project-card-meta">
+        <span className="mono">{card.run_id}</span>
+        {meta.map((item) => <span key={item}>{item}</span>)}
+      </div>
       <div className="project-card-foot">
-        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
         <span>{evidenceTags.join(" · ") || card.next_action || "-"}</span>
       </div>
     </button>
