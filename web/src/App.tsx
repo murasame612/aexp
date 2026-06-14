@@ -1383,21 +1383,22 @@ function RunListCard({
 }
 
 function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
-  const body = mark.reason || mark.evidence || "";
+  const reason = mark.reason || mark.evidence || "";
+  const evidence = mark.evidence && mark.evidence !== reason ? mark.evidence : "";
   const tone = mark.kind === "failure" ? "bad" : mark.kind === "key_result" ? "good" : mark.kind === "followup" ? "accent" : "neutral";
   return (
     <button className="finding" onClick={onOpenRun}>
-      <div className="finding-head">
+      <div className="finding-meta">
         <Pill tone={tone}>{mark.kind || "mark"}</Pill>
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
-      </div>
-      <strong>{mark.title || mark.kind}</strong>
-      <span className="finding-reason">{body || mark.run_id}</span>
-      {mark.evidence && mark.reason ? <code className="finding-evidence">{mark.evidence}</code> : null}
-      <div className="finding-foot">
-        <span className="mono">{mark.run_id}</span>
         <span>{mark.actor || "agent"}</span>
       </div>
+      <div className="finding-content">
+        <strong>{mark.title || mark.kind}</strong>
+        <span className="finding-reason">{reason || mark.run_id}</span>
+        {evidence ? <code className="finding-evidence">{evidence}</code> : null}
+      </div>
+      <span className="finding-run mono">{mark.run_id}</span>
     </button>
   );
 }

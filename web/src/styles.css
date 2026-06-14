@@ -701,6 +701,7 @@ select {
 }
 
 .dashboard-findings .finding {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   border: 0;
   border-top: 1px solid #edf1f4;
@@ -820,6 +821,12 @@ select {
 .finding {
   min-height: 92px;
   border-left: 3px solid #d8dee5;
+}
+
+.finding-content {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .finding strong,
@@ -2642,6 +2649,9 @@ select {
 
 .findings-section .finding {
   min-height: auto;
+  grid-template-columns: minmax(120px, 0.22fr) minmax(0, 1fr) minmax(150px, 0.28fr);
+  grid-template-areas: "meta content run";
+  gap: 12px;
   border: 0;
   border-top: 1px solid #edf1f4;
   border-left: 0;
@@ -2659,12 +2669,21 @@ select {
   overflow-wrap: anywhere;
 }
 
-.finding-head {
+.finding-meta {
+  grid-area: meta;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-width: 0;
+}
+
+.findings-section .finding-meta {
+  align-content: flex-start;
+}
+
+.finding-content {
+  grid-area: content;
 }
 
 .finding-reason {
@@ -2705,27 +2724,25 @@ select {
   -webkit-line-clamp: unset;
 }
 
-.finding-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.finding-run {
+  grid-area: run;
   min-width: 0;
-  margin-top: auto;
-  padding-top: 8px;
-  border-top: 1px solid #edf1f4;
   color: var(--muted);
   font-size: 11px;
-}
-
-.finding-foot span {
-  min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.finding-foot .mono {
+.findings-section .finding-run {
+  align-self: start;
+  justify-self: end;
+  max-width: 100%;
   color: #4f5a65;
+  text-align: right;
+}
+
+.dashboard-findings .finding-run {
+  padding-top: 8px;
+  border-top: 1px solid #edf1f4;
 }
 
 .info-row strong {
@@ -2978,6 +2995,19 @@ select {
   .project-evidence,
   .finding-list {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .findings-section .finding {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "meta"
+      "content"
+      "run";
+  }
+
+  .findings-section .finding-run {
+    justify-self: start;
+    text-align: left;
   }
 
   .exec-list-item {
