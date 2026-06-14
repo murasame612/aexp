@@ -642,11 +642,36 @@ select {
 }
 
 .dashboard-findings {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .dashboard-findings .finding {
-  min-height: 228px;
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 12px;
+}
+
+.dashboard-findings .finding:first-child {
+  border-top: 0;
+}
+
+.dashboard-findings .finding-reason {
+  -webkit-line-clamp: 4;
+}
+
+.dashboard-findings .finding-evidence {
+  -webkit-line-clamp: 4;
 }
 
 .compact-list {
@@ -2452,6 +2477,10 @@ select {
 .findings-section .finding-list {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .finding {
@@ -2465,12 +2494,11 @@ select {
   border-left: 0;
   border-radius: 0;
   background: transparent;
-  padding: 14px 0;
+  padding: 14px;
 }
 
 .findings-section .finding:first-child {
   border-top: 0;
-  padding-top: 0;
 }
 
 .finding strong {

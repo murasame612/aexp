@@ -493,7 +493,7 @@ function Dashboard({
         <Section title={t("agentFindings")} className="dashboard-findings-section">
           {marks.length ? (
             <div className="finding-list dashboard-findings">
-              {marks.slice(0, 4).map((mark) => (
+              {marks.slice(0, 8).map((mark) => (
                 <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />
               ))}
             </div>
