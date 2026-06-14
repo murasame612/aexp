@@ -86,7 +86,7 @@ import {
   text,
   uiEventsPath
 } from "./utils";
-import { parseEventLines } from "./events";
+import { parseEventLines, summarizeMetricFamilies } from "./events";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
 
 type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
@@ -1000,7 +1000,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
   const latest = parsed.latestMetrics.slice(0, 6);
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
-  const metricFamilies = groupMetricFamilies(parsed.metrics).slice(0, 10);
+  const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 10);
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
@@ -1052,8 +1052,16 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
                 <strong>{family.latest ? formatMetric(family.latest.value) : "-"}</strong>
               </div>
               <div>
+                <span>{t("delta")}</span>
+                <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+              </div>
+              <div>
                 <span>{t("range")}</span>
                 <strong>{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
+              </div>
+              <div>
+                <span>{t("span")}</span>
+                <strong>{formatMetricSpan(family.axisStart, family.axisEnd)}</strong>
               </div>
             </div>
             <div className="metric-family-values">
@@ -1568,6 +1576,18 @@ function formatMetric(value: number) {
   return value.toPrecision(4);
 }
 
+function formatMetricDelta(value: number, pct?: number) {
+  if (!Number.isFinite(value)) return "-";
+  const sign = value > 0 ? "+" : "";
+  const pctText = pct != null && Number.isFinite(pct) ? ` (${sign}${pct.toFixed(1)}%)` : "";
+  return `${sign}${formatMetric(value)}${pctText}`;
+}
+
+function formatMetricSpan(start?: number, end?: number) {
+  if (start == null || end == null) return "-";
+  return `${formatMetric(start)} -> ${formatMetric(end)}`;
+}
+
 function formatExitCode(value: unknown) {
   if (value == null) return "-";
   if (typeof value === "number") return String(value);
@@ -1577,28 +1597,6 @@ function formatExitCode(value: unknown) {
     if (typeof obj.Int64 === "number") return String(obj.Int64);
   }
   return text(value) || "-";
-}
-
-function groupMetricFamilies(points: MetricPoint[]) {
-  const grouped = new Map<string, MetricPoint[]>();
-  for (const point of points) {
-    grouped.set(point.name, [...(grouped.get(point.name) || []), point]);
-  }
-  return Array.from(grouped.entries()).map(([name, rows]) => {
-    const latestBySeries = new Map<string, MetricPoint>();
-    for (const row of rows) {
-      latestBySeries.set(row.series || "", row);
-    }
-    const values = rows.map((row) => row.value).filter(Number.isFinite);
-    return {
-      name,
-      count: rows.length,
-      latest: rows[rows.length - 1],
-      min: values.length ? Math.min(...values) : NaN,
-      max: values.length ? Math.max(...values) : NaN,
-      series: Array.from(latestBySeries.values()).slice(0, 5)
-    };
-  });
 }
 
 function ResourceMeter({ value, label, detail }: { value: number; label: string; detail?: string }) {
