@@ -832,6 +832,7 @@ function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpen
   return (
     <button className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
       <div className="project-card-main">
+        <span className="project-card-run">{card.run?.name || card.run_id}</span>
         <strong>{title}</strong>
         <span>{body}</span>
       </div>
@@ -996,10 +997,10 @@ function RunDetail({
 }
 
 function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path: string }) {
-  const latest = parsed.latestMetrics.slice(0, 10);
+  const latest = parsed.latestMetrics.slice(0, 6);
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
-  const metricFamilies = groupMetricFamilies(parsed.metrics).slice(0, 8);
+  const metricFamilies = groupMetricFamilies(parsed.metrics).slice(0, 10);
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
@@ -1038,12 +1039,22 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
           </div>
         ) : null}
       </div>
-      <div className="metric-family-grid">
+      <div className="metric-family-grid" aria-label={t("metrics")}>
         {metricFamilies.length ? metricFamilies.map((family) => (
           <article className="metric-family" key={family.name}>
             <div className="metric-family-head">
               <strong>{family.name}</strong>
               <span>{family.count} {t("points")}</span>
+            </div>
+            <div className="metric-family-summary">
+              <div>
+                <span>{t("latest")}</span>
+                <strong>{family.latest ? formatMetric(family.latest.value) : "-"}</strong>
+              </div>
+              <div>
+                <span>{t("range")}</span>
+                <strong>{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
+              </div>
             </div>
             <div className="metric-family-values">
               {family.series.map((row, index) => (
@@ -1573,9 +1584,13 @@ function groupMetricFamilies(points: MetricPoint[]) {
     for (const row of rows) {
       latestBySeries.set(row.series || "", row);
     }
+    const values = rows.map((row) => row.value).filter(Number.isFinite);
     return {
       name,
       count: rows.length,
+      latest: rows[rows.length - 1],
+      min: values.length ? Math.min(...values) : NaN,
+      max: values.length ? Math.max(...values) : NaN,
       series: Array.from(latestBySeries.values()).slice(0, 5)
     };
   });
