@@ -271,7 +271,9 @@ Runs that emit the same metric names can be compared on one chart:
 
 ### Web Dashboard
 
-The dashboard is embedded in the Go binary. There is no frontend build step.
+The legacy dashboard is still embedded at `/`. A React/TypeScript dashboard is
+available in parallel at `/ui-v2`, so existing deployments can keep using the
+old entrypoint while validating the new high-volume console.
 
 ![runs](doc/imgs/runs.png)
 
@@ -280,6 +282,16 @@ It includes:
 - resource cards with CPU/RAM/GPU snapshots
 - run list and run details
 - live stdout/stderr/terminal logs
+- virtualized run and exec tables in `/ui-v2`
+- worker-backed UI event parsing and metric charts in `/ui-v2`
+
+Build the React dashboard when changing frontend code:
+
+```bash
+pnpm --dir web install
+pnpm --dir web build
+go build -o aexp ./cmd/aexp
+```
 - structured progress and metrics
 - agent findings and run marks
 

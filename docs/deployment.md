@@ -8,6 +8,39 @@ go build -o aexp ./cmd/aexp
 ./aexp serve --port 8080
 ```
 
+如修改 React 控制台，先构建前端产物：
+
+```bash
+pnpm --dir web install
+pnpm --dir web build
+go build -o aexp ./cmd/aexp
+./aexp serve --port 8080
+```
+
+旧 UI 在 `http://127.0.0.1:8080/`，新 UI 在
+`http://127.0.0.1:8080/ui-v2/`。新 UI 深链（例如
+`/ui-v2/runs/<run_id>`）会回落到 React SPA。
+
+## Docker Compose
+
+仓库提供 `Dockerfile` 和 `compose.yaml`。Compose 会把 SQLite 数据库放在
+命名 volume `aexp-data` 中，容器内路径为 `/data/aexp/aexp.db`。
+
+```bash
+docker compose up --build
+```
+
+默认端口映射为 `8080:8080`。服务启动后：
+
+```text
+http://127.0.0.1:8080/
+http://127.0.0.1:8080/ui-v2/
+```
+
+容器默认只挂载 `~/.ssh` 为只读，方便复用 SSH key。需要额外
+ProxyCommand 工具、私有 key 或不同数据目录时，调整 `compose.yaml` 的
+volumes/command 即可。
+
 ## 服务器部署
 
 ### 编译

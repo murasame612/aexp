@@ -2,11 +2,10 @@
 
 ## 设计原则
 
-- 单 HTML 文件，无构建步骤
-- Tailwind CSS CDN
-- 原生 JavaScript
-- 编译进 Go 二进制（embed.FS）
-- 暗色主题
+- 旧版 `/` 保留为单 HTML、无构建步骤、原生 JavaScript，作为稳定回退入口。
+- 新版 `/ui-v2` 使用 React + TypeScript + Vite，构建产物仍编译进 Go 二进制（embed.FS）。
+- 新版优先面向大数据量控制台：服务端分页、虚拟表格、请求缓存、WebSocket 增量日志、Worker 解析 UI events。
+- 视觉风格保持安静、密集、操作型，不做营销式 landing page。
 
 ## 页面
 
@@ -117,8 +116,28 @@ Run 详情页：
 
 ## 技术细节
 
-- API 调用：`fetch()`
-- WebSocket：原生 `WebSocket` API
-- CSS：Tailwind CDN + 少量自定义
-- 无路由库：简单 hash 路由或 show/hide
-- 自动刷新：WebSocket 为主，失败时 5s 轮询降级
+- 旧版 API 调用：`fetch()`；新版 API 调用：TanStack Query + fetch wrapper。
+- WebSocket：原生 `WebSocket` API，详情页先 HTTP 拉快照，再 WS 追加增量行。
+- 表格：TanStack Table + TanStack Virtual。
+- 图表：ECharts。
+- 状态：Zustand 保存 token、语言、对比选择。
+- 自动刷新：列表 5-12s 轮询，日志/资源详情以 WebSocket 为主。
+
+## 构建
+
+```bash
+pnpm --dir web install
+pnpm --dir web typecheck
+pnpm --dir web test
+pnpm --dir web build
+go test ./...
+go build -o aexp ./cmd/aexp
+```
+
+Vite `base` 固定为 `/ui-v2/`，输出目录是：
+
+```text
+internal/api/static/ui-v2
+```
+
+因此本地二进制和容器镜像都会同时携带 `/` 旧 UI 与 `/ui-v2` 新 UI。

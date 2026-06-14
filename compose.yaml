@@ -1,0 +1,18 @@
+services:
+  aexp:
+    build:
+      context: .
+    image: aexp:local
+    container_name: aexp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - aexp-data:/data/aexp
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      TZ: Asia/Shanghai
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080", "--db", "/data/aexp/aexp.db"]
+
+volumes:
+  aexp-data:

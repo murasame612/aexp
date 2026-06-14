@@ -1,0 +1,11 @@
+.git
+.codegraph
+.aexp
+node_modules
+web/node_modules
+web/dist
+tmp
+*.db
+*.log
+aexp
+coverage
