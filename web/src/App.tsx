@@ -487,7 +487,7 @@ function Dashboard({
         </div>
       </Section>
       <Section title={t("activeRuns")}>
-        <div className="run-card-grid">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
+        <div className="run-card-grid dashboard-runs">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
       </Section>
       <div className="dashboard-lower">
         <Section title={t("agentFindings")} className="dashboard-findings-section">

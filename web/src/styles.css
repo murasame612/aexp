@@ -624,6 +624,55 @@ select {
   -webkit-line-clamp: 3;
 }
 
+.dashboard-runs {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.dashboard-runs .run-card {
+  grid-template-columns: minmax(220px, 0.62fr) minmax(180px, 0.48fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 14px;
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 10px 12px;
+}
+
+.dashboard-runs .run-card:first-child {
+  border-top: 0;
+}
+
+.dashboard-runs .run-card:hover {
+  transform: none;
+  background: #f8fafb;
+}
+
+.dashboard-runs .run-card .card-head {
+  align-items: flex-start;
+}
+
+.dashboard-runs .run-card .card-head strong {
+  -webkit-line-clamp: 1;
+}
+
+.dashboard-runs .run-card-meta {
+  align-content: flex-start;
+}
+
+.dashboard-runs .run-command-line {
+  align-self: stretch;
+  -webkit-line-clamp: 2;
+}
+
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2856,6 +2905,11 @@ select {
       "command"
       "actions";
     padding: 10px;
+  }
+
+  .dashboard-runs .run-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
   }
 
   .resource-meter {
