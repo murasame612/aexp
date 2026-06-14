@@ -34,6 +34,11 @@ function eventSeries(ev: UIEvent): string | undefined {
   return parts.length ? parts.join("/") : undefined;
 }
 
+function eventUnit(ev: UIEvent): string | undefined {
+  const unit = String(ev.unit || ev.units || ev.value_unit || ev.valueUnit || "").trim();
+  return unit || undefined;
+}
+
 export function parseEventLines(lines: string[]): ParsedEvents {
   const events: UIEvent[] = [];
   const metrics: MetricPoint[] = [];
@@ -62,7 +67,8 @@ export function parseEventLines(lines: string[]): ParsedEvents {
         step: asNumber(ev.step),
         epoch: asNumber(ev.epoch),
         time: asNumber(ev.time),
-        series: eventSeries(ev)
+        series: eventSeries(ev),
+        unit: eventUnit(ev)
       });
       continue;
     }

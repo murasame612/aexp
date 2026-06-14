@@ -632,7 +632,7 @@ select {
 
 .dashboard-lower {
   display: grid;
-  grid-template-columns: minmax(0, 1.85fr) minmax(280px, 0.55fr);
+  grid-template-columns: minmax(0, 1.85fr) minmax(min(100%, 260px), 0.55fr);
   gap: 18px;
   align-items: start;
 }
@@ -642,7 +642,7 @@ select {
 }
 
 .dashboard-findings {
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
 }
 
 .dashboard-findings .finding {
@@ -1082,9 +1082,32 @@ select {
 }
 
 .project-card {
-  min-height: 176px;
-  grid-template-rows: auto auto auto;
+  min-height: 188px;
+  grid-template-rows: auto auto auto auto;
   border-left: 3px solid #d8dee5;
+  box-shadow: none;
+}
+
+.project-card:hover {
+  background: #f8fafb;
+  border-color: #d7dde3;
+}
+
+.project-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-card-topline .mono {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-card-main {
@@ -1138,6 +1161,26 @@ select {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.project-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-card-meta span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 999px;
+  background: #eef2f5;
+  color: #4f5a65;
+  padding: 2px 8px;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .project-card-foot {
@@ -1983,7 +2026,7 @@ select {
 
 .event-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 0.72fr) minmax(360px, 1.28fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 10px;
 }
 
@@ -2312,6 +2355,11 @@ select {
 
 .finding {
   min-height: 208px;
+}
+
+.finding strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .finding-head {

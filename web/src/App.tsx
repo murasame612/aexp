@@ -828,18 +828,37 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
 function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpenRun: (id: string) => void }) {
   const title = card.verdict || card.question || card.run?.name || card.run_id;
   const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
-  const runMeta = [card.run?.status, card.run?.kind, card.run_id].filter(Boolean).join(" · ");
+  const run = card.run;
+  const status = run?.status || "-";
+  const meta = [
+    run?.kind || "formal",
+    run?.resource_id,
+    run?.gpu_index != null ? `GPU ${runGPU(run.gpu_index)}` : "",
+    run?.project_env || run?.conda_env || "",
+    fmtShortTime(run?.created_at)
+  ].filter((item) => item && item !== "-");
+  const evidenceTags = [
+    card.important ? "important" : "",
+    card.marks?.length ? `${card.marks.length} marks` : "",
+    card.artifact_paths ? "artifacts" : "",
+    card.related_runs ? "related" : ""
+  ].filter(Boolean);
   return (
     <button className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
+      <div className="project-card-topline">
+        <Pill tone={statusTone(status)}>{status}</Pill>
+        <span className="mono">{card.run_id}</span>
+      </div>
       <div className="project-card-main">
         <span className="project-card-run">{card.run?.name || card.run_id}</span>
         <strong>{title}</strong>
         <span>{body}</span>
       </div>
       {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
+      {meta.length ? <div className="project-card-meta">{meta.map((item) => <span key={item}>{item}</span>)}</div> : null}
       <div className="project-card-foot">
         <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-        <span className="mono">{runMeta || "-"}</span>
+        <span>{evidenceTags.join(" · ") || card.next_action || "-"}</span>
       </div>
     </button>
   );
@@ -1026,7 +1045,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
             {latest.length ? latest.map((metric, index) => (
               <div className="metric-row" key={`${metric.series || t("defaultSeries")}-${metric.name}-${index}`}>
                 <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
-                <strong>{formatMetric(metric.value)}</strong>
+                <strong>{formatMetricValue(metric)}</strong>
               </div>
             )) : <span className="muted">{t("noMetricsYet")}</span>}
           </div>
@@ -1044,12 +1063,12 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
           <article className="metric-family" key={family.name}>
             <div className="metric-family-head">
               <strong>{family.name}</strong>
-              <span>{family.count} {t("points")}</span>
+              <span>{family.count} {t("points")}{family.latest?.unit ? ` · ${family.latest.unit}` : ""}</span>
             </div>
             <div className="metric-family-summary">
               <div>
                 <span>{t("latest")}</span>
-                <strong>{family.latest ? formatMetric(family.latest.value) : "-"}</strong>
+                <strong>{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
               </div>
               <div>
                 <span>{t("delta")}</span>
@@ -1073,7 +1092,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
               {family.series.map((row, index) => (
                 <div key={`${row.series || t("defaultSeries")}-${index}`}>
                   <span>{row.series || t("defaultSeries")}</span>
-                  <strong>{formatMetric(row.value)}</strong>
+                  <strong>{formatMetricValue(row)}</strong>
                 </div>
               ))}
             </div>
@@ -1581,6 +1600,10 @@ function formatMetric(value: number) {
   return value.toPrecision(4);
 }
 
+function formatMetricValue(point: MetricPoint) {
+  return [formatMetric(point.value), point.unit].filter(Boolean).join(" ");
+}
+
 function formatMetricDelta(value: number, pct?: number) {
   if (!Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
@@ -1723,7 +1746,28 @@ function filterProjects(projects: ProjectView[], query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return projects;
   return projects.filter((project) =>
-    [project.project_id, project.project_name, ...(project.cards || []).flatMap((card) => [card.question, card.verdict, card.key_metrics, card.run?.name])].some((part) => text(part).toLowerCase().includes(q))
+    [
+      project.project_id,
+      project.project_name,
+      ...(project.cards || []).flatMap((card) => [
+        card.id,
+        card.run_id,
+        card.question,
+        card.verdict,
+        card.key_metrics,
+        card.next_action,
+        card.supports_claim,
+        card.weakens_claim,
+        card.artifact_paths,
+        card.related_runs,
+        card.run?.name,
+        card.run?.command,
+        card.run?.resource_id,
+        card.run?.status,
+        card.run?.kind,
+        ...(card.marks || []).flatMap((mark) => [mark.title, mark.reason, mark.evidence, mark.kind, mark.actor])
+      ])
+    ].some((part) => text(part).toLowerCase().includes(q))
   );
 }
 

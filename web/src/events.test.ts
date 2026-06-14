@@ -4,12 +4,12 @@ import { parseEventLines, summarizeMetricFamilies } from "./events";
 describe("event parsing", () => {
   it("parses metric, progress, and note events", () => {
     const parsed = parseEventLines([
-      JSON.stringify({ type: "metric", name: "val/loss", value: "0.123", step: 10 }),
+      JSON.stringify({ type: "metric", name: "val/loss", value: "0.123", step: 10, unit: "mse" }),
       JSON.stringify({ type: "progress", name: "epoch", current: 2, total: 5 }),
       JSON.stringify({ type: "note", text: "halfway" })
     ]);
     expect(parsed.metrics).toHaveLength(1);
-    expect(parsed.metrics[0]).toMatchObject({ name: "val/loss", value: 0.123, step: 10 });
+    expect(parsed.metrics[0]).toMatchObject({ name: "val/loss", value: 0.123, step: 10, unit: "mse" });
     expect(parsed.progress[0].percent).toBe(40);
     expect(parsed.notes).toHaveLength(1);
   });

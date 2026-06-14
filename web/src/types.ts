@@ -284,6 +284,7 @@ export interface MetricPoint {
   epoch?: number;
   time?: number;
   series?: string;
+  unit?: string;
 }
 
 export interface ProgressPoint {
