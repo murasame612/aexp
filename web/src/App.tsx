@@ -793,6 +793,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
 function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
   const cards = project.cards || [];
   const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
+  const projectTitle = project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
   const counts = [
     { label: t("projectCards"), value: project.total_cards ?? cards.length, tone: "neutral" as const },
     { label: t("important"), value: project.important_runs || 0, tone: "accent" as const },
@@ -803,16 +804,15 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
     <div className="project-summary">
       <div className="project-head">
         <div>
-          <h2>{project.project_name || project.project_id}</h2>
+          <h2>{projectTitle}</h2>
           <p className="muted mono">{project.project_id}</p>
         </div>
       </div>
       <div className="project-signal-grid">
         {counts.map((item) => (
-          <div className="project-signal" key={item.label}>
+          <div className={`project-signal ${item.tone}`} key={item.label}>
             <span>{item.label}</span>
             <strong>{item.value}</strong>
-            <Pill tone={item.tone}>{item.label}</Pill>
           </div>
         ))}
       </div>
@@ -1491,8 +1491,8 @@ function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void })
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
       </div>
       <strong>{mark.title || mark.kind}</strong>
-      <span>{body || mark.run_id}</span>
-      {mark.evidence && mark.reason ? <code>{mark.evidence}</code> : null}
+      <span className="finding-reason">{body || mark.run_id}</span>
+      {mark.evidence && mark.reason ? <code className="finding-evidence">{mark.evidence}</code> : null}
     </button>
   );
 }

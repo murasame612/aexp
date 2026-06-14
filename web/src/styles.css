@@ -1005,26 +1005,36 @@ select {
 
 .project-signal {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   padding: 9px;
   border: 1px solid #e7ebef;
+  border-top: 3px solid #d8dee5;
   border-radius: 10px;
   background: var(--surface);
+}
+
+.project-signal.accent {
+  border-top-color: #8a6a5a;
+}
+
+.project-signal.good {
+  border-top-color: #5b806c;
+}
+
+.project-signal.warn {
+  border-top-color: #b88b4a;
 }
 
 .project-signal span {
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.2;
 }
 
 .project-signal strong {
   font-size: 18px;
   line-height: 1;
-}
-
-.project-signal .pill {
-  justify-self: start;
 }
 
 .project-latest {
@@ -2234,17 +2244,30 @@ select {
   min-width: 0;
 }
 
-.finding code {
+.finding-reason {
   display: -webkit-box;
   min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.finding-evidence {
+  display: -webkit-box;
+  min-width: 0;
+  margin-top: 2px;
+  border-radius: 10px;
+  background: #f6f8fa;
   color: #4f5a65;
+  padding: 7px 8px;
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   line-height: 1.45;
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
 }
 
 .info-row strong {
