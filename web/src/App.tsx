@@ -93,8 +93,8 @@ type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favor
 const pageSize = 100;
 const runColumn = createColumnHelper<Run>();
 const execColumn = createColumnHelper<ExecEvent>();
-const runTableColumns = "44px minmax(300px, 1.4fr) 168px 148px minmax(260px, 1fr) 148px";
-const execTableColumns = "118px 130px 96px minmax(300px, 1fr) 96px";
+const runTableColumns = "32px minmax(200px, 1.45fr) minmax(96px, 0.6fr) minmax(108px, 0.75fr) minmax(170px, 1fr) minmax(92px, 0.55fr)";
+const execTableColumns = "96px minmax(100px, 0.7fr) 78px minmax(200px, 1fr) 86px";
 
 export function App() {
   const token = useAppStore((s) => s.token);
@@ -738,19 +738,25 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
                 </div>
               </div>
               <div className="project-cards">
-                {(project.cards || []).map((card) => (
+                {(project.cards || []).slice(0, 6).map((card) => (
                   <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
                     <div className="project-card-main">
                       <strong>{card.verdict || card.question || card.run?.name || card.run_id}</strong>
                       <span>{card.question || card.next_action || "-"}</span>
                     </div>
-                    {card.key_metrics ? <p>{card.key_metrics}</p> : null}
+                    {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
                     <div className="project-card-foot">
                       <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-                      <span className="mono">{card.run?.status || card.run_id || "-"}</span>
+                      <span className="mono">{[card.run?.status, card.run?.kind || card.run_id].filter(Boolean).join(" · ") || "-"}</span>
                     </div>
                   </button>
                 ))}
+                {(project.cards || []).length > 6 ? (
+                  <div className="project-more">
+                    <strong>+{(project.cards || []).length - 6}</strong>
+                    <span>{t("projectMore")}</span>
+                  </div>
+                ) : null}
                 {!project.cards?.length ? <div className="project-empty muted">No promoted cards yet</div> : null}
               </div>
             </section>
@@ -918,6 +924,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
   const latest = parsed.latestMetrics.slice(0, 10);
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
+  const metricFamilies = groupMetricFamilies(parsed.metrics).slice(0, 8);
   return (
     <section className="event-dashboard">
       <div className="section-head">
@@ -956,7 +963,24 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
           </div>
         ) : null}
       </div>
-      <MetricChart points={parsed.metrics} />
+      <div className="metric-family-grid">
+        {metricFamilies.length ? metricFamilies.map((family) => (
+          <article className="metric-family" key={family.name}>
+            <div className="metric-family-head">
+              <strong>{family.name}</strong>
+              <span>{family.count} points</span>
+            </div>
+            <div className="metric-family-values">
+              {family.series.map((row) => (
+                <div key={row.series || family.name}>
+                  <span>{row.series || "default"}</span>
+                  <strong>{formatMetric(row.value)}</strong>
+                </div>
+              ))}
+            </div>
+          </article>
+        )) : <span className="muted">No metric families yet</span>}
+      </div>
     </section>
   );
 }
@@ -1308,8 +1332,13 @@ function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void })
   const body = mark.reason || mark.evidence || "";
   return (
     <button className="finding" onClick={onOpenRun}>
+      <div className="finding-head">
+        <Pill tone="neutral">{mark.kind || "mark"}</Pill>
+        <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
+      </div>
       <strong>{mark.title || mark.kind}</strong>
       <span>{body || mark.run_id}</span>
+      {mark.evidence && mark.reason ? <code>{mark.evidence}</code> : null}
     </button>
   );
 }
@@ -1367,6 +1396,24 @@ function formatMetric(value: number) {
   if (abs >= 1000 || abs < 0.001) return value.toExponential(3);
   if (abs >= 10) return value.toFixed(3);
   return value.toPrecision(4);
+}
+
+function groupMetricFamilies(points: MetricPoint[]) {
+  const grouped = new Map<string, MetricPoint[]>();
+  for (const point of points) {
+    grouped.set(point.name, [...(grouped.get(point.name) || []), point]);
+  }
+  return Array.from(grouped.entries()).map(([name, rows]) => {
+    const latestBySeries = new Map<string, MetricPoint>();
+    for (const row of rows) {
+      latestBySeries.set(row.series || "", row);
+    }
+    return {
+      name,
+      count: rows.length,
+      series: Array.from(latestBySeries.values()).slice(0, 5)
+    };
+  });
 }
 
 function ResourceMeter({ value, label, detail }: { value: number; label: string; detail?: string }) {
