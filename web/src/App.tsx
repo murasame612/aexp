@@ -93,8 +93,8 @@ type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favor
 const pageSize = 100;
 const runColumn = createColumnHelper<Run>();
 const execColumn = createColumnHelper<ExecEvent>();
-const runTableColumns = "64px 126px minmax(300px, 1.8fr) 136px 100px 116px 76px minmax(220px, 1fr) 360px";
-const execTableColumns = "130px 146px 112px minmax(280px, 1fr) 100px 104px";
+const runTableColumns = "44px minmax(300px, 1.4fr) 168px 148px minmax(260px, 1fr) 148px";
+const execTableColumns = "118px 130px 96px minmax(300px, 1fr) 96px";
 
 export function App() {
   const token = useAppStore((s) => s.token);
@@ -612,7 +612,7 @@ function RunsTab(props: {
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
-      <VirtualTable columns={columns} data={props.runs} estimateSize={58} columnTemplate={runTableColumns} minWidth={1600} />
+      <VirtualTable columns={columns} data={props.runs} estimateSize={82} columnTemplate={runTableColumns} minWidth={940} />
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -636,27 +636,46 @@ function useRunColumns(
     () => [
       runColumn.display({
         id: "compare",
-        header: t("compare"),
+        header: "",
         cell: (info) =>
           !trash && isCompareEligible(info.row.original) ? (
             <input type="checkbox" checked={selectedRunIds.has(info.row.original.id)} onChange={(event) => toggleSelectedRun(info.row.original, event.target.checked)} onClick={(event) => event.stopPropagation()} />
           ) : null
       }),
-      runColumn.accessor("created_at", { header: t("time"), cell: (info) => <span className="mono muted">{fmtShortTime(info.getValue())}</span> }),
       runColumn.accessor("name", {
-        header: t("name"),
+        header: "Run",
         cell: (info) => (
           <button className="run-title-cell" onClick={() => onOpenRun(info.row.original.id)}>
             <strong>{info.getValue() || info.row.original.id}</strong>
             <span className="mono muted">{info.row.original.id}</span>
+            <span className="run-subline">{info.row.original.kind || "formal"} · {fmtShortTime(info.row.original.created_at)}</span>
           </button>
         )
       }),
-      runColumn.accessor("resource_id", { header: t("resource"), cell: (info) => resourceById.get(info.getValue())?.name || info.getValue() }),
-      runColumn.accessor("kind", { header: t("kind"), cell: (info) => <Pill tone="neutral">{info.getValue() || "formal"}</Pill> }),
-      runColumn.accessor("status", { header: t("status"), cell: (info) => <Pill tone={statusTone(info.getValue())}>{info.getValue()}</Pill> }),
-      runColumn.accessor("gpu_index", { header: t("gpu"), cell: (info) => <span className="mono">{runGPU(info.getValue())}</span> }),
-      runColumn.accessor("command", { header: t("command"), cell: (info) => <span className="truncate">{info.getValue()}</span> }),
+      runColumn.accessor("status", {
+        header: t("status"),
+        cell: (info) => (
+          <div className="run-state-cell">
+            <Pill tone={statusTone(info.getValue())}>{info.getValue()}</Pill>
+            <span className="mono muted">{fmtShortTime(info.row.original.created_at)}</span>
+          </div>
+        )
+      }),
+      runColumn.accessor("resource_id", {
+        header: t("resource"),
+        cell: (info) => (
+          <div className="run-meta-cell">
+            <strong>{resourceById.get(info.getValue())?.name || info.getValue()}</strong>
+            <span>GPU {runGPU(info.row.original.gpu_index)} · {info.row.original.project_env || info.row.original.conda_env || "-"}</span>
+          </div>
+        )
+      }),
+      runColumn.accessor("command", {
+        header: t("command"),
+        cell: (info) => (
+          <span className="command-snippet">{info.getValue()}</span>
+        )
+      }),
       runColumn.display({
         id: "actions",
         header: t("actions"),
@@ -665,30 +684,25 @@ function useRunColumns(
           const bookmarked = bookmarkIds.has(run.id);
           return (
             <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-              <button className="action-button primary-action" title={t("open")} onClick={() => onOpenRun(run.id)}>
+              <button className="icon-action primary-action" title={t("open")} onClick={() => onOpenRun(run.id)}>
                 <ExternalLink size={14} />
-                {t("open")}
               </button>
               {!trash ? (
                 <>
-                  <button className="action-button" title={bookmarked ? t("favorites") : t("favorites")} onClick={() => void onToggleBookmark(run, bookmarked)}>
+                  <button className="icon-action" title={bookmarked ? t("favorites") : t("favorites")} onClick={() => void onToggleBookmark(run, bookmarked)}>
                     <Heart size={15} fill={bookmarked ? "currentColor" : "none"} />
-                    {t("favorites")}
                   </button>
-                  <button className="action-button" title={t("archive")} disabled={isActiveRun(run)} onClick={() => onArchive(run)}>
+                  <button className="icon-action" title={t("archive")} disabled={isActiveRun(run)} onClick={() => onArchive(run)}>
                     <Archive size={15} />
-                    {t("archive")}
                   </button>
                 </>
               ) : (
                 <>
-                  <button className="action-button" title={t("restore")} onClick={() => void onRestore(run)}>
+                  <button className="icon-action" title={t("restore")} onClick={() => void onRestore(run)}>
                     <RefreshCcw size={15} />
-                    {t("restore")}
                   </button>
-                  <button className="action-button danger-inline" title={t("delete")} onClick={() => onDelete(run)}>
+                  <button className="icon-action danger-inline" title={t("delete")} onClick={() => onDelete(run)}>
                     <Trash2 size={15} />
-                    {t("delete")}
                   </button>
                 </>
               )}
@@ -726,10 +740,18 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
               <div className="project-cards">
                 {(project.cards || []).map((card) => (
                   <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
-                    <strong>{card.verdict || card.question || card.run?.name || card.run_id}</strong>
-                    <span>{card.key_metrics || card.next_action || card.question || "-"}</span>
+                    <div className="project-card-main">
+                      <strong>{card.verdict || card.question || card.run?.name || card.run_id}</strong>
+                      <span>{card.question || card.next_action || "-"}</span>
+                    </div>
+                    {card.key_metrics ? <p>{card.key_metrics}</p> : null}
+                    <div className="project-card-foot">
+                      <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
+                      <span className="mono">{card.run?.status || card.run_id || "-"}</span>
+                    </div>
                   </button>
                 ))}
+                {!project.cards?.length ? <div className="project-empty muted">No promoted cards yet</div> : null}
               </div>
             </section>
           ))
@@ -772,9 +794,17 @@ function ExecsTab(props: {
       execColumn.accessor("created_at", { header: props.t("time"), cell: (info) => <span className="mono muted">{fmtShortTime(info.getValue())}</span> }),
       execColumn.accessor("resource_id", { header: props.t("resource"), cell: (info) => props.resourceById.get(info.getValue())?.name || info.getValue() }),
       execColumn.accessor("actor", { header: props.t("actor"), cell: (info) => <Pill tone="neutral">{info.getValue()}</Pill> }),
-      execColumn.accessor("command", { header: props.t("command"), cell: (info) => <span className="truncate">{info.getValue()}</span> }),
-      execColumn.accessor("exit_code", { header: props.t("exit"), cell: (info) => <span className="mono">{info.getValue() ?? "-"}</span> }),
-      execColumn.accessor("duration_ms", { header: props.t("duration"), cell: (info) => fmtDuration(info.getValue()) })
+      execColumn.accessor("command", { header: props.t("command"), cell: (info) => <span className="command-snippet">{info.getValue()}</span> }),
+      execColumn.display({
+        id: "result",
+        header: props.t("duration"),
+        cell: (info) => (
+          <div className="run-state-cell">
+            <span className="mono">exit {info.row.original.exit_code ?? "-"}</span>
+            <span className="muted">{fmtDuration(info.row.original.duration_ms)}</span>
+          </div>
+        )
+      })
     ],
     [props]
   );
@@ -785,7 +815,7 @@ function ExecsTab(props: {
         <Select value={props.actor} onChange={props.setActor} options={[["", props.t("allActors")], ["cli", "cli"], ["api", "api"], ["agent", "agent"]]} />
         <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
       </div>
-      <VirtualTable columns={columns} data={props.rows} estimateSize={52} columnTemplate={execTableColumns} minWidth={980} />
+      <VirtualTable columns={columns} data={props.rows} estimateSize={62} columnTemplate={execTableColumns} minWidth={760} />
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -858,6 +888,9 @@ function RunDetail({
               </button>
             </div>
             {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} /> : null}
+            <Section title={t("agentFindings")} className="findings-section">
+              {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} />)}</div> : <Empty t={t} />}
+            </Section>
             <LogPanel title="terminal" state={terminal} />
             <LogPanel title="stdout" state={stdout} />
             <LogPanel title="stderr" state={stderr} hiddenWhenEmpty />
@@ -869,7 +902,6 @@ function RunDetail({
             <Info label="env" value={run.data.resolved_env || run.data.conda_env || "-"} />
             <Info label="tmux" value={run.data.tmux_session || "-"} />
             <Info label="run dir" value={run.data.remote_run_dir || "-"} />
-            <Section title={t("agentFindings")}>{marks.data?.length ? marks.data.map((mark) => <Finding key={mark.id} mark={mark} />) : <Empty t={t} />}</Section>
             <Section title="Artifacts">
               <pre className="mini-pre">{JSON.stringify(artifacts.data || [], null, 2)}</pre>
             </Section>
@@ -883,25 +915,46 @@ function RunDetail({
 }
 
 function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path: string }) {
+  const latest = parsed.latestMetrics.slice(0, 10);
+  const progress = parsed.progress.slice(-5);
+  const notes = parsed.notes.slice(-3);
   return (
     <section className="event-dashboard">
       <div className="section-head">
         <h2>{t("events")}</h2>
         <span className="muted mono">{path}</span>
       </div>
-      <div className="metric-strip">
-        {parsed.progress.slice(-4).map((row) => (
-          <div className="metric-tile" key={row.name}>
-            <span>{row.name}</span>
-            <Meter value={row.percent ?? row.current} label={row.total ? `${row.current}/${row.total}` : String(row.current)} />
+      <div className="event-layout">
+        <div className="event-panel progress-panel">
+          <span className="panel-kicker">Progress</span>
+          {progress.length ? progress.map((row) => (
+            <div className="progress-row" key={row.name}>
+              <div>
+                <strong>{row.name}</strong>
+                <span>{row.total ? `${row.current}/${row.total}` : String(row.current)}</span>
+              </div>
+              <Meter value={row.percent ?? row.current} />
+            </div>
+          )) : <span className="muted">No progress events</span>}
+        </div>
+        <div className="event-panel metric-panel">
+          <span className="panel-kicker">Latest metrics</span>
+          <div className="metric-list">
+            {latest.length ? latest.map((metric) => (
+              <div className="metric-row" key={(metric.series || "") + metric.name}>
+                <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
+                <strong>{formatMetric(metric.value)}</strong>
+              </div>
+            )) : <span className="muted">No metrics yet</span>}
           </div>
-        ))}
-        {parsed.latestMetrics.slice(0, 8).map((metric) => (
-          <div className="metric-tile" key={(metric.series || "") + metric.name}>
-            <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
-            <strong>{metric.value.toPrecision(5)}</strong>
+        </div>
+        {(parsed.errors.length || notes.length) ? (
+          <div className="event-panel event-notes">
+            <span className="panel-kicker">{parsed.errors.length ? "Errors" : "Notes"}</span>
+            {parsed.errors.slice(0, 3).map((error, index) => <p key={`error-${index}`}>{error}</p>)}
+            {notes.map((note, index) => <p key={`note-${index}`}>{text(note.text || note.message || note.name || "")}</p>)}
           </div>
-        ))}
+        ) : null}
       </div>
       <MetricChart points={parsed.metrics} />
     </section>
@@ -1271,9 +1324,9 @@ function ExecCompact({ event, resourceById }: { event: ExecEvent; resourceById: 
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="section-head">
         <h2>{title}</h2>
       </div>
@@ -1305,6 +1358,15 @@ function Meter({ value, label }: { value: number; label?: string }) {
       <b>{pct.toFixed(0)}%</b>
     </div>
   );
+}
+
+function formatMetric(value: number) {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  if (abs === 0) return "0";
+  if (abs >= 1000 || abs < 0.001) return value.toExponential(3);
+  if (abs >= 10) return value.toFixed(3);
+  return value.toPrecision(4);
 }
 
 function ResourceMeter({ value, label, detail }: { value: number; label: string; detail?: string }) {
