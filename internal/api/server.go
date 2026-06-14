@@ -42,6 +42,13 @@ type Server struct {
 	allowLoopbackNoAuth bool
 }
 
+type paginatedResponse[T any] struct {
+	Items  []T `json:"items"`
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
 // NewServer creates a new API server.
 func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, logger *slog.Logger, apiToken string, allowLoopbackNoAuth bool) *Server {
 	return &Server{
@@ -121,6 +128,15 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/projects", s.handleListProjects)
 		r.Get("/projects/{id}", s.handleGetProject)
 
+		// Evidence Chain reasoning boards
+		r.Get("/evidence-chains", s.handleListEvidenceChains)
+		r.Post("/evidence-chains", s.handleCreateEvidenceChain)
+		r.Get("/evidence-chains/{id}", s.handleGetEvidenceChain)
+		r.Put("/evidence-chains/{id}", s.handleUpdateEvidenceChain)
+		r.Delete("/evidence-chains/{id}", s.handleDeleteEvidenceChain)
+		r.Put("/evidence-chains/{id}/graph", s.handleSaveEvidenceChainGraph)
+		r.Get("/evidence-run-candidates", s.handleListEvidenceRunCandidates)
+
 		// Exec (one-shot remote command)
 		r.Post("/exec", s.handleExec)
 
@@ -133,8 +149,35 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/ws/runs/{id}/logs", s.handleWSLogs)
 	r.Get("/ws/resources/{id}/metrics", s.handleWSMetrics)
 
-	// Static files (embedded web UI)
+	// React UI v2. Kept parallel to the legacy root dashboard so existing
+	// deployments can validate the new app without changing their entrypoint.
 	staticContent, _ := fs.Sub(staticFS, "static")
+	uiV2Content, uiV2Err := fs.Sub(staticFS, "static/ui-v2")
+	if uiV2Err == nil {
+		uiV2Server := http.StripPrefix("/ui-v2", http.FileServer(http.FS(uiV2Content)))
+		r.Get("/ui-v2", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui-v2/", http.StatusMovedPermanently)
+		})
+		r.Get("/ui-v2/*", func(w http.ResponseWriter, req *http.Request) {
+			name := strings.TrimPrefix(req.URL.Path, "/ui-v2/")
+			if name != "" {
+				if f, err := uiV2Content.Open(name); err == nil {
+					f.Close()
+					uiV2Server.ServeHTTP(w, req)
+					return
+				}
+			}
+			data, err := staticFS.ReadFile("static/ui-v2/index.html")
+			if err != nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+		})
+	}
+
+	// Static files (embedded legacy web UI)
 	fileServer := http.FileServer(http.FS(staticContent))
 
 	serveIndex := func(w http.ResponseWriter, r *http.Request) {
@@ -672,6 +715,20 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			runs = filtered
 		}
 	}
+	if parseBoolQuery(r.URL.Query().Get("meta")) {
+		total, err := s.store.CountRuns(r.Context(), filter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, paginatedResponse[store.Run]{
+			Items:  runs,
+			Total:  total,
+			Limit:  filter.Limit,
+			Offset: filter.Offset,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -963,6 +1020,13 @@ func parseBoolQuery(v string) bool {
 	default:
 		return false
 	}
+}
+
+func parseIntQuery(v string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+		return n
+	}
+	return def
 }
 
 func isFalseQuery(v string) bool {
@@ -1397,6 +1461,248 @@ func appendProjectRunCard(view *projectView, card projectRunCardView) {
 	}
 }
 
+// --- Evidence Chains ---
+
+type evidenceChainDetail struct {
+	store.EvidenceChain
+	Nodes []store.EvidenceChainNode `json:"nodes"`
+	Edges []store.EvidenceChainEdge `json:"edges"`
+}
+
+func (s *Server) handleListEvidenceChains(w http.ResponseWriter, r *http.Request) {
+	chains, err := s.store.ListEvidenceChains(r.Context(), store.EvidenceChainFilter{
+		Query:  r.URL.Query().Get("query"),
+		Limit:  projectLimitFromQuery(r, 200),
+		Offset: parseIntQuery(r.URL.Query().Get("offset"), 0),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, chains)
+}
+
+func (s *Server) handleCreateEvidenceChain(w http.ResponseWriter, r *http.Request) {
+	var req store.EvidenceChain
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	req.Title = strings.TrimSpace(req.Title)
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "title is required")
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		req.ID = genID("chain_")
+	}
+	if err := s.store.CreateEvidenceChain(r.Context(), &req); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, req)
+}
+
+func (s *Server) handleGetEvidenceChain(w http.ResponseWriter, r *http.Request) {
+	chainID := chi.URLParam(r, "id")
+	detail, ok := s.evidenceChainDetail(r.Context(), chainID, w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) evidenceChainDetail(ctx context.Context, chainID string, w http.ResponseWriter) (evidenceChainDetail, bool) {
+	chain, err := s.store.GetEvidenceChain(ctx, chainID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return evidenceChainDetail{}, false
+	}
+	if chain == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "evidence chain not found")
+		return evidenceChainDetail{}, false
+	}
+	graph, err := s.store.GetEvidenceChainGraph(ctx, chainID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return evidenceChainDetail{}, false
+	}
+	return evidenceChainDetail{EvidenceChain: *chain, Nodes: graph.Nodes, Edges: graph.Edges}, true
+}
+
+func (s *Server) handleUpdateEvidenceChain(w http.ResponseWriter, r *http.Request) {
+	chainID := chi.URLParam(r, "id")
+	existing, err := s.store.GetEvidenceChain(r.Context(), chainID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "evidence chain not found")
+		return
+	}
+	var req store.EvidenceChain
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	existing.Title = strings.TrimSpace(req.Title)
+	existing.Description = strings.TrimSpace(req.Description)
+	if existing.Title == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "title is required")
+		return
+	}
+	if err := s.store.UpdateEvidenceChain(r.Context(), existing); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, existing)
+}
+
+func (s *Server) handleDeleteEvidenceChain(w http.ResponseWriter, r *http.Request) {
+	chainID := chi.URLParam(r, "id")
+	if err := s.store.DeleteEvidenceChain(r.Context(), chainID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSaveEvidenceChainGraph(w http.ResponseWriter, r *http.Request) {
+	chainID := chi.URLParam(r, "id")
+	if chain, err := s.store.GetEvidenceChain(r.Context(), chainID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	} else if chain == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "evidence chain not found")
+		return
+	}
+	var graph store.EvidenceChainGraph
+	if err := json.NewDecoder(r.Body).Decode(&graph); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	if err := s.validateEvidenceChainGraph(r.Context(), chainID, &graph); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_GRAPH", err.Error())
+		return
+	}
+	if err := s.store.SaveEvidenceChainGraph(r.Context(), chainID, graph); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	detail, ok := s.evidenceChainDetail(r.Context(), chainID, w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) validateEvidenceChainGraph(ctx context.Context, chainID string, graph *store.EvidenceChainGraph) error {
+	nodeIDs := make(map[string]bool, len(graph.Nodes))
+	for i := range graph.Nodes {
+		node := &graph.Nodes[i]
+		node.ID = strings.TrimSpace(node.ID)
+		node.ChainID = chainID
+		node.Type = strings.TrimSpace(node.Type)
+		node.RunID = strings.TrimSpace(node.RunID)
+		node.ProjectCardID = strings.TrimSpace(node.ProjectCardID)
+		node.DataJSON = normalizeJSONText(node.DataJSON)
+		if node.ID == "" {
+			return fmt.Errorf("node id is required")
+		}
+		if nodeIDs[node.ID] {
+			return fmt.Errorf("duplicate node id %q", node.ID)
+		}
+		if !validEvidenceNodeType(node.Type) {
+			return fmt.Errorf("invalid node type %q", node.Type)
+		}
+		if node.Type == store.EvidenceNodeRun {
+			if node.RunID == "" {
+				return fmt.Errorf("run node %q requires run_id", node.ID)
+			}
+			run, err := s.store.GetRun(ctx, node.RunID)
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %q does not exist", node.RunID)
+			}
+		}
+		if node.Width <= 0 {
+			node.Width = 260
+		}
+		if node.Height <= 0 {
+			node.Height = 140
+		}
+		nodeIDs[node.ID] = true
+	}
+	edgeIDs := make(map[string]bool, len(graph.Edges))
+	for i := range graph.Edges {
+		edge := &graph.Edges[i]
+		edge.ID = strings.TrimSpace(edge.ID)
+		edge.ChainID = chainID
+		edge.SourceNodeID = strings.TrimSpace(edge.SourceNodeID)
+		edge.TargetNodeID = strings.TrimSpace(edge.TargetNodeID)
+		edge.Type = strings.TrimSpace(edge.Type)
+		edge.DataJSON = normalizeJSONText(edge.DataJSON)
+		if edge.ID == "" {
+			return fmt.Errorf("edge id is required")
+		}
+		if edgeIDs[edge.ID] {
+			return fmt.Errorf("duplicate edge id %q", edge.ID)
+		}
+		if !validEvidenceEdgeType(edge.Type) {
+			return fmt.Errorf("invalid edge type %q", edge.Type)
+		}
+		if !nodeIDs[edge.SourceNodeID] {
+			return fmt.Errorf("edge %q source node %q does not exist", edge.ID, edge.SourceNodeID)
+		}
+		if !nodeIDs[edge.TargetNodeID] {
+			return fmt.Errorf("edge %q target node %q does not exist", edge.ID, edge.TargetNodeID)
+		}
+		edgeIDs[edge.ID] = true
+	}
+	return nil
+}
+
+func normalizeJSONText(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "{}"
+	}
+	return s
+}
+
+func validEvidenceNodeType(t string) bool {
+	switch t {
+	case store.EvidenceNodeRun, store.EvidenceNodeHypothesis, store.EvidenceNodeExperiment, store.EvidenceNodePlan, store.EvidenceNodeConclusion, store.EvidenceNodeNote:
+		return true
+	default:
+		return false
+	}
+}
+
+func validEvidenceEdgeType(t string) bool {
+	switch t {
+	case store.EvidenceEdgeSupports, store.EvidenceEdgeDoesNotProve, store.EvidenceEdgeNextStep, store.EvidenceEdgeCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) handleListEvidenceRunCandidates(w http.ResponseWriter, r *http.Request) {
+	candidates, err := s.store.ListEvidenceRunCandidates(r.Context(), store.EvidenceRunCandidateFilter{
+		Query: r.URL.Query().Get("query"),
+		Limit: projectLimitFromQuery(r, 80),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, candidates)
+}
+
 // --- Exec ---
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -1452,6 +1758,20 @@ func (s *Server) handleListExecEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.store.ListExecEvents(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if parseBoolQuery(r.URL.Query().Get("meta")) {
+		total, err := s.store.CountExecEvents(r.Context(), filter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, paginatedResponse[store.ExecEvent]{
+			Items:  events,
+			Total:  total,
+			Limit:  filter.Limit,
+			Offset: filter.Offset,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, events)

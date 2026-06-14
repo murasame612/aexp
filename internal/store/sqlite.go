@@ -29,7 +29,6 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
-
 	s := &SQLite{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -200,27 +199,8 @@ func (s *SQLite) GetRun(ctx context.Context, id string) (*Run, error) {
 }
 
 func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) {
-	query := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
-	var args []interface{}
-
-	if filter.ResourceID != "" {
-		query += " AND resource_id = ?"
-		args = append(args, filter.ResourceID)
-	}
-	if filter.Status != "" {
-		query += " AND status = ?"
-		args = append(args, filter.Status)
-	}
-	if filter.Deleted {
-		query += " AND deleted_at IS NOT NULL"
-	} else {
-		query += " AND deleted_at IS NULL"
-		if filter.Trash {
-			query += " AND archived_at IS NOT NULL"
-		} else {
-			query += " AND archived_at IS NULL"
-		}
-	}
+	where, args := runFilterWhere(filter)
+	query := `SELECT ` + runColumns + ` FROM runs` + where
 
 	query += " ORDER BY created_at DESC"
 
@@ -248,6 +228,39 @@ func (s *SQLite) ListRuns(ctx context.Context, filter RunFilter) ([]Run, error) 
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+func (s *SQLite) CountRuns(ctx context.Context, filter RunFilter) (int, error) {
+	where, args := runFilterWhere(filter)
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs`+where, args...).Scan(&count)
+	return count, err
+}
+
+func runFilterWhere(filter RunFilter) (string, []interface{}) {
+	query := ` WHERE 1=1`
+	var args []interface{}
+
+	if filter.ResourceID != "" {
+		query += " AND resource_id = ?"
+		args = append(args, filter.ResourceID)
+	}
+	if filter.Status != "" {
+		query += " AND status = ?"
+		args = append(args, filter.Status)
+	}
+	if filter.Deleted {
+		query += " AND deleted_at IS NOT NULL"
+	} else {
+		query += " AND deleted_at IS NULL"
+		if filter.Trash {
+			query += " AND archived_at IS NOT NULL"
+		} else {
+			query += " AND archived_at IS NULL"
+		}
+	}
+
+	return query, args
 }
 
 func (s *SQLite) UpdateRun(ctx context.Context, r *Run) error {
@@ -789,6 +802,320 @@ func (s *SQLite) ListProjectRunCards(ctx context.Context, filter ProjectRunCardF
 	return cards, rows.Err()
 }
 
+// --- Evidence Chains ---
+
+const evidenceChainColumns = "id, title, description, created_at, updated_at"
+
+func scanEvidenceChain(c *EvidenceChain) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&c.ID, &c.Title, &c.Description, &c.CreatedAt, &c.UpdatedAt)
+	}
+}
+
+func (s *SQLite) CreateEvidenceChain(ctx context.Context, c *EvidenceChain) error {
+	now := time.Now()
+	if c.ID == "" {
+		c.ID = fmt.Sprintf("chain_%d", now.UnixNano())
+	}
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = now
+	}
+	c.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO evidence_chains (`+evidenceChainColumns+`) VALUES (?, ?, ?, ?, ?)`,
+		c.ID, c.Title, c.Description, c.CreatedAt, c.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetEvidenceChain(ctx context.Context, id string) (*EvidenceChain, error) {
+	c := &EvidenceChain{}
+	err := scanEvidenceChain(c)(s.db.QueryRowContext(ctx, `SELECT `+evidenceChainColumns+` FROM evidence_chains WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return c, err
+}
+
+func (s *SQLite) ListEvidenceChains(ctx context.Context, filter EvidenceChainFilter) ([]EvidenceChain, error) {
+	query := `SELECT ` + evidenceChainColumns + ` FROM evidence_chains WHERE 1=1`
+	var args []interface{}
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		query += " AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(id) LIKE ?)"
+		args = append(args, like, like, like)
+	}
+	query += " ORDER BY updated_at DESC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	chains := make([]EvidenceChain, 0)
+	for rows.Next() {
+		var c EvidenceChain
+		if err := scanEvidenceChain(&c)(rows); err != nil {
+			return nil, err
+		}
+		chains = append(chains, c)
+	}
+	return chains, rows.Err()
+}
+
+func (s *SQLite) UpdateEvidenceChain(ctx context.Context, c *EvidenceChain) error {
+	c.UpdatedAt = time.Now()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE evidence_chains SET title = ?, description = ?, updated_at = ? WHERE id = ?`,
+		c.Title, c.Description, c.UpdatedAt, c.ID,
+	)
+	return err
+}
+
+func (s *SQLite) DeleteEvidenceChain(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence_chain_edges WHERE chain_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence_chain_nodes WHERE chain_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence_chains WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+const evidenceChainNodeColumns = "id, chain_id, type, title, body, run_id, project_card_id, x, y, width, height, data_json, created_at, updated_at"
+
+func scanEvidenceChainNode(n *EvidenceChainNode) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&n.ID, &n.ChainID, &n.Type, &n.Title, &n.Body, &n.RunID, &n.ProjectCardID, &n.X, &n.Y, &n.Width, &n.Height, &n.DataJSON, &n.CreatedAt, &n.UpdatedAt)
+	}
+}
+
+const evidenceChainEdgeColumns = "id, chain_id, source_node_id, target_node_id, type, label, rationale, data_json, created_at, updated_at"
+
+func scanEvidenceChainEdge(e *EvidenceChainEdge) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&e.ID, &e.ChainID, &e.SourceNodeID, &e.TargetNodeID, &e.Type, &e.Label, &e.Rationale, &e.DataJSON, &e.CreatedAt, &e.UpdatedAt)
+	}
+}
+
+func (s *SQLite) GetEvidenceChainGraph(ctx context.Context, chainID string) (*EvidenceChainGraph, error) {
+	nodes, err := s.listEvidenceChainNodes(ctx, chainID)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := s.listEvidenceChainEdges(ctx, chainID)
+	if err != nil {
+		return nil, err
+	}
+	return &EvidenceChainGraph{Nodes: nodes, Edges: edges}, nil
+}
+
+func (s *SQLite) listEvidenceChainNodes(ctx context.Context, chainID string) ([]EvidenceChainNode, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+evidenceChainNodeColumns+` FROM evidence_chain_nodes WHERE chain_id = ? ORDER BY updated_at DESC`, chainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	nodes := make([]EvidenceChainNode, 0)
+	for rows.Next() {
+		var n EvidenceChainNode
+		if err := scanEvidenceChainNode(&n)(rows); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+func (s *SQLite) listEvidenceChainEdges(ctx context.Context, chainID string) ([]EvidenceChainEdge, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+evidenceChainEdgeColumns+` FROM evidence_chain_edges WHERE chain_id = ? ORDER BY updated_at DESC`, chainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	edges := make([]EvidenceChainEdge, 0)
+	for rows.Next() {
+		var e EvidenceChainEdge
+		if err := scanEvidenceChainEdge(&e)(rows); err != nil {
+			return nil, err
+		}
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
+}
+
+func (s *SQLite) SaveEvidenceChainGraph(ctx context.Context, chainID string, graph EvidenceChainGraph) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence_chain_edges WHERE chain_id = ?`, chainID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence_chain_nodes WHERE chain_id = ?`, chainID); err != nil {
+		return err
+	}
+	for _, n := range graph.Nodes {
+		if n.CreatedAt.IsZero() {
+			n.CreatedAt = now
+		}
+		n.UpdatedAt = now
+		if n.Width <= 0 {
+			n.Width = 260
+		}
+		if n.Height <= 0 {
+			n.Height = 140
+		}
+		if strings.TrimSpace(n.DataJSON) == "" {
+			n.DataJSON = "{}"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO evidence_chain_nodes (`+evidenceChainNodeColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			n.ID, chainID, n.Type, n.Title, n.Body, n.RunID, n.ProjectCardID, n.X, n.Y, n.Width, n.Height, n.DataJSON, n.CreatedAt, n.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	for _, e := range graph.Edges {
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		e.UpdatedAt = now
+		if strings.TrimSpace(e.DataJSON) == "" {
+			e.DataJSON = "{}"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO evidence_chain_edges (`+evidenceChainEdgeColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ID, chainID, e.SourceNodeID, e.TargetNodeID, e.Type, e.Label, e.Rationale, e.DataJSON, e.CreatedAt, e.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE evidence_chains SET updated_at = ? WHERE id = ?`, now, chainID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) ListEvidenceRunCandidates(ctx context.Context, filter EvidenceRunCandidateFilter) ([]EvidenceChainRunCandidate, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 80
+	}
+	query := strings.ToLower(strings.TrimSpace(filter.Query))
+	out := make([]EvidenceChainRunCandidate, 0, limit)
+	seenRuns := map[string]bool{}
+
+	cards, err := s.ListProjectRunCards(ctx, ProjectRunCardFilter{Limit: limit * 4})
+	if err != nil {
+		return nil, err
+	}
+	for _, card := range cards {
+		if len(out) >= limit {
+			break
+		}
+		run, _ := s.GetRun(ctx, card.RunID)
+		candidate := EvidenceChainRunCandidate{
+			ID:             "card:" + card.ID,
+			Kind:           "project_card",
+			RunID:          card.RunID,
+			ProjectCardID:  card.ID,
+			ProjectID:      card.ProjectID,
+			ProjectName:    card.ProjectName,
+			Question:       card.Question,
+			Verdict:        card.Verdict,
+			EvidenceLevel:  card.EvidenceLevel,
+			KeyMetrics:     card.KeyMetrics,
+			NextAction:     card.NextAction,
+			Run:            run,
+			ProjectRunCard: &card,
+		}
+		if evidenceCandidateMatches(candidate, query) {
+			out = append(out, candidate)
+			if card.RunID != "" {
+				seenRuns[card.RunID] = true
+			}
+		}
+	}
+
+	if len(out) >= limit {
+		return out, nil
+	}
+	runs, err := s.ListRuns(ctx, RunFilter{Limit: limit * 4})
+	if err != nil {
+		return nil, err
+	}
+	for _, run := range runs {
+		if len(out) >= limit {
+			break
+		}
+		if seenRuns[run.ID] {
+			continue
+		}
+		runCopy := run
+		candidate := EvidenceChainRunCandidate{
+			ID:    "run:" + run.ID,
+			Kind:  "run",
+			RunID: run.ID,
+			Run:   &runCopy,
+		}
+		if evidenceCandidateMatches(candidate, query) {
+			out = append(out, candidate)
+		}
+	}
+	return out, nil
+}
+
+func evidenceCandidateMatches(candidate EvidenceChainRunCandidate, query string) bool {
+	if query == "" {
+		return true
+	}
+	parts := []string{
+		candidate.ID,
+		candidate.Kind,
+		candidate.RunID,
+		candidate.ProjectCardID,
+		candidate.ProjectID,
+		candidate.ProjectName,
+		candidate.Question,
+		candidate.Verdict,
+		candidate.EvidenceLevel,
+		candidate.KeyMetrics,
+		candidate.NextAction,
+	}
+	if candidate.Run != nil {
+		parts = append(parts, candidate.Run.ID, candidate.Run.Name, candidate.Run.Kind, candidate.Run.Status, candidate.Run.Command, candidate.Run.Cwd, candidate.Run.ResolvedCwd)
+	}
+	return textPartsContain(parts, query)
+}
+
+func textPartsContain(parts []string, query string) bool {
+	for _, part := range parts {
+		if strings.Contains(strings.ToLower(part), query) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Exec Events ---
 
 const execEventColumns = "id, resource_id, actor, command, cwd, exit_code, started_at, finished_at, duration_ms, stdout_tail, stderr_tail, created_at"
@@ -823,17 +1150,8 @@ func (s *SQLite) GetExecEvent(ctx context.Context, id string) (*ExecEvent, error
 }
 
 func (s *SQLite) ListExecEvents(ctx context.Context, filter ExecEventFilter) ([]ExecEvent, error) {
-	query := `SELECT ` + execEventColumns + ` FROM exec_events WHERE 1=1`
-	var args []interface{}
-
-	if filter.ResourceID != "" {
-		query += " AND resource_id = ?"
-		args = append(args, filter.ResourceID)
-	}
-	if filter.Actor != "" {
-		query += " AND actor = ?"
-		args = append(args, filter.Actor)
-	}
+	where, args := execEventFilterWhere(filter)
+	query := `SELECT ` + execEventColumns + ` FROM exec_events` + where
 
 	query += " ORDER BY created_at DESC"
 
@@ -861,6 +1179,29 @@ func (s *SQLite) ListExecEvents(ctx context.Context, filter ExecEventFilter) ([]
 		events = append(events, e)
 	}
 	return events, rows.Err()
+}
+
+func (s *SQLite) CountExecEvents(ctx context.Context, filter ExecEventFilter) (int, error) {
+	where, args := execEventFilterWhere(filter)
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exec_events`+where, args...).Scan(&count)
+	return count, err
+}
+
+func execEventFilterWhere(filter ExecEventFilter) (string, []interface{}) {
+	query := ` WHERE 1=1`
+	var args []interface{}
+
+	if filter.ResourceID != "" {
+		query += " AND resource_id = ?"
+		args = append(args, filter.ResourceID)
+	}
+	if filter.Actor != "" {
+		query += " AND actor = ?"
+		args = append(args, filter.Actor)
+	}
+
+	return query, args
 }
 
 // --- helpers ---

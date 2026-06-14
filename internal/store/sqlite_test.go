@@ -120,6 +120,10 @@ func TestRunCRUD(t *testing.T) {
 	if len(runs) != 1 {
 		t.Errorf("len(runs) = %d, want 1", len(runs))
 	}
+	runCount, _ := s.CountRuns(ctx, RunFilter{ResourceID: "rsrc_r01"})
+	if runCount != 1 {
+		t.Errorf("CountRuns = %d, want 1", runCount)
+	}
 	if runs[0].UIEventsPath != "aexp-events.jsonl" {
 		t.Errorf("list ui_events_path = %q, want %q", runs[0].UIEventsPath, "aexp-events.jsonl")
 	}
@@ -418,5 +422,100 @@ func TestRunBookmarks(t *testing.T) {
 	deleted, _ := s.GetRunBookmark(ctx, "run_bookmark01")
 	if deleted != nil {
 		t.Error("expected nil after delete")
+	}
+}
+
+func TestEvidenceChainsCRUDGraphAndCandidates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_evidence", Name: "evidence-res", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	for _, run := range []*Run{
+		{ID: "run_carded", ResourceID: "rsrc_evidence", Name: "formal-carded", Status: RunStatusSucceeded, Kind: RunKindFormal, Command: "python train.py"},
+		{ID: "run_loose", ResourceID: "rsrc_evidence", Name: "loose-pilot", Status: RunStatusSucceeded, Kind: RunKindPilot, Command: "python pilot.py"},
+	} {
+		if err := s.CreateRun(ctx, run); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+	}
+	if err := s.SaveProjectRunCard(ctx, &ProjectRunCard{
+		ID:            "card_evidence",
+		ProjectID:     "dam-imputation",
+		ProjectName:   "Dam Imputation",
+		RunID:         "run_carded",
+		Question:      "Does gated IR help?",
+		Verdict:       "Improves the IR baseline.",
+		EvidenceLevel: "B",
+		KeyMetrics:    "mAP50-95=0.606",
+	}); err != nil {
+		t.Fatalf("SaveProjectRunCard: %v", err)
+	}
+
+	chain := &EvidenceChain{ID: "chain_ir_gate", Title: "IR gate evidence", Description: "Fusion reasoning"}
+	if err := s.CreateEvidenceChain(ctx, chain); err != nil {
+		t.Fatalf("CreateEvidenceChain: %v", err)
+	}
+	chain.Title = "IR gate evidence v2"
+	if err := s.UpdateEvidenceChain(ctx, chain); err != nil {
+		t.Fatalf("UpdateEvidenceChain: %v", err)
+	}
+	chains, err := s.ListEvidenceChains(ctx, EvidenceChainFilter{Query: "gate", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListEvidenceChains: %v", err)
+	}
+	if len(chains) != 1 || chains[0].Title != "IR gate evidence v2" {
+		t.Fatalf("chains = %#v, want updated chain", chains)
+	}
+
+	graph := EvidenceChainGraph{
+		Nodes: []EvidenceChainNode{
+			{ID: "node_hyp", Type: EvidenceNodeHypothesis, Title: "IR should anchor fusion", X: 10, Y: 20},
+			{ID: "node_run", Type: EvidenceNodeRun, Title: "formal-carded", RunID: "run_carded", ProjectCardID: "card_evidence", X: 320, Y: 20},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "edge_supports", SourceNodeID: "node_run", TargetNodeID: "node_hyp", Type: EvidenceEdgeSupports, Label: "supports", Rationale: "Improved mAP."},
+		},
+	}
+	if err := s.SaveEvidenceChainGraph(ctx, "chain_ir_gate", graph); err != nil {
+		t.Fatalf("SaveEvidenceChainGraph: %v", err)
+	}
+	gotGraph, err := s.GetEvidenceChainGraph(ctx, "chain_ir_gate")
+	if err != nil {
+		t.Fatalf("GetEvidenceChainGraph: %v", err)
+	}
+	if len(gotGraph.Nodes) != 2 || len(gotGraph.Edges) != 1 {
+		t.Fatalf("graph = %#v, want 2 nodes and 1 edge", gotGraph)
+	}
+
+	candidates, err := s.ListEvidenceRunCandidates(ctx, EvidenceRunCandidateFilter{Query: "pilot", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListEvidenceRunCandidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].RunID != "run_loose" || candidates[0].Kind != "run" {
+		t.Fatalf("pilot candidates = %#v, want loose run", candidates)
+	}
+	allCandidates, err := s.ListEvidenceRunCandidates(ctx, EvidenceRunCandidateFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListEvidenceRunCandidates all: %v", err)
+	}
+	if len(allCandidates) < 2 || allCandidates[0].Kind != "project_card" || allCandidates[0].RunID != "run_carded" {
+		t.Fatalf("candidate order = %#v, want project card first", allCandidates)
+	}
+
+	if err := s.DeleteEvidenceChain(ctx, "chain_ir_gate"); err != nil {
+		t.Fatalf("DeleteEvidenceChain: %v", err)
+	}
+	deleted, err := s.GetEvidenceChain(ctx, "chain_ir_gate")
+	if err != nil || deleted != nil {
+		t.Fatalf("deleted chain = %#v err=%v, want nil", deleted, err)
+	}
+	emptyGraph, err := s.GetEvidenceChainGraph(ctx, "chain_ir_gate")
+	if err != nil {
+		t.Fatalf("GetEvidenceChainGraph after delete: %v", err)
+	}
+	if len(emptyGraph.Nodes) != 0 || len(emptyGraph.Edges) != 0 {
+		t.Fatalf("graph after delete = %#v, want empty", emptyGraph)
 	}
 }

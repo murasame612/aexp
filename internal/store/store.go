@@ -16,6 +16,7 @@ type Store interface {
 	CreateRun(ctx context.Context, r *Run) error
 	GetRun(ctx context.Context, id string) (*Run, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]Run, error)
+	CountRuns(ctx context.Context, filter RunFilter) (int, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	ArchiveRun(ctx context.Context, id string) error
 	RestoreRun(ctx context.Context, id string) error
@@ -59,10 +60,21 @@ type Store interface {
 	GetProjectRunCard(ctx context.Context, runID string) (*ProjectRunCard, error)
 	ListProjectRunCards(ctx context.Context, filter ProjectRunCardFilter) ([]ProjectRunCard, error)
 
+	// Evidence Chains
+	CreateEvidenceChain(ctx context.Context, c *EvidenceChain) error
+	GetEvidenceChain(ctx context.Context, id string) (*EvidenceChain, error)
+	ListEvidenceChains(ctx context.Context, filter EvidenceChainFilter) ([]EvidenceChain, error)
+	UpdateEvidenceChain(ctx context.Context, c *EvidenceChain) error
+	DeleteEvidenceChain(ctx context.Context, id string) error
+	GetEvidenceChainGraph(ctx context.Context, chainID string) (*EvidenceChainGraph, error)
+	SaveEvidenceChainGraph(ctx context.Context, chainID string, graph EvidenceChainGraph) error
+	ListEvidenceRunCandidates(ctx context.Context, filter EvidenceRunCandidateFilter) ([]EvidenceChainRunCandidate, error)
+
 	// Exec Events
 	SaveExecEvent(ctx context.Context, e *ExecEvent) error
 	GetExecEvent(ctx context.Context, id string) (*ExecEvent, error)
 	ListExecEvents(ctx context.Context, filter ExecEventFilter) ([]ExecEvent, error)
+	CountExecEvents(ctx context.Context, filter ExecEventFilter) (int, error)
 
 	// Lifecycle
 	Close() error

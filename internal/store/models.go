@@ -212,6 +212,101 @@ type ProjectRunCardFilter struct {
 	Offset        int
 }
 
+// EvidenceChain is a human-curated research reasoning board.
+type EvidenceChain struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// EvidenceChainNode is a node placed on an Evidence Chain board.
+type EvidenceChainNode struct {
+	ID            string    `json:"id"`
+	ChainID       string    `json:"chain_id"`
+	Type          string    `json:"type"`
+	Title         string    `json:"title"`
+	Body          string    `json:"body"`
+	RunID         string    `json:"run_id"`
+	ProjectCardID string    `json:"project_card_id"`
+	X             float64   `json:"x"`
+	Y             float64   `json:"y"`
+	Width         float64   `json:"width"`
+	Height        float64   `json:"height"`
+	DataJSON      string    `json:"data_json"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// EvidenceChainEdge is a typed relationship between two Evidence Chain nodes.
+type EvidenceChainEdge struct {
+	ID           string    `json:"id"`
+	ChainID      string    `json:"chain_id"`
+	SourceNodeID string    `json:"source_node_id"`
+	TargetNodeID string    `json:"target_node_id"`
+	Type         string    `json:"type"`
+	Label        string    `json:"label"`
+	Rationale    string    `json:"rationale"`
+	DataJSON     string    `json:"data_json"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// EvidenceChainGraph stores the current board graph.
+type EvidenceChainGraph struct {
+	Nodes []EvidenceChainNode `json:"nodes"`
+	Edges []EvidenceChainEdge `json:"edges"`
+}
+
+// EvidenceChainRunCandidate is a draggable run-like candidate for an Evidence Chain.
+type EvidenceChainRunCandidate struct {
+	ID             string          `json:"id"`
+	Kind           string          `json:"kind"`
+	RunID          string          `json:"run_id"`
+	ProjectCardID  string          `json:"project_card_id"`
+	ProjectID      string          `json:"project_id"`
+	ProjectName    string          `json:"project_name"`
+	Question       string          `json:"question"`
+	Verdict        string          `json:"verdict"`
+	EvidenceLevel  string          `json:"evidence_level"`
+	KeyMetrics     string          `json:"key_metrics"`
+	NextAction     string          `json:"next_action"`
+	Run            *Run            `json:"run,omitempty"`
+	ProjectRunCard *ProjectRunCard `json:"project_card,omitempty"`
+}
+
+// EvidenceChainFilter is used to list Evidence Chains.
+type EvidenceChainFilter struct {
+	Query  string
+	Limit  int
+	Offset int
+}
+
+// EvidenceRunCandidateFilter is used to list draggable run candidates.
+type EvidenceRunCandidateFilter struct {
+	Query string
+	Limit int
+}
+
+// Evidence Chain node type constants.
+const (
+	EvidenceNodeRun        = "run"
+	EvidenceNodeHypothesis = "hypothesis"
+	EvidenceNodeExperiment = "experiment"
+	EvidenceNodePlan       = "plan"
+	EvidenceNodeConclusion = "conclusion"
+	EvidenceNodeNote       = "note"
+)
+
+// Evidence Chain edge type constants.
+const (
+	EvidenceEdgeSupports     = "supports"
+	EvidenceEdgeDoesNotProve = "does_not_prove"
+	EvidenceEdgeNextStep     = "next_step"
+	EvidenceEdgeCustom       = "custom"
+)
+
 // ExecEvent records a one-shot exec command for audit.
 type ExecEvent struct {
 	ID         string        `json:"id"`

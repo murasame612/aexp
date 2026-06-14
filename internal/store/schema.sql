@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS log_lines (
 );
 
 CREATE INDEX IF NOT EXISTS idx_log_run ON log_lines(run_id, source, line_no);
+CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_resource_created ON runs(resource_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_archive_delete_created ON runs(archived_at, deleted_at, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id          TEXT PRIMARY KEY,
@@ -179,6 +183,55 @@ CREATE TABLE IF NOT EXISTS project_run_cards (
 CREATE INDEX IF NOT EXISTS idx_project_run_cards_project ON project_run_cards(project_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_project_run_cards_important ON project_run_cards(project_id, important, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_project_run_cards_level ON project_run_cards(project_id, evidence_level, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS evidence_chains (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_chains_updated ON evidence_chains(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS evidence_chain_nodes (
+    id              TEXT PRIMARY KEY,
+    chain_id        TEXT NOT NULL REFERENCES evidence_chains(id) ON DELETE CASCADE,
+    type            TEXT NOT NULL,
+    title           TEXT DEFAULT '',
+    body            TEXT DEFAULT '',
+    run_id          TEXT DEFAULT '',
+    project_card_id TEXT DEFAULT '',
+    x               REAL NOT NULL DEFAULT 0,
+    y               REAL NOT NULL DEFAULT 0,
+    width           REAL NOT NULL DEFAULT 260,
+    height          REAL NOT NULL DEFAULT 140,
+    data_json       TEXT DEFAULT '{}',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_nodes_chain ON evidence_chain_nodes(chain_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_nodes_run ON evidence_chain_nodes(run_id);
+
+CREATE TABLE IF NOT EXISTS evidence_chain_edges (
+    id              TEXT PRIMARY KEY,
+    chain_id        TEXT NOT NULL REFERENCES evidence_chains(id) ON DELETE CASCADE,
+    source_node_id  TEXT NOT NULL,
+    target_node_id  TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    label           TEXT DEFAULT '',
+    rationale       TEXT DEFAULT '',
+    data_json       TEXT DEFAULT '{}',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(source_node_id) REFERENCES evidence_chain_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(target_node_id) REFERENCES evidence_chain_nodes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_edges_chain ON evidence_chain_edges(chain_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_edges_source ON evidence_chain_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_edges_target ON evidence_chain_edges(target_node_id);
 
 CREATE TABLE IF NOT EXISTS exec_events (
     id            TEXT PRIMARY KEY,
