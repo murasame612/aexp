@@ -84,7 +84,8 @@ const dict = {
     previous: "Previous",
     next: "Next",
     uiV2: "React UI v2",
-    projectMore: "More items stay searchable in Runs"
+    projectMore: "More items stay searchable in Runs",
+    resourceMore: "More resources stay in Resources"
   },
   zh: {
     dashboard: "概览",
@@ -169,7 +170,8 @@ const dict = {
     previous: "上一页",
     next: "下一页",
     uiV2: "React UI v2",
-    projectMore: "更多条目可在实验页搜索"
+    projectMore: "更多条目可在实验页搜索",
+    resourceMore: "更多资源可在资源页查看"
   }
 } as const;
 

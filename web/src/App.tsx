@@ -477,17 +477,25 @@ function Dashboard({
         <Stat label={t("totalRuns")} value={stats?.total_runs ?? "-"} icon={<BarChart3 />} />
       </div>
       <Section title={t("resources")}>
-        <div className="resource-grid">{resources.length ? resources.map((r) => <ResourceCard key={r.id} resource={r} />) : <Empty t={t} />}</div>
+        <div className="resource-grid">
+          {resources.length ? resources.slice(0, 2).map((r) => <ResourceCard key={r.id} resource={r} />) : <Empty t={t} />}
+          {resources.length > 2 ? (
+            <div className="overview-more">
+              <strong>+{resources.length - 2}</strong>
+              <span>{t("resourceMore")}</span>
+            </div>
+          ) : null}
+        </div>
       </Section>
       <Section title={t("activeRuns")}>
         <div className="run-card-grid">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
       </Section>
       <div className="split">
         <Section title={t("agentFindings")}>
-          <div className="compact-list">{marks.slice(0, 8).map((mark) => <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />)}</div>
+          <div className="compact-list">{marks.slice(0, 2).map((mark) => <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />)}</div>
         </Section>
         <Section title={t("recentExec")}>
-          <div className="compact-list">{execs.map((event) => <ExecCompact key={event.id} event={event} resourceById={resourceById} />)}</div>
+          <div className="compact-list">{execs.slice(0, 3).map((event) => <ExecCompact key={event.id} event={event} resourceById={resourceById} />)}</div>
         </Section>
       </div>
     </div>
@@ -738,7 +746,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
                 </div>
               </div>
               <div className="project-cards">
-                {(project.cards || []).slice(0, 6).map((card) => (
+                {(project.cards || []).slice(0, 3).map((card) => (
                   <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
                     <div className="project-card-main">
                       <strong>{card.verdict || card.question || card.run?.name || card.run_id}</strong>
@@ -751,9 +759,9 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
                     </div>
                   </button>
                 ))}
-                {(project.cards || []).length > 6 ? (
+                {(project.cards || []).length > 3 ? (
                   <div className="project-more">
-                    <strong>+{(project.cards || []).length - 6}</strong>
+                    <strong>+{(project.cards || []).length - 3}</strong>
                     <span>{t("projectMore")}</span>
                   </div>
                 ) : null}
