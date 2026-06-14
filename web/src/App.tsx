@@ -62,6 +62,7 @@ import type {
   LogsResponse,
   MetricPoint,
   ParsedEvents,
+  ProjectRunCard,
   ProjectView,
   Resource,
   Run,
@@ -620,7 +621,32 @@ function RunsTab(props: {
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
-      <VirtualTable columns={columns} data={props.runs} estimateSize={82} columnTemplate={runTableColumns} minWidth={940} />
+      <div className="run-table-desktop">
+        <VirtualTable columns={columns} data={props.runs} estimateSize={82} columnTemplate={runTableColumns} />
+      </div>
+      <div className="run-list-mobile">
+        {props.runs.length ? (
+          props.runs.map((run) => (
+            <RunListCard
+              key={run.id}
+              run={run}
+              resourceById={props.resourceById}
+              markCount={props.marks.get(run.id) || 0}
+              bookmarked={bookmarkIds.has(run.id)}
+              selected={selectedRunIds.has(run.id)}
+              trash={props.trash}
+              onOpen={() => props.onOpenRun(run.id)}
+              onSelect={(checked) => toggleSelectedRun(run, checked)}
+              onToggleBookmark={() => void props.onToggleBookmark(run, bookmarkIds.has(run.id))}
+              onArchive={() => props.onArchive(run)}
+              onRestore={() => void props.onRestore(run)}
+              onDelete={() => props.onDelete(run)}
+            />
+          ))
+        ) : (
+          <Empty t={props.t} />
+        )}
+      </div>
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -734,34 +760,12 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
         {projects.length ? (
           projects.map((project) => (
             <section className="project-row" key={project.project_id}>
-              <div className="project-head">
-                <div>
-                  <h2>{project.project_name || project.project_id}</h2>
-                  <p className="muted mono">{project.project_id}</p>
-                </div>
-                <div className="pill-row">
-                  <Pill tone="accent">{project.important_runs || 0} important</Pill>
-                  <Pill tone="good">{project.formal_runs || 0} formal</Pill>
-                  <Pill tone="warn">{project.running_runs || 0} running</Pill>
-                </div>
-              </div>
-              <div className="project-cards">
-                {(project.cards || []).slice(0, 3).map((card) => (
-                  <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
-                    <div className="project-card-main">
-                      <strong>{card.verdict || card.question || card.run?.name || card.run_id}</strong>
-                      <span>{card.question || card.next_action || "-"}</span>
-                    </div>
-                    {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
-                    <div className="project-card-foot">
-                      <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-                      <span className="mono">{[card.run?.status, card.run?.kind || card.run_id].filter(Boolean).join(" · ") || "-"}</span>
-                    </div>
-                  </button>
-                ))}
-                {(project.cards || []).length > 3 ? (
+              <ProjectSummary project={project} />
+              <div className="project-evidence">
+                {(project.cards || []).slice(0, 4).map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} />)}
+                {(project.cards || []).length > 4 ? (
                   <div className="project-more">
-                    <strong>+{(project.cards || []).length - 3}</strong>
+                    <strong>+{(project.cards || []).length - 4}</strong>
                     <span>{t("projectMore")}</span>
                   </div>
                 ) : null}
@@ -774,6 +778,60 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
         )}
       </div>
     </div>
+  );
+}
+
+function ProjectSummary({ project }: { project: ProjectView }) {
+  const cards = project.cards || [];
+  const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
+  const counts = [
+    { label: "cards", value: project.total_cards ?? cards.length, tone: "neutral" as const },
+    { label: "important", value: project.important_runs || 0, tone: "accent" as const },
+    { label: "formal", value: project.formal_runs || 0, tone: "good" as const },
+    { label: "running", value: project.running_runs || 0, tone: "warn" as const }
+  ];
+  return (
+    <div className="project-summary">
+      <div className="project-head">
+        <div>
+          <h2>{project.project_name || project.project_id}</h2>
+          <p className="muted mono">{project.project_id}</p>
+        </div>
+      </div>
+      <div className="project-signal-grid">
+        {counts.map((item) => (
+          <div className="project-signal" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <Pill tone={item.tone}>{item.label}</Pill>
+          </div>
+        ))}
+      </div>
+      <div className="project-latest">
+        <span className="panel-kicker">Latest signal</span>
+        <strong>{latest?.verdict || latest?.question || "No evidence card yet"}</strong>
+        <p>{latest?.key_metrics || latest?.next_action || latest?.run?.command || "Create project cards from runs to make this project readable here."}</p>
+      </div>
+    </div>
+  );
+}
+
+function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpenRun: (id: string) => void }) {
+  const title = card.verdict || card.question || card.run?.name || card.run_id;
+  const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
+  const runMeta = [card.run?.status, card.run?.kind, card.run_id].filter(Boolean).join(" · ");
+  return (
+    <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
+      <div className="project-card-main">
+        <strong>{title}</strong>
+        <span>{body}</span>
+      </div>
+      {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
+      <div className="project-card-foot">
+        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
+        <span className="mono">{runMeta || "-"}</span>
+      </div>
+    </button>
   );
 }
 
@@ -814,7 +872,7 @@ function ExecsTab(props: {
         header: props.t("duration"),
         cell: (info) => (
           <div className="run-state-cell">
-            <span className="mono">exit {info.row.original.exit_code ?? "-"}</span>
+            <span className="mono">exit {formatExitCode(info.row.original.exit_code)}</span>
             <span className="muted">{fmtDuration(info.row.original.duration_ms)}</span>
           </div>
         )
@@ -829,7 +887,7 @@ function ExecsTab(props: {
         <Select value={props.actor} onChange={props.setActor} options={[["", props.t("allActors")], ["cli", "cli"], ["api", "api"], ["agent", "agent"]]} />
         <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
       </div>
-      <VirtualTable columns={columns} data={props.rows} estimateSize={62} columnTemplate={execTableColumns} minWidth={760} />
+      <VirtualTable columns={columns} data={props.rows} estimateSize={62} columnTemplate={execTableColumns} />
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -935,28 +993,28 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
   const metricFamilies = groupMetricFamilies(parsed.metrics).slice(0, 8);
   return (
     <section className="event-dashboard">
-      <div className="section-head">
+      <div className="section-head event-head">
         <h2>{t("events")}</h2>
-        <span className="muted mono">{path}</span>
+        <span className="muted mono event-path">{path}</span>
       </div>
       <div className="event-layout">
         <div className="event-panel progress-panel">
           <span className="panel-kicker">Progress</span>
-          {progress.length ? progress.map((row) => (
-            <div className="progress-row" key={row.name}>
+          {progress.length ? progress.map((row, index) => (
+            <div className="progress-row" key={`${row.name}-${index}`}>
               <div>
                 <strong>{row.name}</strong>
                 <span>{row.total ? `${row.current}/${row.total}` : String(row.current)}</span>
               </div>
-              <Meter value={row.percent ?? row.current} />
+              {row.percent != null ? <Meter value={row.percent} /> : <span className="progress-value mono">{formatMetric(row.current)}</span>}
             </div>
           )) : <span className="muted">No progress events</span>}
         </div>
         <div className="event-panel metric-panel">
           <span className="panel-kicker">Latest metrics</span>
           <div className="metric-list">
-            {latest.length ? latest.map((metric) => (
-              <div className="metric-row" key={(metric.series || "") + metric.name}>
+            {latest.length ? latest.map((metric, index) => (
+              <div className="metric-row" key={`${metric.series || "default"}-${metric.name}-${index}`}>
                 <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
                 <strong>{formatMetric(metric.value)}</strong>
               </div>
@@ -979,8 +1037,8 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
               <span>{family.count} points</span>
             </div>
             <div className="metric-family-values">
-              {family.series.map((row) => (
-                <div key={row.series || family.name}>
+              {family.series.map((row, index) => (
+                <div key={`${row.series || "default"}-${index}`}>
                   <span>{row.series || "default"}</span>
                   <strong>{formatMetric(row.value)}</strong>
                 </div>
@@ -1131,20 +1189,18 @@ function VirtualTable<T>({
   columns,
   data,
   estimateSize,
-  columnTemplate,
-  minWidth
+  columnTemplate
 }: {
   columns: ColumnDef<T, any>[];
   data: T[];
   estimateSize: number;
   columnTemplate: string;
-  minWidth: number;
 }) {
   const table = useReactTable({ data, columns, getCoreRowModel: getCoreRowModel() });
   const parentRef = useRef<HTMLDivElement | null>(null);
   const rows = table.getRowModel().rows;
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: () => estimateSize, overscan: 12 });
-  const gridStyle = { "--table-columns": columnTemplate, "--table-min-width": `${minWidth}px` } as CSSProperties & Record<string, string>;
+  const gridStyle = { "--table-columns": columnTemplate } as CSSProperties & Record<string, string>;
   return (
     <div className="table-shell" style={gridStyle}>
       <div className="table-scroll" ref={parentRef}>
@@ -1336,6 +1392,85 @@ function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<st
   );
 }
 
+function RunListCard({
+  run,
+  resourceById,
+  markCount,
+  bookmarked,
+  selected,
+  trash,
+  onOpen,
+  onSelect,
+  onToggleBookmark,
+  onArchive,
+  onRestore,
+  onDelete
+}: {
+  run: Run;
+  resourceById: Map<string, Resource>;
+  markCount: number;
+  bookmarked: boolean;
+  selected: boolean;
+  trash: boolean;
+  onOpen: () => void;
+  onSelect: (checked: boolean) => void;
+  onToggleBookmark: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+}) {
+  const compareEligible = isCompareEligible(run) && !trash;
+  return (
+    <article className="run-list-card">
+      <div className="run-list-card-head">
+        <button className="run-title-cell" onClick={onOpen}>
+          <strong>{runTitle(run)}</strong>
+          <span className="mono muted">{run.id}</span>
+        </button>
+        <Pill tone={statusTone(run.status)}>{run.status}</Pill>
+      </div>
+      <div className="run-list-facts">
+        <span>{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
+        <span>{run.kind || "formal"}</span>
+        <span>GPU {runGPU(run.gpu_index)}</span>
+        <span>{fmtShortTime(run.created_at)}</span>
+      </div>
+      <span className="command-snippet">{run.command}</span>
+      <div className="run-list-actions">
+        {compareEligible ? (
+          <label className="run-compare-toggle">
+            <input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} />
+            compare
+          </label>
+        ) : null}
+        <button className="icon-action primary-action" title="Open" onClick={onOpen}>
+          <ExternalLink size={14} />
+        </button>
+        {!trash ? (
+          <>
+            <button className="icon-action" title="Favorite" onClick={onToggleBookmark}>
+              <Heart size={15} fill={bookmarked ? "currentColor" : "none"} />
+            </button>
+            <button className="icon-action" title="Archive" disabled={isActiveRun(run)} onClick={onArchive}>
+              <Archive size={15} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="icon-action" title="Restore" onClick={onRestore}>
+              <RefreshCcw size={15} />
+            </button>
+            <button className="icon-action danger-inline" title="Delete" onClick={onDelete}>
+              <Trash2 size={15} />
+            </button>
+          </>
+        )}
+        {markCount ? <span className="mark-badge">{markCount}</span> : null}
+      </div>
+    </article>
+  );
+}
+
 function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
   const body = mark.reason || mark.evidence || "";
   return (
@@ -1404,6 +1539,17 @@ function formatMetric(value: number) {
   if (abs >= 1000 || abs < 0.001) return value.toExponential(3);
   if (abs >= 10) return value.toFixed(3);
   return value.toPrecision(4);
+}
+
+function formatExitCode(value: unknown) {
+  if (value == null) return "-";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "object") {
+    const obj = value as { Int64?: number; Valid?: boolean };
+    if (obj.Valid === false) return "-";
+    if (typeof obj.Int64 === "number") return String(obj.Int64);
+  }
+  return text(value) || "-";
 }
 
 function groupMetricFamilies(points: MetricPoint[]) {
