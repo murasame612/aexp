@@ -92,9 +92,7 @@ import { EvidenceChainBoard } from "./EvidenceChainBoard";
 type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
 
 const pageSize = 100;
-const runColumn = createColumnHelper<Run>();
 const execColumn = createColumnHelper<ExecEvent>();
-const runTableColumns = "32px minmax(200px, 1.45fr) minmax(96px, 0.6fr) minmax(108px, 0.75fr) minmax(170px, 1fr) minmax(92px, 0.55fr)";
 const execTableColumns = "96px minmax(100px, 0.7fr) 78px minmax(200px, 1fr) 86px";
 
 export function App() {
@@ -608,7 +606,6 @@ function RunsTab(props: {
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
   const bookmarkIds = useMemo(() => new Set(props.bookmarks.map((b) => b.run_id)), [props.bookmarks]);
   const selectedCount = props.runs.filter((run) => selectedRunIds.has(run.id)).length;
-  const columns = useRunColumns(props.t, props.resourceById, bookmarkIds, props.marks, props.trash, props.onOpenRun, props.onArchive, props.onRestore, props.onDelete, props.onToggleBookmark, toggleSelectedRun, selectedRunIds);
   return (
     <div className="stack">
       <div className="toolbar dense">
@@ -629,10 +626,7 @@ function RunsTab(props: {
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
-      <div className="run-table-desktop">
-        <VirtualTable columns={columns} data={props.runs} estimateSize={82} columnTemplate={runTableColumns} />
-      </div>
-      <div className="run-list-mobile">
+      <div className="run-list">
         {props.runs.length ? (
           props.runs.map((run) => (
             <RunListCard
@@ -658,104 +652,6 @@ function RunsTab(props: {
       </div>
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
-  );
-}
-
-function useRunColumns(
-  t: T,
-  resourceById: Map<string, Resource>,
-  bookmarkIds: Set<string>,
-  marks: Map<string, number>,
-  trash: boolean,
-  onOpenRun: (id: string) => void,
-  onArchive: (run: Run) => void,
-  onRestore: (run: Run) => Promise<void>,
-  onDelete: (run: Run) => void,
-  onToggleBookmark: (run: Run, bookmarked: boolean) => Promise<void>,
-  toggleSelectedRun: (run: Run, checked: boolean) => void,
-  selectedRunIds: Set<string>
-) {
-  return useMemo<ColumnDef<Run, any>[]>(
-    () => [
-      runColumn.display({
-        id: "compare",
-        header: "",
-        cell: (info) =>
-          !trash && isCompareEligible(info.row.original) ? (
-            <input type="checkbox" checked={selectedRunIds.has(info.row.original.id)} onChange={(event) => toggleSelectedRun(info.row.original, event.target.checked)} onClick={(event) => event.stopPropagation()} />
-          ) : null
-      }),
-      runColumn.accessor("name", {
-        header: t("run"),
-        cell: (info) => (
-          <button className="run-title-cell" onClick={() => onOpenRun(info.row.original.id)}>
-            <strong>{info.getValue() || info.row.original.id}</strong>
-            <span className="mono muted">{info.row.original.id}</span>
-            <span className="run-subline">{info.row.original.kind || "formal"} · {fmtShortTime(info.row.original.created_at)}</span>
-          </button>
-        )
-      }),
-      runColumn.accessor("status", {
-        header: t("status"),
-        cell: (info) => (
-          <div className="run-state-cell">
-            <Pill tone={statusTone(info.getValue())}>{info.getValue()}</Pill>
-            <span className="mono muted">{fmtShortTime(info.row.original.created_at)}</span>
-          </div>
-        )
-      }),
-      runColumn.accessor("resource_id", {
-        header: t("resource"),
-        cell: (info) => (
-          <div className="run-meta-cell">
-            <strong>{resourceById.get(info.getValue())?.name || info.getValue()}</strong>
-            <span>GPU {runGPU(info.row.original.gpu_index)} · {info.row.original.project_env || info.row.original.conda_env || "-"}</span>
-          </div>
-        )
-      }),
-      runColumn.accessor("command", {
-        header: t("command"),
-        cell: (info) => (
-          <span className="command-snippet">{info.getValue()}</span>
-        )
-      }),
-      runColumn.display({
-        id: "actions",
-        header: t("actions"),
-        cell: (info) => {
-          const run = info.row.original;
-          const bookmarked = bookmarkIds.has(run.id);
-          return (
-            <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-              <button className="icon-action primary-action" title={t("open")} onClick={() => onOpenRun(run.id)}>
-                <ExternalLink size={14} />
-              </button>
-              {!trash ? (
-                <>
-                  <button className="icon-action" title={bookmarked ? t("favorites") : t("favorites")} onClick={() => void onToggleBookmark(run, bookmarked)}>
-                    <Heart size={15} fill={bookmarked ? "currentColor" : "none"} />
-                  </button>
-                  <button className="icon-action" title={t("archive")} disabled={isActiveRun(run)} onClick={() => onArchive(run)}>
-                    <Archive size={15} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button className="icon-action" title={t("restore")} onClick={() => void onRestore(run)}>
-                    <RefreshCcw size={15} />
-                  </button>
-                  <button className="icon-action danger-inline" title={t("delete")} onClick={() => onDelete(run)}>
-                    <Trash2 size={15} />
-                  </button>
-                </>
-              )}
-              {marks.get(run.id) ? <span className="mark-badge">{marks.get(run.id)}</span> : null}
-            </div>
-          );
-        }
-      })
-    ],
-    [bookmarkIds, marks, onArchive, onDelete, onOpenRun, onRestore, onToggleBookmark, resourceById, selectedRunIds, t, toggleSelectedRun, trash]
   );
 }
 
