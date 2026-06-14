@@ -81,6 +81,17 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
   const [chainMetaComposing, setChainMetaComposing] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<EvidenceFlowNode>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<EvidenceFlowEdge>([]);
+  const boardLabels = useMemo(
+    () => ({
+      titlePlaceholder: t("titlePlaceholder"),
+      nodeBodyPlaceholder: t("nodeBodyPlaceholder"),
+      openRun: t("openRun"),
+      relationLabel: t("relationLabel"),
+      rationale: t("rationale"),
+      done: t("done")
+    }),
+    [t]
+  );
 
   const chains = useQuery({ queryKey: ["evidence-chains", token, chainQuery], queryFn: () => getEvidenceChains(token, chainQuery), refetchInterval: 15000 });
   const detail = useQuery({ queryKey: ["evidence-chain", token, selectedChainId], queryFn: () => getEvidenceChain(token, selectedChainId), enabled: !!selectedChainId });
@@ -142,8 +153,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
     setNodes((current) => current.map((node) => ({ ...node, selected: false })));
   }, [setEdges, setNodes]);
-  const withNodeHandlers = useCallback((node: EvidenceFlowNode): EvidenceFlowNode => ({ ...node, data: { ...node.data, onOpenRun, onUpdateNode: updateNodeData } }), [onOpenRun, updateNodeData]);
-  const withEdgeHandlers = useCallback((edge: EvidenceFlowEdge): EvidenceFlowEdge => ({ ...edge, type: "evidence", data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData } }), [selectEdge, updateEdgeData]);
+  const withNodeHandlers = useCallback((node: EvidenceFlowNode): EvidenceFlowNode => ({ ...node, data: { ...node.data, labels: boardLabels, onOpenRun, onUpdateNode: updateNodeData } }), [boardLabels, onOpenRun, updateNodeData]);
+  const withEdgeHandlers = useCallback((edge: EvidenceFlowEdge): EvidenceFlowEdge => ({ ...edge, type: "evidence", data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, labels: boardLabels, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData } }), [boardLabels, selectEdge, updateEdgeData]);
+
+  useEffect(() => {
+    setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, labels: boardLabels } })));
+    setEdges((current) => current.map((edge) => ({ ...edge, data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, labels: boardLabels } })));
+  }, [boardLabels, setEdges, setNodes]);
 
   useEffect(() => {
     if (!detail.data) return;
@@ -158,7 +174,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
   }, [detail.data, setEdges, setNodes, withEdgeHandlers, withNodeHandlers]);
 
   const createChain = useMutation({
-    mutationFn: () => createEvidenceChain(token, { title: "New Evidence Chain", description: "" }),
+    mutationFn: () => createEvidenceChain(token, { title: t("newEvidenceChain"), description: "" }),
     onSuccess: async (chain) => {
       await queryClient.invalidateQueries({ queryKey: ["evidence-chains"] });
       setSelectedChainId(chain.id);
@@ -237,7 +253,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
   }, [chainDescriptionDraft, chainMetaComposing, chainTitleDraft, detail.data, renameChain]);
 
   const filteredCandidates = useMemo(() => (candidates.data || []).filter((candidate) => candidateMatches(candidate, candidateQuery)), [candidates.data, candidateQuery]);
-  const candidateGroups = useMemo(() => groupRunCandidatesByProject(filteredCandidates), [filteredCandidates]);
+  const candidateGroups = useMemo(() => groupRunCandidatesByProject(filteredCandidates, { unassignedRuns: t("unassignedRuns"), runsWithoutProjectCards: t("runsWithoutProjectCards") }), [filteredCandidates, t]);
   const activeCandidateGroup = useMemo(() => candidateGroups.find((group) => group.key === selectedCandidateGroup) || candidateGroups[0], [candidateGroups, selectedCandidateGroup]);
 
   useEffect(() => {
@@ -334,14 +350,14 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
         <div className="evidence-toolbar">
           <div className="evidence-toolbar-left">
             {!leftOpen ? (
-              <button className="icon-button" title="Show boards" onClick={() => setLeftOpen(true)}>
+              <button className="icon-button" title={t("showBoards")} onClick={() => setLeftOpen(true)}>
                 <ChevronRight size={16} />
               </button>
             ) : null}
             <div className="evidence-title-edit">
               <input
                 value={chainTitleDraft}
-                placeholder="Evidence Chain title"
+                placeholder={t("evidenceChainTitlePlaceholder")}
                 onChange={(event) => setChainTitleDraft(event.target.value)}
                 onCompositionStart={() => setChainMetaComposing(true)}
                 onCompositionEnd={(event) => {
@@ -349,14 +365,14 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
                   setChainTitleDraft(event.currentTarget.value);
                 }}
               />
-              <span className={`save-state ${saveState}`}>{saveState === "saving" ? "Saving" : saveState === "failed" ? "Save failed" : dirty ? "Unsaved" : "Saved"}</span>
+              <span className={`save-state ${saveState}`}>{saveState === "saving" ? t("saving") : saveState === "failed" ? t("saveFailed") : dirty ? t("unsaved") : t("saved")}</span>
             </div>
           </div>
           <div className="evidence-node-tools">
             <div className="evidence-node-menu-wrap">
               <button disabled={!selectedChainId} onClick={() => setNodeMenuOpen((open) => !open)}>
                 <Plus size={14} />
-                Node
+                {t("node")}
               </button>
               {nodeMenuOpen ? (
                 <div className="evidence-node-menu">
@@ -370,21 +386,21 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
             </div>
             <button disabled={!selectedChainId} className={runTrayOpen ? "active-soft" : ""} onClick={() => setRunTrayOpen((open) => !open)}>
               <ListPlus size={14} />
-              Runs
+              {t("runsPanel")}
             </button>
             <button disabled={!dirty && saveState !== "failed"} onClick={() => void saveNow()}>
               <Save size={14} />
-              Save
+              {t("save")}
             </button>
             {selected ? (
-              <button disabled={!selectedChainId} className="danger-inline" title="Delete selected node or edge" onClick={deleteSelection}>
+              <button disabled={!selectedChainId} className="danger-inline" title={t("deleteElementTitle")} onClick={deleteSelection}>
                 <Trash2 size={14} />
-                Element
+                {t("element")}
               </button>
             ) : null}
-            <button disabled={!selectedChainId} className="danger-inline" title="Delete this Evidence Chain" onClick={() => selectedChainId && window.confirm("Delete this Evidence Chain?") && removeChain.mutate(selectedChainId)}>
+            <button disabled={!selectedChainId} className="danger-inline" title={t("deleteBoardTitle")} onClick={() => selectedChainId && window.confirm(t("deleteBoardConfirm")) && removeChain.mutate(selectedChainId)}>
               <Trash2 size={14} />
-              Board
+              {t("board")}
             </button>
           </div>
         </div>
@@ -412,20 +428,20 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
 
       <aside className="evidence-sidebar">
         {!leftOpen ? (
-          <button className="evidence-rail-button" title="Show boards" onClick={() => setLeftOpen(true)}>
+          <button className="evidence-rail-button" title={t("showBoards")} onClick={() => setLeftOpen(true)}>
             <ChevronRight size={17} />
           </button>
         ) : null}
         <div className="evidence-sidebar-head">
           <div>
-            <h2>Evidence Chain</h2>
-            <span>{chains.data?.length || 0} boards</span>
+            <h2>{t("evidenceChains")}</h2>
+            <span>{chains.data?.length || 0} {t("boardCount")}</span>
           </div>
           <div className="evidence-head-actions">
-            <button className="icon-button" title="Hide boards" onClick={() => setLeftOpen(false)}>
+            <button className="icon-button" title={t("hideBoards")} onClick={() => setLeftOpen(false)}>
               <ChevronLeft size={16} />
             </button>
-            <button className="icon-button" title="New chain" onClick={() => createChain.mutate()}>
+            <button className="icon-button" title={t("newChain")} onClick={() => createChain.mutate()}>
               <Plus size={16} />
             </button>
           </div>
@@ -449,17 +465,17 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
         <section className="evidence-run-drawer">
           <div className="section-head">
             <div>
-              <h2>Run candidates</h2>
-              <span className="muted">{candidateGroups.length} projects</span>
+              <h2>{t("runCandidates")}</h2>
+              <span className="muted">{candidateGroups.length} {t("projectCount")}</span>
             </div>
-            <button className="icon-button" title="Hide runs" onClick={() => setRunTrayOpen(false)}>
+            <button className="icon-button" title={t("hideRuns")} onClick={() => setRunTrayOpen(false)}>
               <ChevronLeft size={15} />
             </button>
           </div>
           <div className="candidate-actions">
             <label className="evidence-search">
               <Search size={15} />
-              <input value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} placeholder="Search runs" />
+              <input value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} placeholder={t("searchRuns")} />
             </label>
             <button className="icon-button" title={t("refresh")} onClick={() => void candidates.refetch()}>
               <RefreshCcw size={15} />
@@ -563,7 +579,7 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
         onChange={(event) => updateDraft("title", event.target.value)}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={(event) => finishComposition("title", event.currentTarget.value)}
-        placeholder="Title"
+        placeholder={data.labels?.titlePlaceholder || "标题"}
       />
       <textarea
         className="evidence-node-body nodrag nopan"
@@ -571,12 +587,12 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
         onChange={(event) => updateDraft("body", event.target.value)}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={(event) => finishComposition("body", event.currentTarget.value)}
-        placeholder="Write the claim, plan, result, or note..."
+        placeholder={data.labels?.nodeBodyPlaceholder || "写下假说、计划、结果或笔记..."}
       />
       {data.keyMetrics ? <em>{data.keyMetrics}</em> : null}
       {data.type === "run" && data.runId ? (
         <button className="nodrag action-button" onClick={() => data.onOpenRun?.(data.runId!)}>
-          Open run
+          {data.labels?.openRun || "打开实验"}
         </button>
       ) : null}
       <Handle type="source" position={Position.Right} />
@@ -643,17 +659,17 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !composingRef.current && !event.nativeEvent.isComposing) finishEditing();
                 }}
-                placeholder="Relation label"
+                placeholder={data?.labels?.relationLabel || "关系文字"}
               />
               <textarea
                 value={draft.rationale}
                 onChange={(event) => updateDraft("rationale", event.target.value)}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={(event) => finishComposition("rationale", event.currentTarget.value)}
-                placeholder="Rationale"
+                placeholder={data?.labels?.rationale || "理由"}
               />
               <button type="button" className="edge-done-button" onClick={finishEditing}>
-                Done
+                {data?.labels?.done || "完成"}
               </button>
             </div>
           ) : (

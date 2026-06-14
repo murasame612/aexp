@@ -17,6 +17,7 @@ export interface EvidenceNodeData extends Record<string, unknown> {
   evidenceLevel?: string;
   onOpenRun?: (runId: string) => void;
   onUpdateNode?: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
+  labels?: EvidenceBoardLabels;
 }
 
 export interface EvidenceEdgeData extends Record<string, unknown> {
@@ -24,10 +25,20 @@ export interface EvidenceEdgeData extends Record<string, unknown> {
   rationale: string;
   onSelectEdge?: (edgeId: string) => void;
   onUpdateEdge?: (edgeId: string, patch: { type?: EvidenceEdgeType; label?: string; rationale?: string }) => void;
+  labels?: EvidenceBoardLabels;
 }
 
 export type EvidenceFlowNode = Node<EvidenceNodeData, "evidence">;
 export type EvidenceFlowEdge = Edge<EvidenceEdgeData>;
+
+export interface EvidenceBoardLabels {
+  titlePlaceholder: string;
+  nodeBodyPlaceholder: string;
+  openRun: string;
+  relationLabel: string;
+  rationale: string;
+  done: string;
+}
 
 export function edgeTypeLabel(type: EvidenceEdgeType) {
   switch (type) {
@@ -93,13 +104,13 @@ export interface EvidenceCandidateGroup {
   candidates: EvidenceChainRunCandidate[];
 }
 
-export function groupRunCandidatesByProject(candidates: EvidenceChainRunCandidate[]) {
+export function groupRunCandidatesByProject(candidates: EvidenceChainRunCandidate[], labels = { unassignedRuns: "Unassigned runs", runsWithoutProjectCards: "Runs without project cards" }) {
   const groups = new Map<string, EvidenceCandidateGroup>();
   for (const candidate of candidates) {
     const projectID = candidate.project_id?.trim();
     const key = projectID ? `project:${projectID}` : "unassigned";
-    const title = projectID ? candidate.project_name || projectID : "Unassigned runs";
-    const subtitle = projectID || "Runs without project cards";
+    const title = projectID ? candidate.project_name || projectID : labels.unassignedRuns;
+    const subtitle = projectID || labels.runsWithoutProjectCards;
     const existing = groups.get(key);
     if (existing) {
       existing.candidates.push(candidate);

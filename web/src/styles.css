@@ -628,6 +628,25 @@ select {
   gap: 18px;
 }
 
+.dashboard-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.dashboard-findings-section {
+  min-width: 0;
+}
+
+.dashboard-findings {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.dashboard-findings .finding {
+  min-height: 176px;
+}
+
 .compact-list {
   display: grid;
   gap: 8px;
@@ -2296,6 +2315,7 @@ select {
 
   .topbar,
   .split,
+  .dashboard-lower,
   .detail-grid,
   .project-row,
   .event-layout,

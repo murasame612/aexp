@@ -491,9 +491,17 @@ function Dashboard({
       <Section title={t("activeRuns")}>
         <div className="run-card-grid">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
       </Section>
-      <div className="split">
-        <Section title={t("agentFindings")}>
-          <div className="compact-list">{marks.slice(0, 2).map((mark) => <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />)}</div>
+      <div className="dashboard-lower">
+        <Section title={t("agentFindings")} className="dashboard-findings-section">
+          {marks.length ? (
+            <div className="finding-list dashboard-findings">
+              {marks.slice(0, 4).map((mark) => (
+                <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />
+              ))}
+            </div>
+          ) : (
+            <Empty t={t} />
+          )}
         </Section>
         <Section title={t("recentExec")}>
           <div className="compact-list">{execs.slice(0, 3).map((event) => <ExecCompact key={event.id} event={event} resourceById={resourceById} />)}</div>
@@ -641,6 +649,7 @@ function RunsTab(props: {
               onArchive={() => props.onArchive(run)}
               onRestore={() => void props.onRestore(run)}
               onDelete={() => props.onDelete(run)}
+              t={props.t}
             />
           ))
         ) : (
@@ -677,7 +686,7 @@ function useRunColumns(
           ) : null
       }),
       runColumn.accessor("name", {
-        header: "Run",
+        header: t("run"),
         cell: (info) => (
           <button className="run-title-cell" onClick={() => onOpenRun(info.row.original.id)}>
             <strong>{info.getValue() || info.row.original.id}</strong>
@@ -760,7 +769,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
         {projects.length ? (
           projects.map((project) => (
             <section className="project-row" key={project.project_id}>
-              <ProjectSummary project={project} />
+              <ProjectSummary project={project} t={t} />
               <div className="project-evidence">
                 {(project.cards || []).slice(0, 4).map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} />)}
                 {(project.cards || []).length > 4 ? (
@@ -769,7 +778,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
                     <span>{t("projectMore")}</span>
                   </div>
                 ) : null}
-                {!project.cards?.length ? <div className="project-empty muted">No promoted cards yet</div> : null}
+                {!project.cards?.length ? <div className="project-empty muted">{t("noPromotedCards")}</div> : null}
               </div>
             </section>
           ))
@@ -781,14 +790,14 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
   );
 }
 
-function ProjectSummary({ project }: { project: ProjectView }) {
+function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
   const cards = project.cards || [];
   const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
   const counts = [
-    { label: "cards", value: project.total_cards ?? cards.length, tone: "neutral" as const },
-    { label: "important", value: project.important_runs || 0, tone: "accent" as const },
-    { label: "formal", value: project.formal_runs || 0, tone: "good" as const },
-    { label: "running", value: project.running_runs || 0, tone: "warn" as const }
+    { label: t("projectCards"), value: project.total_cards ?? cards.length, tone: "neutral" as const },
+    { label: t("important"), value: project.important_runs || 0, tone: "accent" as const },
+    { label: t("formal"), value: project.formal_runs || 0, tone: "good" as const },
+    { label: t("running"), value: project.running_runs || 0, tone: "warn" as const }
   ];
   return (
     <div className="project-summary">
@@ -808,9 +817,9 @@ function ProjectSummary({ project }: { project: ProjectView }) {
         ))}
       </div>
       <div className="project-latest">
-        <span className="panel-kicker">Latest signal</span>
-        <strong>{latest?.verdict || latest?.question || "No evidence card yet"}</strong>
-        <p>{latest?.key_metrics || latest?.next_action || latest?.run?.command || "Create project cards from runs to make this project readable here."}</p>
+        <span className="panel-kicker">{t("latestSignal")}</span>
+        <strong>{latest?.verdict || latest?.question || t("noEvidenceCard")}</strong>
+        <p>{latest?.key_metrics || latest?.next_action || latest?.run?.command || t("projectCardPrompt")}</p>
       </div>
     </div>
   );
@@ -821,7 +830,7 @@ function ProjectEvidenceCard({ card, onOpenRun }: { card: ProjectRunCard; onOpen
   const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
   const runMeta = [card.run?.status, card.run?.kind, card.run_id].filter(Boolean).join(" · ");
   return (
-    <button key={card.id} className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
+    <button className="project-card" onClick={() => card.run_id && onOpenRun(card.run_id)}>
       <div className="project-card-main">
         <strong>{title}</strong>
         <span>{body}</span>
@@ -974,7 +983,7 @@ function RunDetail({
             <Info label="env" value={run.data.resolved_env || run.data.conda_env || "-"} />
             <Info label="tmux" value={run.data.tmux_session || "-"} />
             <Info label="run dir" value={run.data.remote_run_dir || "-"} />
-            <Section title="Artifacts">
+            <Section title={t("artifacts")}>
               <pre className="mini-pre">{JSON.stringify(artifacts.data || [], null, 2)}</pre>
             </Section>
           </aside>
@@ -999,7 +1008,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
       </div>
       <div className="event-layout">
         <div className="event-panel progress-panel">
-          <span className="panel-kicker">Progress</span>
+          <span className="panel-kicker">{t("progress")}</span>
           {progress.length ? progress.map((row, index) => (
             <div className="progress-row" key={`${row.name}-${index}`}>
               <div>
@@ -1008,22 +1017,22 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
               </div>
               {row.percent != null ? <Meter value={row.percent} /> : <span className="progress-value mono">{formatMetric(row.current)}</span>}
             </div>
-          )) : <span className="muted">No progress events</span>}
+          )) : <span className="muted">{t("noProgressEvents")}</span>}
         </div>
         <div className="event-panel metric-panel">
-          <span className="panel-kicker">Latest metrics</span>
+          <span className="panel-kicker">{t("latestMetrics")}</span>
           <div className="metric-list">
             {latest.length ? latest.map((metric, index) => (
-              <div className="metric-row" key={`${metric.series || "default"}-${metric.name}-${index}`}>
+              <div className="metric-row" key={`${metric.series || t("defaultSeries")}-${metric.name}-${index}`}>
                 <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
                 <strong>{formatMetric(metric.value)}</strong>
               </div>
-            )) : <span className="muted">No metrics yet</span>}
+            )) : <span className="muted">{t("noMetricsYet")}</span>}
           </div>
         </div>
         {(parsed.errors.length || notes.length) ? (
           <div className="event-panel event-notes">
-            <span className="panel-kicker">{parsed.errors.length ? "Errors" : "Notes"}</span>
+            <span className="panel-kicker">{parsed.errors.length ? t("errors") : t("notes")}</span>
             {parsed.errors.slice(0, 3).map((error, index) => <p key={`error-${index}`}>{error}</p>)}
             {notes.map((note, index) => <p key={`note-${index}`}>{text(note.text || note.message || note.name || "")}</p>)}
           </div>
@@ -1034,18 +1043,18 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
           <article className="metric-family" key={family.name}>
             <div className="metric-family-head">
               <strong>{family.name}</strong>
-              <span>{family.count} points</span>
+              <span>{family.count} {t("points")}</span>
             </div>
             <div className="metric-family-values">
               {family.series.map((row, index) => (
-                <div key={`${row.series || "default"}-${index}`}>
-                  <span>{row.series || "default"}</span>
+                <div key={`${row.series || t("defaultSeries")}-${index}`}>
+                  <span>{row.series || t("defaultSeries")}</span>
                   <strong>{formatMetric(row.value)}</strong>
                 </div>
               ))}
             </div>
           </article>
-        )) : <span className="muted">No metric families yet</span>}
+        )) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
       </div>
     </section>
   );
@@ -1404,7 +1413,8 @@ function RunListCard({
   onToggleBookmark,
   onArchive,
   onRestore,
-  onDelete
+  onDelete,
+  t
 }: {
   run: Run;
   resourceById: Map<string, Resource>;
@@ -1418,6 +1428,7 @@ function RunListCard({
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
+  t: T;
 }) {
   const compareEligible = isCompareEligible(run) && !trash;
   return (
@@ -1440,27 +1451,27 @@ function RunListCard({
         {compareEligible ? (
           <label className="run-compare-toggle">
             <input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} />
-            compare
+            {t("compare")}
           </label>
         ) : null}
-        <button className="icon-action primary-action" title="Open" onClick={onOpen}>
+        <button className="icon-action primary-action" title={t("open")} onClick={onOpen}>
           <ExternalLink size={14} />
         </button>
         {!trash ? (
           <>
-            <button className="icon-action" title="Favorite" onClick={onToggleBookmark}>
+            <button className="icon-action" title={t("favorites")} onClick={onToggleBookmark}>
               <Heart size={15} fill={bookmarked ? "currentColor" : "none"} />
             </button>
-            <button className="icon-action" title="Archive" disabled={isActiveRun(run)} onClick={onArchive}>
+            <button className="icon-action" title={t("archive")} disabled={isActiveRun(run)} onClick={onArchive}>
               <Archive size={15} />
             </button>
           </>
         ) : (
           <>
-            <button className="icon-action" title="Restore" onClick={onRestore}>
+            <button className="icon-action" title={t("restore")} onClick={onRestore}>
               <RefreshCcw size={15} />
             </button>
-            <button className="icon-action danger-inline" title="Delete" onClick={onDelete}>
+            <button className="icon-action danger-inline" title={t("delete")} onClick={onDelete}>
               <Trash2 size={15} />
             </button>
           </>
