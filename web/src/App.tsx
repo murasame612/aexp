@@ -97,6 +97,13 @@ interface RunProjectMeta {
   evidenceLevel?: string;
 }
 
+interface RunDisplayGroup {
+  id: string;
+  name: string;
+  runs: Run[];
+  evidenceCount: number;
+}
+
 const pageSize = 100;
 
 export function App() {
@@ -632,6 +639,27 @@ function RunsTab(props: {
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
   const bookmarkIds = useMemo(() => new Set(props.bookmarks.map((b) => b.run_id)), [props.bookmarks]);
   const selectedCount = props.runs.filter((run) => selectedRunIds.has(run.id)).length;
+  const runGroups = useMemo(() => groupRunsByProject(props.runs, props.runProjectById, props.t), [props.runs, props.runProjectById, props.t]);
+  const showProjectGroups = !props.project && runGroups.length > 1;
+  const renderRun = (run: Run) => (
+    <RunListCard
+      key={run.id}
+      run={run}
+      resourceById={props.resourceById}
+      projectMeta={props.runProjectById.get(run.id)}
+      markCount={props.marks.get(run.id) || 0}
+      bookmarked={bookmarkIds.has(run.id)}
+      selected={selectedRunIds.has(run.id)}
+      trash={props.trash}
+      onOpen={() => props.onOpenRun(run.id)}
+      onSelect={(checked) => toggleSelectedRun(run, checked)}
+      onToggleBookmark={() => void props.onToggleBookmark(run, bookmarkIds.has(run.id))}
+      onArchive={() => props.onArchive(run)}
+      onRestore={() => void props.onRestore(run)}
+      onDelete={() => props.onDelete(run)}
+      t={props.t}
+    />
+  );
   return (
     <div className="stack">
       <div className="toolbar dense">
@@ -653,31 +681,33 @@ function RunsTab(props: {
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
-      <div className="run-list">
-        {props.runs.length ? (
-          props.runs.map((run) => (
-            <RunListCard
-              key={run.id}
-              run={run}
-              resourceById={props.resourceById}
-              projectMeta={props.runProjectById.get(run.id)}
-              markCount={props.marks.get(run.id) || 0}
-              bookmarked={bookmarkIds.has(run.id)}
-              selected={selectedRunIds.has(run.id)}
-              trash={props.trash}
-              onOpen={() => props.onOpenRun(run.id)}
-              onSelect={(checked) => toggleSelectedRun(run, checked)}
-              onToggleBookmark={() => void props.onToggleBookmark(run, bookmarkIds.has(run.id))}
-              onArchive={() => props.onArchive(run)}
-              onRestore={() => void props.onRestore(run)}
-              onDelete={() => props.onDelete(run)}
-              t={props.t}
-            />
-          ))
+      {props.runs.length ? (
+        showProjectGroups ? (
+          <div className="run-group-list">
+            {runGroups.map((group) => (
+              <section className="run-project-group" key={group.id}>
+                <div className="run-project-group-head">
+                  <div>
+                    <span className="panel-kicker">{group.id === "__without_project_cards__" ? props.t("runsWithoutProjectCards") : props.t("projectCards")}</span>
+                    <strong>{group.name}</strong>
+                  </div>
+                  <div className="run-project-group-stats">
+                    <span>{group.runs.length} {props.t("shownRuns")}</span>
+                    {group.evidenceCount ? <span>{group.evidenceCount} {props.t("evidenceLinked")}</span> : null}
+                  </div>
+                </div>
+                <div className="run-list">{group.runs.map(renderRun)}</div>
+              </section>
+            ))}
+          </div>
         ) : (
+          <div className="run-list">{props.runs.map(renderRun)}</div>
+        )
+      ) : (
+        <div className="run-list">
           <Empty t={props.t} />
-        )}
-      </div>
+        </div>
+      )}
       <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
     </div>
   );
@@ -1774,6 +1804,27 @@ function buildRunProjectIndex(projects: ProjectView[], t: T) {
     }
   }
   return out;
+}
+
+function groupRunsByProject(runs: Run[], runProjectById: Map<string, RunProjectMeta>, t: T) {
+  const groups = new Map<string, RunDisplayGroup>();
+  for (const run of runs) {
+    const meta = runProjectById.get(run.id);
+    const id = meta?.projectId || "__without_project_cards__";
+    const existing = groups.get(id);
+    if (existing) {
+      existing.runs.push(run);
+      if (meta) existing.evidenceCount += 1;
+      continue;
+    }
+    groups.set(id, {
+      id,
+      name: meta?.projectName || t("runsWithoutProjectCards"),
+      runs: [run],
+      evidenceCount: meta ? 1 : 0
+    });
+  }
+  return Array.from(groups.values());
 }
 
 function readDeepLinkRun() {

@@ -143,6 +143,8 @@ const dict = {
     done: "Done",
     unassignedRuns: "Unassigned runs",
     runsWithoutProjectCards: "Runs without project cards",
+    shownRuns: "shown runs",
+    evidenceLinked: "evidence-linked",
     marks: "marks",
     relatedRuns: "related"
   },
@@ -288,6 +290,8 @@ const dict = {
     done: "完成",
     unassignedRuns: "未归类实验",
     runsWithoutProjectCards: "没有 project card 的实验",
+    shownRuns: "当前页实验",
+    evidenceLinked: "已关联证据",
     marks: "标记",
     relatedRuns: "相关实验"
   }
