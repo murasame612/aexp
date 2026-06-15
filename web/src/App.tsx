@@ -746,20 +746,20 @@ function ProjectEvidenceCard({ card, onOpenRun, t }: { card: ProjectRunCard; onO
   const cardClassName = card.should_promote ? "project-card prominent" : "project-card";
   return (
     <button className={cardClassName} onClick={() => card.run_id && onOpenRun(card.run_id)}>
-      <div className="project-card-level">
-        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-        <Pill tone={statusTone(status)}>{status}</Pill>
-      </div>
       <div className="project-card-main">
         <span className="project-card-run">{card.run?.name || card.run_id}</span>
         <strong>{title}</strong>
-        <span className="project-card-body">{body}</span>
+      </div>
+      <div className="project-card-level">
+        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
+        <Pill tone={statusTone(status)}>{status}</Pill>
       </div>
       {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
       <div className="project-card-meta">
         <span className="mono">{card.run_id}</span>
         {meta.map((item) => <span key={item}>{item}</span>)}
       </div>
+      <span className="project-card-body">{body}</span>
       <div className="project-card-foot">
         <span>{evidenceTags.join(" · ") || card.next_action || "-"}</span>
       </div>
