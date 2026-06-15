@@ -1368,14 +1368,14 @@ select {
 
 .run-list-card {
   display: grid;
-  grid-template-columns: minmax(260px, 0.78fr) minmax(0, 1fr) minmax(146px, auto);
+  grid-template-columns: minmax(240px, 0.66fr) minmax(0, 1fr) auto;
   grid-template-areas:
-    "head command actions"
-    "facts command actions";
+    "head head actions"
+    "facts command command";
   align-items: start;
   gap: 7px 14px;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 11px 12px;
   border-top: 1px solid #edf1f4;
   background: transparent;
   box-shadow: none;
@@ -1400,6 +1400,7 @@ select {
 
 .run-list-card-head {
   grid-area: head;
+  align-items: center;
 }
 
 .run-list-card-head .run-title-cell {
@@ -1434,7 +1435,7 @@ select {
   border-radius: 10px;
   background: #f6f8fa;
   padding: 7px 8px;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
 }
 
 .run-list-actions {
@@ -2957,9 +2958,9 @@ select {
   .run-list-card {
     grid-template-columns: minmax(220px, 0.68fr) minmax(0, 1fr);
     grid-template-areas:
-      "head command"
-      "facts command"
-      "actions actions";
+      "head actions"
+      "facts facts"
+      "command command";
   }
 }
 
