@@ -41,7 +41,9 @@ describe("event parsing", () => {
       { name: "loss", value: 92, step: 1, series: "raw", unit: "%" },
       { name: "loss", value: 95, step: 2, series: "raw", unit: "%" },
       { name: "latency_ms", value: 1200 },
-      { name: "latency_ms", value: 900 }
+      { name: "latency_ms", value: 900 },
+      { name: "train/loss", value: 0.012 },
+      { name: "train/loss", value: 0.008 }
     ]);
     const loss = families.find((family) => family.name === "loss" && family.unit === "mse");
     expect(loss).toMatchObject({
@@ -71,7 +73,10 @@ describe("event parsing", () => {
     expect(percentLoss).toMatchObject({ count: 2, min: 92, max: 95, delta: 3, scaleKey: "%" });
 
     const latency = families.find((family) => family.name === "latency_ms");
-    expect(latency).toMatchObject({ scaleKey: "value", min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
+    expect(latency).toMatchObject({ scaleKey: "value:1e3", scaleLabel: "value 1e3", min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
+
+    const trainLoss = families.find((family) => family.name === "train/loss");
+    expect(trainLoss).toMatchObject({ scaleKey: "value:1e-2", scaleLabel: "value 1e-2", min: 0.008, max: 0.012 });
   });
 
   it("caps metric trend samples for dense event streams", () => {

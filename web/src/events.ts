@@ -5,6 +5,7 @@ export interface MetricFamilySummary {
   name: string;
   unit?: string;
   scaleKey: string;
+  scaleLabel: string;
   count: number;
   first?: MetricPoint;
   latest?: MetricPoint;
@@ -108,6 +109,16 @@ function sampleTrend(rows: MetricPoint[], limit = 24): Array<{ axis: number; val
   });
 }
 
+function metricScale(unit: string | undefined, values: number[]) {
+  if (unit) return { key: unit, label: unit };
+  const magnitudes = values.map((value) => Math.abs(value)).filter((value) => value > 0 && Number.isFinite(value)).sort((a, b) => a - b);
+  if (!magnitudes.length) return { key: "value:0", label: "value 0" };
+  const median = magnitudes[Math.floor(magnitudes.length / 2)];
+  const exponent = Math.floor(Math.log10(median));
+  const label = exponent === 0 ? "value 1" : `value 1e${exponent}`;
+  return { key: `value:1e${exponent}`, label };
+}
+
 export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySummary[] {
   const grouped = new Map<string, MetricPoint[]>();
   for (const point of points) {
@@ -126,6 +137,7 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
     const first = finiteRows[0];
     const latest = finiteRows[finiteRows.length - 1];
     const values = finiteRows.map((row) => row.value);
+    const scale = metricScale(unit, values);
     const firstIndex = first ? rows.indexOf(first) : 0;
     const latestIndex = latest ? rows.indexOf(latest) : rows.length - 1;
     const delta = first && latest ? latest.value - first.value : NaN;
@@ -133,7 +145,8 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
     return {
       name,
       unit,
-      scaleKey: unit || "value",
+      scaleKey: scale.key,
+      scaleLabel: scale.label,
       count: rows.length,
       first,
       latest,

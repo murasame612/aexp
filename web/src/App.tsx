@@ -959,7 +959,7 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
           <section className="metric-scale-group" key={group.key}>
             <div className="metric-scale-head">
               <span className="panel-kicker">{group.label}</span>
-              <span className="muted">{group.families.length} {t("metrics")}</span>
+              <span className="muted">/ {group.families.length} {t("metrics")}</span>
             </div>
             {group.families.map((family) => <MetricFamilyRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />)}
           </section>
@@ -1499,7 +1499,7 @@ function groupMetricFamiliesByScale(families: ReturnType<typeof summarizeMetricF
   }
   return Array.from(groups.entries()).map(([key, rows]) => ({
     key,
-    label: rows[0]?.unit || "value",
+    label: rows[0]?.scaleLabel || rows[0]?.unit || "value",
     families: rows
   }));
 }
