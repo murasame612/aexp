@@ -1023,6 +1023,7 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 }
 
 function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
+  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
   const params = parsed.params.slice(0, 24);
@@ -1095,15 +1096,19 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
         ) : null}
       </div>
       <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length} defaultOpen>
-        <section className="metric-family-table" aria-label={t("metrics")}>
-          <div className="metric-table-head">
-            <span>{t("metrics")}</span>
-            <span>{t("latest")}</span>
-            <span>{t("delta")}</span>
-            <span>{t("range")}</span>
-            <span>{t("span")}</span>
-          </div>
-          {metricFamilies.length ? metricFamilies.map((family) => <MetricFamilyTableRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
+        <section className="metric-card-grid" aria-label={t("metrics")}>
+          {metricFamilies.length ? metricFamilies.map((family) => {
+            const key = metricFamilyKey(family);
+            return (
+              <MetricFamilyCard
+                key={key}
+                family={family}
+                t={t}
+                expanded={expandedMetric === key}
+                onToggle={() => setExpandedMetric((current) => (current === key ? null : key))}
+              />
+            );
+          }) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
         </section>
       </EventFoldout>
     </section>
@@ -1170,6 +1175,20 @@ function latestMetricContext(metric: MetricPoint, t: T) {
   return [metric.series || t("defaultSeries"), metric.unit].filter(Boolean).join(" · ");
 }
 
+function metricTitle(name: string) {
+  const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  if (parts.length <= 1) return name;
+  const leaf = parts[parts.length - 1];
+  const context = parts.slice(0, -1).join(" · ");
+  return `${context} · ${leaf}`;
+}
+
+function shortSeriesName(name: string) {
+  const cleaned = name.replace(/_/g, " ");
+  if (cleaned.length <= 28) return cleaned;
+  return `${cleaned.slice(0, 25)}...`;
+}
+
 function paramCardClass(param: ParamPoint) {
   const value = param.value || "";
   const name = param.name || "";
@@ -1178,37 +1197,66 @@ function paramCardClass(param: ParamPoint) {
   return `param-row${longValue || longName ? " param-row-wide" : ""}`;
 }
 
-function MetricFamilyTableRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
+type MetricFamily = ReturnType<typeof summarizeMetricFamilies>[number];
+
+function metricFamilyKey(family: MetricFamily) {
+  return `${family.name}\u0000${family.scaleKey}`;
+}
+
+function MetricFamilyCard({ family, t, expanded, onToggle }: { family: MetricFamily; t: T; expanded: boolean; onToggle: () => void }) {
+  const primary = family.series.length > 1 ? `${family.series.length} ${t("series").toLowerCase()}` : family.latest ? formatMetricValue(family.latest) : "-";
+  const seriesPreview = family.series.slice(0, 2);
   return (
-    <article className="metric-family-row">
-      <div className="metric-family-title">
-        <strong>{family.name}</strong>
-        <span>{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}</span>
-      </div>
-      <strong className="metric-family-latest">{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
-      <strong className="metric-family-delta">{formatMetricDelta(family.delta, family.deltaPct)}</strong>
-      <strong className="metric-family-range">{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
-      {family.trend.length ? (
-        <div className="metric-trend">
-          <svg className="metric-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-            <polyline points={metricSparklinePoints(family.trend)} />
+    <article className={expanded ? "metric-family-card expanded" : "metric-family-card"}>
+      <button className="metric-card-button" type="button" onClick={onToggle} aria-expanded={expanded}>
+        <div className="metric-card-head">
+          <span>{metricTitle(family.name)}</span>
+          <strong>{primary}</strong>
+        </div>
+        <div className="metric-card-series">
+          {seriesPreview.map((row, index) => (
+            <div key={`${row.series || t("defaultSeries")}-${index}`}>
+              <span>{shortSeriesName(row.series || t("defaultSeries"))}</span>
+              <strong>{formatMetricValue(row)}</strong>
+            </div>
+          ))}
+        </div>
+        {family.trend.length ? (
+          <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points={metricSparklinePoints(family.trend, 42)} />
           </svg>
-        </div>
-      ) : (
-        <div className="metric-trend metric-trend-empty" aria-hidden="true">
-          <span>{t("span")}</span>
-          <div className="metric-sparkline metric-sparkline-empty" />
-        </div>
-      )}
-      <div className="metric-family-values">
-        <span className="metric-family-values-label">{t("series")}</span>
-        {family.series.map((row, index) => (
-          <div key={`${row.series || t("defaultSeries")}-${index}`}>
-            <span>{row.series || t("defaultSeries")}</span>
-            <strong>{formatMetricValue(row)}</strong>
+        ) : <div className="metric-card-sparkline metric-sparkline-empty" aria-hidden="true" />}
+        <span className="metric-card-foot">{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}</span>
+      </button>
+      {expanded ? (
+        <div className="metric-card-detail">
+          <div>
+            <span>{t("low")}</span>
+            <strong>{formatMetric(family.min)}</strong>
           </div>
-        ))}
-      </div>
+          <div>
+            <span>{t("high")}</span>
+            <strong>{formatMetric(family.max)}</strong>
+          </div>
+          <div>
+            <span>{t("delta")}</span>
+            <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+          </div>
+          <div className="metric-card-rangebar" aria-hidden="true">
+            <i />
+            <b style={{ left: `${metricRangePosition(family)}%` }} />
+          </div>
+          <div className="metric-card-detail-series">
+            <span>{t("series")}</span>
+            {family.series.map((row, index) => (
+              <p key={`${row.series || t("defaultSeries")}-${index}`}>
+                <span>{row.series || t("defaultSeries")}</span>
+                <strong>{formatMetricValue(row)}</strong>
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1774,16 +1822,25 @@ function formatMetricSpan(start?: number, end?: number) {
   return `${formatMetric(start)} -> ${formatMetric(end)}`;
 }
 
-function metricSparklinePoints(points: Array<{ value: number }>) {
+function metricRangePosition(family: MetricFamily) {
+  const latest = family.latest?.value;
+  if (latest == null || !Number.isFinite(latest) || !Number.isFinite(family.min) || !Number.isFinite(family.max) || family.max === family.min) return 50;
+  return Math.max(0, Math.min(100, ((latest - family.min) / (family.max - family.min)) * 100));
+}
+
+function metricSparklinePoints(points: Array<{ value: number }>, height = 34) {
   if (!points.length) return "";
-  if (points.length === 1) return `0,17 120,17`;
+  const mid = height / 2;
+  if (points.length === 1) return `0,${mid} 120,${mid}`;
   const values = points.map((point) => point.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
+  const top = 4;
+  const bottom = height - 4;
   return points.map((point, index) => {
     const x = (index / (points.length - 1)) * 120;
-    const y = 30 - ((point.value - min) / range) * 26;
+    const y = bottom - ((point.value - min) / range) * (bottom - top);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
 }

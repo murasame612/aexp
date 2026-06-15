@@ -3034,117 +3034,107 @@ select {
   overflow-wrap: anywhere;
 }
 
-.metric-family-table {
+.metric-card-grid {
   display: grid;
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fff;
-}
-
-.metric-table-head {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(74px, .24fr) minmax(94px, .3fr) minmax(96px, .32fr) minmax(120px, .44fr);
-  align-items: center;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   min-width: 0;
-  padding: 7px 10px;
-  background: #fbfaf8;
-  border-bottom: 1px solid #eee9e1;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 
-.metric-table-head span {
+.metric-family-card {
   min-width: 0;
-  overflow-wrap: anywhere;
+  border: 1px solid #e7e1d8;
+  border-radius: 12px;
+  background: #fffdf9;
+  overflow: hidden;
 }
 
-.metric-family-row {
+.metric-family-card.expanded {
+  border-color: var(--accent);
+}
+
+.metric-card-button {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(74px, .24fr) minmax(94px, .3fr) minmax(96px, .32fr) minmax(120px, .44fr);
-  grid-template-areas:
-    "title latest delta range trend"
-    "values values values values values";
-  align-items: center;
-  gap: 8px 10px;
+  gap: 9px;
+  width: 100%;
   min-width: 0;
-  padding: 10px 10px;
-  border-top: 1px solid #eee9e1;
-}
-
-.metric-family-title {
-  grid-area: title;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  align-content: start;
-  gap: 3px 8px;
-  min-width: 0;
-  padding: 2px 1px 0;
-}
-
-.metric-family-title strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-  line-height: 1.28;
-}
-
-.metric-family-title span {
-  min-width: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.metric-family-latest,
-.metric-family-delta,
-.metric-family-range {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: #1f2429;
-  font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.35;
+  min-height: 184px;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
   text-align: left;
 }
 
-.metric-family-latest {
-  grid-area: latest;
+.metric-card-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: #fffaf4;
 }
 
-.metric-family-delta {
-  grid-area: delta;
-}
-
-.metric-family-range {
-  grid-area: range;
-}
-
-.metric-trend {
-  grid-area: trend;
-  display: block;
+.metric-card-head {
+  display: grid;
+  gap: 5px;
   min-width: 0;
-  min-height: 34px;
-  padding: 0;
 }
 
-.metric-family-values-label {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
+.metric-card-head span {
+  min-width: 0;
+  overflow: hidden;
+  color: #5f665f;
+  font-size: 12px;
+  line-height: 1.28;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.metric-sparkline {
+.metric-card-head strong {
+  color: #1f2429;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.metric-card-series {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.metric-card-series div,
+.metric-card-detail-series p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  margin: 0;
+}
+
+.metric-card-series span,
+.metric-card-detail-series p span {
+  min-width: 0;
+  overflow: hidden;
+  color: #6f695f;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card-series strong,
+.metric-card-detail-series p strong {
+  color: #1f2429;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.metric-card-sparkline {
   width: 100%;
-  height: 100%;
-  min-height: 34px;
+  height: 50px;
   min-width: 0;
   background: transparent;
   overflow: hidden;
@@ -3154,51 +3144,89 @@ select {
   background: #f6f8fa;
 }
 
-.metric-sparkline polyline {
+.metric-card-sparkline polyline {
   fill: none;
   stroke: var(--accent);
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2;
+  stroke-width: 2.25;
   vector-effect: non-scaling-stroke;
 }
 
-.metric-family-values {
-  grid-area: values;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
-  align-content: start;
-  gap: 5px 10px;
+.metric-card-foot {
   min-width: 0;
-  padding-top: 2px;
-}
-
-.metric-family-values-label {
-  grid-column: 1 / -1;
-}
-
-.metric-family-values div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-  padding: 0;
-}
-
-.metric-family-values span {
-  min-width: 0;
-  color: #4f5a65;
+  overflow: hidden;
+  color: #7d776d;
   font-size: 11px;
-  overflow-wrap: anywhere;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.metric-family-values strong {
+.metric-card-detail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px 12px;
+}
+
+.metric-card-detail > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border-top: 1px solid #eee9e1;
+  padding-top: 8px;
+}
+
+.metric-card-detail > div > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.metric-card-detail > div > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #1f2429;
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  text-align: right;
+  line-height: 1.3;
+}
+
+.metric-card-rangebar {
+  grid-column: 1 / -1;
+  position: relative;
+  min-height: 14px;
+  border-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.metric-card-rangebar i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #c6d4df, var(--accent));
+}
+
+.metric-card-rangebar b {
+  position: absolute;
+  top: 2px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid #fffdf9;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(179, 82, 47, .35);
+  transform: translateX(-50%);
+}
+
+.metric-card-detail-series {
+  grid-column: 1 / -1;
 }
 
 .metric-tile {
@@ -3683,20 +3711,8 @@ select {
     justify-content: flex-start;
   }
 
-  .metric-family-row {
-    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(76px, auto));
-    grid-template-areas:
-      "title title title title"
-      "latest delta range trend"
-      "values values values values";
-  }
-
-  .metric-table-head {
-    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(76px, auto)) minmax(110px, .55fr);
-  }
-
-  .metric-family-values {
-    align-content: start;
+  .metric-card-grid {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   }
 }
 
@@ -3764,48 +3780,12 @@ select {
     border-top: 0;
   }
 
-  .metric-family-row {
-    gap: 6px;
-    padding: 9px 10px;
+  .metric-card-grid {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "title"
-      "latest"
-      "delta"
-      "range"
-      "trend"
-      "values";
   }
 
-  .metric-table-head {
-    display: none;
-  }
-
-  .metric-family-latest::before {
-    content: "Latest ";
-    color: var(--muted);
-    font-family: Inter, system-ui, sans-serif;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .metric-family-delta::before {
-    content: "Delta ";
-    color: var(--muted);
-    font-family: Inter, system-ui, sans-serif;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .metric-family-range::before {
-    content: "Range ";
-    color: var(--muted);
-    font-family: Inter, system-ui, sans-serif;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
+  .metric-card-button {
+    min-height: 160px;
   }
 
   .metric-row {
@@ -3974,21 +3954,11 @@ select {
     border-radius: 8px;
   }
 
-  .metric-family-table {
-    border-radius: 8px;
-  }
-
-  .metric-family-title strong,
   .metric-row-name,
   .param-row span {
     font-size: 11px;
   }
 
-  .metric-family-latest,
-  .metric-family-delta,
-  .metric-family-range,
-  .metric-family-values span,
-  .metric-family-values strong,
   .metric-row strong,
   .param-row strong {
     font-size: 10.5px;
