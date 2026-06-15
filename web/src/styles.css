@@ -1542,6 +1542,20 @@ select {
   line-height: 1.3;
 }
 
+.run-project-group-signal {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 980px;
+  margin: 2px 0 0;
+  color: #5a6470;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .run-project-group-stats {
   display: flex;
   flex-wrap: wrap;
@@ -1561,6 +1575,12 @@ select {
   padding: 2px 8px;
   font-size: 11px;
   white-space: nowrap;
+}
+
+.run-project-group-stats .run-project-level {
+  border-color: #d6e4dc;
+  background: #f3f8f5;
+  color: #3d6b4f;
 }
 
 .run-project-group > .run-list {

@@ -95,6 +95,7 @@ interface RunProjectMeta {
   projectId: string;
   projectName: string;
   cardTitle: string;
+  cardSummary?: string;
   evidenceLevel?: string;
 }
 
@@ -103,6 +104,8 @@ interface RunDisplayGroup {
   name: string;
   runs: Run[];
   evidenceCount: number;
+  signal?: string;
+  evidenceLevels: string[];
 }
 
 const pageSize = 100;
@@ -691,10 +694,12 @@ function RunsTab(props: {
                   <div>
                     <span className="panel-kicker">{group.id === "__without_project_cards__" ? props.t("runsWithoutProjectCards") : props.t("projectCards")}</span>
                     <strong>{group.name}</strong>
+                    {group.signal ? <p className="run-project-group-signal">{group.signal}</p> : null}
                   </div>
                   <div className="run-project-group-stats">
                     <span>{group.runs.length} {props.t("shownRuns")}</span>
                     {group.evidenceCount ? <span>{group.evidenceCount} {props.t("evidenceLinked")}</span> : null}
+                    {group.evidenceLevels.map((level) => <span className="run-project-level" key={level}>L{level}</span>)}
                   </div>
                 </div>
                 <div className="run-list">{group.runs.map(renderRun)}</div>
@@ -1896,6 +1901,7 @@ function buildRunProjectIndex(projects: ProjectView[], t: T) {
         projectId: project.project_id,
         projectName,
         cardTitle: card.verdict || card.question || card.run?.name || card.run_id,
+        cardSummary: card.key_metrics || card.supports_claim || card.weakens_claim || card.next_action || card.proposal_reason || "",
         evidenceLevel: card.evidence_level
       };
       const current = out.get(card.run_id);
@@ -1914,13 +1920,17 @@ function groupRunsByProject(runs: Run[], runProjectById: Map<string, RunProjectM
     if (existing) {
       existing.runs.push(run);
       if (meta) existing.evidenceCount += 1;
+      if (meta?.cardTitle && !existing.signal) existing.signal = meta.cardSummary ? `${meta.cardTitle} · ${meta.cardSummary}` : meta.cardTitle;
+      if (meta?.evidenceLevel && !existing.evidenceLevels.includes(meta.evidenceLevel)) existing.evidenceLevels.push(meta.evidenceLevel);
       continue;
     }
     groups.set(id, {
       id,
       name: meta?.projectName || t("runsWithoutProjectCards"),
       runs: [run],
-      evidenceCount: meta ? 1 : 0
+      evidenceCount: meta ? 1 : 0,
+      signal: meta?.cardTitle ? (meta.cardSummary ? `${meta.cardTitle} · ${meta.cardSummary}` : meta.cardTitle) : "",
+      evidenceLevels: meta?.evidenceLevel ? [meta.evidenceLevel] : []
     });
   }
   return Array.from(groups.values());
