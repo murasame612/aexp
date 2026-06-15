@@ -90,6 +90,13 @@ import { EvidenceChainBoard } from "./EvidenceChainBoard";
 
 type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
 
+interface RunProjectMeta {
+  projectId: string;
+  projectName: string;
+  cardTitle: string;
+  evidenceLevel?: string;
+}
+
 const pageSize = 100;
 
 export function App() {
@@ -111,6 +118,7 @@ export function App() {
   const [runStatus, setRunStatus] = useState("");
   const [runResource, setRunResource] = useState("");
   const [runKind, setRunKind] = useState("experiments");
+  const [runProject, setRunProject] = useState("");
   const [runQuery, setRunQuery] = useState("");
   const [execResource, setExecResource] = useState("");
   const [execActor, setExecActor] = useState("");
@@ -151,11 +159,24 @@ export function App() {
   const markList = marks.data || [];
   const runMarks = useMemo(() => markCountByRun(markList), [markList]);
   const resourceById = useMemo(() => new Map(resourceList.map((r) => [r.id, r])), [resourceList]);
-  const visibleRuns = useMemo(() => filterRuns(runList, { query: runQuery, kind: runKind, bookmarks: bookmarkList }), [runList, runQuery, runKind, bookmarkList]);
+  const projectList = projects.data || [];
+  const runProjectById = useMemo(() => buildRunProjectIndex(projectList, t), [projectList, t]);
+  const visibleRuns = useMemo(() => {
+    const filtered = filterRuns(runList, { query: runQuery, kind: runKind, bookmarks: bookmarkList });
+    if (!runProject) return filtered;
+    return filtered.filter((run) => runProjectById.get(run.id)?.projectId === runProject);
+  }, [runList, runQuery, runKind, bookmarkList, runProject, runProjectById]);
   const activeRuns = useMemo(() => runList.filter(isActiveRun), [runList]);
   const visibleExecs = useMemo(() => filterExecs(execs.data?.items || [], execQuery), [execs.data, execQuery]);
   const favoriteRuns = useMemo(() => filterRuns(runList, { query: favoriteQuery, kind: "favorites", bookmarks: bookmarkList }), [runList, favoriteQuery, bookmarkList]);
-  const visibleProjects = useMemo(() => filterProjects(projects.data || [], projectQuery), [projects.data, projectQuery]);
+  const visibleProjects = useMemo(() => filterProjects(projectList, projectQuery), [projectList, projectQuery]);
+  const runProjectOptions = useMemo(
+    () => [
+      ["", t("allProjects")] as [string, string],
+      ...projectList.map((project) => [project.project_id, projectDisplayName(project, t)] as [string, string])
+    ],
+    [projectList, t]
+  );
   const selectedRuns = useMemo(() => runList.filter((run) => selectedRunIds.has(run.id) && isCompareEligible(run)), [runList, selectedRunIds]);
 
   const refreshAll = () => {
@@ -298,7 +319,7 @@ export function App() {
                 }}
               />
             )}
-            {tab === "projects" && <ProjectsTab t={t} projects={visibleProjects} query={projectQuery} setQuery={setProjectQuery} onOpenRun={setDetailRunId} />}
+            {tab === "projects" && <ProjectsTab t={t} projects={visibleProjects} query={projectQuery} setQuery={setProjectQuery} resourceById={resourceById} onOpenRun={setDetailRunId} />}
             {tab === "evidence" && <EvidenceChainBoard token={token} t={t} onOpenRun={setDetailRunId} />}
             {tab === "runs" && (
               <RunsTab
@@ -312,6 +333,10 @@ export function App() {
                 setStatus={setRunStatus}
                 resource={runResource}
                 setResource={setRunResource}
+                project={runProject}
+                setProject={setRunProject}
+                projectOptions={runProjectOptions}
+                runProjectById={runProjectById}
                 kind={runKind}
                 setKind={setRunKind}
                 trash={runTrash}
@@ -583,6 +608,10 @@ function RunsTab(props: {
   setStatus: (status: string) => void;
   resource: string;
   setResource: (resource: string) => void;
+  project: string;
+  setProject: (project: string) => void;
+  projectOptions: [string, string][];
+  runProjectById: Map<string, RunProjectMeta>;
   kind: string;
   setKind: (kind: string) => void;
   trash: boolean;
@@ -616,6 +645,7 @@ function RunsTab(props: {
         />
         <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"]]} />
         <Select value={props.resource} onChange={props.setResource} options={[["", props.t("allResources")], ...props.resources.map((r) => [r.id, r.name] as [string, string])]} />
+        <Select value={props.project} onChange={props.setProject} options={props.projectOptions} />
         <Select value={props.kind} onChange={props.setKind} options={[["experiments", props.t("experiments")], ["tools", props.t("toolTasks")], ["all", props.t("allKinds")]]} />
         <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
         <button disabled={!selectedCount} onClick={props.onCompare}>
@@ -630,6 +660,7 @@ function RunsTab(props: {
               key={run.id}
               run={run}
               resourceById={props.resourceById}
+              projectMeta={props.runProjectById.get(run.id)}
               markCount={props.marks.get(run.id) || 0}
               bookmarked={bookmarkIds.has(run.id)}
               selected={selectedRunIds.has(run.id)}
@@ -652,7 +683,21 @@ function RunsTab(props: {
   );
 }
 
-function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projects: ProjectView[]; query: string; setQuery: (value: string) => void; onOpenRun: (id: string) => void }) {
+function ProjectsTab({
+  t,
+  projects,
+  query,
+  setQuery,
+  resourceById,
+  onOpenRun
+}: {
+  t: T;
+  projects: ProjectView[];
+  query: string;
+  setQuery: (value: string) => void;
+  resourceById: Map<string, Resource>;
+  onOpenRun: (id: string) => void;
+}) {
   return (
     <div className="stack">
       <div className="toolbar">
@@ -671,7 +716,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
                     <span className="panel-kicker">{t("evidenceRecords")}</span>
                     <span className="muted">{cards.length}</span>
                   </div>
-                  {shownCards.map((card) => <ProjectEvidenceCard key={card.id} card={card} onOpenRun={onOpenRun} t={t} />)}
+                  {shownCards.map((card) => <ProjectEvidenceCard key={card.id} card={card} resourceById={resourceById} onOpenRun={onOpenRun} t={t} />)}
                   {cards.length > shownCards.length ? (
                     <div className="project-more">
                       <strong>+{cards.length - shownCards.length}</strong>
@@ -694,7 +739,7 @@ function ProjectsTab({ t, projects, query, setQuery, onOpenRun }: { t: T; projec
 function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
   const cards = project.cards || [];
   const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
-  const projectTitle = project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
+  const projectTitle = projectDisplayName(project, t);
   const counts = [
     { label: t("projectCards"), value: project.total_cards ?? cards.length, tone: "neutral" as const },
     { label: t("important"), value: project.important_runs || 0, tone: "accent" as const },
@@ -726,14 +771,14 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
   );
 }
 
-function ProjectEvidenceCard({ card, onOpenRun, t }: { card: ProjectRunCard; onOpenRun: (id: string) => void; t: T }) {
+function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: ProjectRunCard; resourceById: Map<string, Resource>; onOpenRun: (id: string) => void; t: T }) {
   const title = card.verdict || card.question || card.run?.name || card.run_id;
   const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
   const run = card.run;
   const status = run?.status || "-";
   const meta = [
     run?.kind || "formal",
-    run?.resource_id,
+    run?.resource_id ? resourceById.get(run.resource_id)?.name || run.resource_id : "",
     run?.gpu_index != null ? `GPU ${runGPU(run.gpu_index)}` : "",
     run?.project_env || run?.conda_env || "",
     fmtShortTime(run?.created_at)
@@ -1342,6 +1387,7 @@ function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<st
 function RunListCard({
   run,
   resourceById,
+  projectMeta,
   markCount,
   bookmarked,
   selected,
@@ -1356,6 +1402,7 @@ function RunListCard({
 }: {
   run: Run;
   resourceById: Map<string, Resource>;
+  projectMeta?: RunProjectMeta;
   markCount: number;
   bookmarked: boolean;
   selected: boolean;
@@ -1378,6 +1425,13 @@ function RunListCard({
         </button>
         <Pill tone={statusTone(run.status)}>{run.status}</Pill>
       </div>
+      {projectMeta ? (
+        <div className="run-project-context">
+          <span>{projectMeta.projectName}</span>
+          <strong>{projectMeta.cardTitle}</strong>
+          {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
+        </div>
+      ) : null}
       <div className="run-list-facts">
         <span>{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
         <span>{run.kind || "formal"}</span>
@@ -1696,6 +1750,29 @@ function filterProjects(projects: ProjectView[], query: string) {
       ])
     ].some((part) => text(part).toLowerCase().includes(q))
   );
+}
+
+function projectDisplayName(project: ProjectView, t: T) {
+  return project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
+}
+
+function buildRunProjectIndex(projects: ProjectView[], t: T) {
+  const out = new Map<string, RunProjectMeta>();
+  for (const project of projects) {
+    const projectName = projectDisplayName(project, t);
+    for (const card of project.cards || []) {
+      if (!card.run_id) continue;
+      const meta: RunProjectMeta = {
+        projectId: project.project_id,
+        projectName,
+        cardTitle: card.verdict || card.question || card.run?.name || card.run_id,
+        evidenceLevel: card.evidence_level
+      };
+      const current = out.get(card.run_id);
+      if (!current || card.should_promote || card.important) out.set(card.run_id, meta);
+    }
+  }
+  return out;
 }
 
 function readDeepLinkRun() {

@@ -1396,6 +1396,7 @@ select {
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
     "head actions"
+    "project actions"
     "facts actions"
     "command command";
   align-items: start;
@@ -1430,6 +1431,42 @@ select {
 
 .run-list-card-head .run-title-cell {
   min-height: 0;
+}
+
+.run-project-context {
+  grid-area: project;
+  display: grid;
+  grid-template-columns: minmax(96px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #edf1f4;
+  border-radius: 10px;
+  background: #fff;
+  padding: 7px 9px;
+}
+
+.run-project-context > span:not(.pill),
+.run-project-context > strong {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.run-project-context > span:not(.pill) {
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-project-context > strong {
+  display: -webkit-box;
+  color: #30363d;
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .run-list-facts {
@@ -3177,10 +3214,20 @@ select {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "head"
+      "project"
       "facts"
       "command"
       "actions";
     padding: 10px;
+  }
+
+  .run-project-context {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .run-project-context > span:not(.pill) {
+    white-space: normal;
   }
 
   .dashboard-runs .run-card {
