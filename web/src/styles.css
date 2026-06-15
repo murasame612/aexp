@@ -1630,8 +1630,7 @@ select {
   grid-template-areas:
     "head actions"
     "project actions"
-    "facts actions"
-    "command command";
+    "facts actions";
   align-items: start;
   gap: 8px 14px;
   min-width: 0;
@@ -1722,17 +1721,6 @@ select {
   padding: 2px 8px;
   line-height: 1.25;
   font-size: 11px;
-}
-
-.run-list-card > .command-snippet {
-  grid-area: command;
-  align-self: stretch;
-  max-height: none;
-  border-radius: 10px;
-  background: #f6f8fa;
-  padding: 8px 9px;
-  line-height: 1.45;
-  -webkit-line-clamp: 3;
 }
 
 .run-list-actions {

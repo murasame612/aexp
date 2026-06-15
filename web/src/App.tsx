@@ -1644,7 +1644,6 @@ function RunListCard({
         {markCount ? <span>{markCount} {t("marks")}</span> : null}
         <span>{fmtShortTime(run.created_at)}</span>
       </div>
-      <span className="command-snippet">{run.command}</span>
       <div className="run-list-actions">
         {compareEligible ? (
           <label className="run-compare-toggle">
