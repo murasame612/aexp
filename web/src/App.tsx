@@ -803,8 +803,13 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
 }
 
 function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: ProjectRunCard; resourceById: Map<string, Resource>; onOpenRun: (id: string) => void; t: T }) {
-  const title = card.verdict || card.question || card.run?.name || card.run_id;
-  const body = card.question && card.question !== title ? card.question : card.next_action || card.supports_claim || card.weakens_claim || card.run?.command || "-";
+  const firstMark = (card.marks || []).find((mark) => mark.title || mark.reason || mark.evidence);
+  const firstMarkText = firstMark ? [firstMark.title, firstMark.reason || firstMark.evidence].filter(Boolean).join(": ") : "";
+  const title = card.verdict || card.supports_claim || card.weakens_claim || card.question || card.key_metrics || card.run?.name || card.run_id;
+  const body =
+    [card.supports_claim, card.weakens_claim, card.question, firstMarkText, card.next_action, card.proposal_reason, card.run?.command]
+      .find((item) => item && item !== title && item !== card.key_metrics) || "";
+  const metrics = card.key_metrics && card.key_metrics !== title ? card.key_metrics : "";
   const run = card.run;
   const status = run?.status || "-";
   const meta = [
@@ -820,25 +825,34 @@ function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: Proje
     card.artifact_paths ? t("artifacts") : "",
     card.related_runs ? t("relatedRuns") : ""
   ].filter(Boolean);
+  const markSnippets = (card.marks || [])
+    .map((mark) => [mark.title, mark.reason || mark.evidence].filter(Boolean).join(": "))
+    .filter(Boolean)
+    .slice(0, 2);
   const cardClassName = card.should_promote ? "project-card prominent" : "project-card";
   return (
-    <button className={cardClassName} onClick={() => card.run_id && onOpenRun(card.run_id)}>
-      <div className="project-card-main">
-        <span className="project-card-run">{card.run?.name || card.run_id}</span>
-        <strong>{title}</strong>
+    <button className={cardClassName} onClick={() => card.run_id && onOpenRun(card.run_id)} type="button">
+      <div className="project-card-top">
+        <div className="project-card-main">
+          <span className="project-card-run">{card.run?.name || card.run_id}</span>
+          <strong>{title}</strong>
+        </div>
+        <div className="project-card-level">
+          <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
+          <Pill tone={statusTone(status)}>{status}</Pill>
+        </div>
       </div>
-      <div className="project-card-level">
-        <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-        <Pill tone={statusTone(status)}>{status}</Pill>
-      </div>
-      {card.key_metrics ? <p className="project-card-metrics">{card.key_metrics}</p> : null}
+      {body ? <span className="project-card-body">{body}</span> : null}
+      {evidenceTags.length ? <div className="project-card-tags">{evidenceTags.map((item) => <span className="project-evidence-chip" key={item}>{item}</span>)}</div> : null}
+      {metrics ? <p className="project-card-metrics">{metrics}</p> : null}
+      {markSnippets.length ? (
+        <div className="project-card-marks">
+          {markSnippets.map((snippet) => <span key={snippet}>{snippet}</span>)}
+        </div>
+      ) : null}
       <div className="project-card-meta">
         <span className="mono">{card.run_id}</span>
         {meta.map((item) => <span key={item}>{item}</span>)}
-      </div>
-      <span className="project-card-body">{body}</span>
-      <div className="project-card-foot">
-        <span>{evidenceTags.join(" · ") || card.next_action || "-"}</span>
       </div>
     </button>
   );
