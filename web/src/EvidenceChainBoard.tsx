@@ -73,7 +73,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
   const [saveState, setSaveState] = useState<"idle" | "saved" | "saving" | "failed">("idle");
   const [chainTitleDraft, setChainTitleDraft] = useState("");
   const [chainDescriptionDraft, setChainDescriptionDraft] = useState("");
-  const [leftOpen, setLeftOpen] = useState(true);
+  const [leftOpen, setLeftOpen] = useState(() => (typeof window === "undefined" ? true : !window.matchMedia("(max-width: 760px)").matches));
   const [runTrayOpen, setRunTrayOpen] = useState(false);
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [selectedCandidateGroup, setSelectedCandidateGroup] = useState("");

@@ -3186,9 +3186,47 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .app-shell.evidence-app-shell {
+    grid-template-columns: 1fr;
+  }
+
   .side-nav {
     position: static;
     height: auto;
+  }
+
+  .evidence-app-shell .side-nav {
+    align-items: stretch;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .evidence-app-shell .brand {
+    justify-content: flex-start;
+  }
+
+  .evidence-app-shell .brand div {
+    display: block;
+  }
+
+  .evidence-app-shell .side-nav nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .evidence-app-shell .nav-item,
+  .evidence-app-shell .legacy-link {
+    width: 100%;
+    padding: 0 10px;
+    justify-content: flex-start;
+    margin: 0;
+    font-size: inherit;
+    min-height: 34px;
+  }
+
+  .evidence-app-shell .nav-item span {
+    display: inline;
   }
 
   .side-nav nav {
@@ -3238,8 +3276,8 @@ select {
   }
 
   .evidence-shell {
-    height: calc(100svh - 16px);
-    min-height: 640px;
+    height: calc(100svh - 12px);
+    min-height: 560px;
   }
 
   .evidence-toolbar {
@@ -3270,7 +3308,7 @@ select {
   }
 
   .evidence-node-tools button {
-    flex: 1 1 118px;
+    flex: 1 1 96px;
   }
 
   .evidence-sidebar {
@@ -3299,6 +3337,7 @@ select {
   .evidence-shell.left-collapsed .evidence-sidebar {
     right: auto;
     width: 42px;
+    max-height: 46px;
   }
 
   .candidate-browser {
@@ -3486,6 +3525,77 @@ select {
 }
 
 @media (max-width: 520px) {
+  .side-nav {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .brand {
+    min-height: 38px;
+  }
+
+  .brand img {
+    width: 32px;
+    height: 32px;
+  }
+
+  .brand strong {
+    font-size: 13px;
+  }
+
+  .brand span {
+    font-size: 11px;
+  }
+
+  .side-nav nav {
+    gap: 5px;
+  }
+
+  .nav-item,
+  .legacy-link {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .legacy-link {
+    margin-top: 0;
+  }
+
+  .evidence-app-shell .side-nav {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .evidence-app-shell .brand {
+    min-height: 36px;
+  }
+
+  .evidence-app-shell .brand img {
+    width: 30px;
+    height: 30px;
+  }
+
+  .evidence-app-shell .brand strong {
+    font-size: 13px;
+  }
+
+  .evidence-app-shell .brand span {
+    font-size: 11px;
+  }
+
+  .evidence-app-shell .side-nav nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .evidence-app-shell .nav-item,
+  .evidence-app-shell .legacy-link {
+    min-height: 32px;
+    padding: 0 7px;
+    font-size: 12px;
+  }
+
   .resource-grid,
   .run-card-grid,
   .project-evidence,
@@ -3542,8 +3652,8 @@ select {
   }
 
   .evidence-shell {
-    height: calc(100svh - 12px);
-    min-height: 620px;
+    height: calc(100svh - 10px);
+    min-height: 560px;
     border-radius: 12px;
   }
 
@@ -3551,7 +3661,7 @@ select {
     top: 8px;
     left: 8px;
     right: 8px;
-    gap: 8px;
+    gap: 6px;
     padding: 6px;
   }
 
@@ -3569,8 +3679,10 @@ select {
   }
 
   .evidence-node-tools button {
+    flex: 1 1 calc(33.333% - 6px);
     min-height: 30px;
-    padding-inline: 8px;
+    padding-inline: 6px;
+    font-size: 11px;
   }
 
   .evidence-sidebar,
@@ -3583,11 +3695,17 @@ select {
   }
 
   .evidence-sidebar {
-    max-height: 190px;
+    max-height: 170px;
   }
 
   .evidence-run-drawer {
-    max-height: 330px;
+    max-height: min(360px, 54svh);
+  }
+
+  .evidence-shell.left-collapsed .evidence-sidebar {
+    width: 42px;
+    max-height: 46px;
+    padding: 6px 3px;
   }
 
   .candidate-browser {
