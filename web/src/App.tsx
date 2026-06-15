@@ -1021,23 +1021,31 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 }
 
 function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
-  const latest = parsed.latestMetrics.slice(0, 8);
-  const progress = parsed.progress.slice(-5);
+  const latest = parsed.latestMetrics.slice(0, 16);
+  const progress = parsed.progress.slice(-8);
   const notes = parsed.notes.slice(-3);
-  const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 10);
-  const metricGroups = groupMetricFamiliesByScale(metricFamilies);
+  const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
   const summary = [
     { label: t("events"), value: parsed.events.length },
-    { label: t("metrics"), value: parsed.metrics.length },
-    { label: t("metricScales"), value: metricGroups.length },
     { label: t("progress"), value: parsed.progress.length },
+    { label: t("metrics"), value: parsed.metrics.length },
     { label: parsed.errors.length ? t("errors") : t("notes"), value: parsed.errors.length || parsed.notes.length }
   ];
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
-        <h2>{t("events")}</h2>
-        <span className="muted mono event-path">{path}</span>
+        <div>
+          <h2>{t("events")}</h2>
+          <span className="muted mono event-path">{path} · {parsed.events.length} lines</span>
+        </div>
+        <div className="event-summary-strip">
+          {summary.map((item) => (
+            <div className="event-summary-item" key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+        </div>
       </div>
       {snapshotError ? (
         <div className="event-alert">
@@ -1045,14 +1053,6 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
           <span>{snapshotError}</span>
         </div>
       ) : null}
-      <div className="event-summary-strip">
-        {summary.map((item) => (
-          <div className="event-summary-item" key={item.label}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </div>
       <div className="event-layout">
         <div className="event-panel progress-panel">
           <div className="event-panel-head">
@@ -1094,17 +1094,16 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
           </div>
         ) : null}
       </div>
-      <div className="metric-family-list" aria-label={t("metrics")}>
-        {metricGroups.length ? metricGroups.map((group) => (
-          <section className="metric-scale-group" key={group.key}>
-            <div className="metric-scale-head">
-              <span className="panel-kicker">{group.label}</span>
-              <span className="muted">/ {group.families.length} {t("metrics")}</span>
-            </div>
-            {group.families.map((family) => <MetricFamilyRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />)}
-          </section>
-        )) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
-      </div>
+      <section className="metric-family-table" aria-label={t("metrics")}>
+        <div className="metric-table-head">
+          <span>{t("metrics")}</span>
+          <span>{t("latest")}</span>
+          <span>{t("delta")}</span>
+          <span>{t("range")}</span>
+          <span>{t("span")}</span>
+        </div>
+        {metricFamilies.length ? metricFamilies.map((family) => <MetricFamilyTableRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
+      </section>
     </section>
   );
 }
@@ -1113,28 +1112,18 @@ function latestMetricContext(metric: MetricPoint, t: T) {
   return [metric.series || t("defaultSeries"), metric.unit].filter(Boolean).join(" · ");
 }
 
-function MetricFamilyRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
+function MetricFamilyTableRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
   return (
     <article className="metric-family-row">
       <div className="metric-family-title">
         <strong>{family.name}</strong>
         <span>{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}</span>
       </div>
-      <div className="metric-family-stat metric-family-latest">
-        <span>{t("latest")}</span>
-        <strong>{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
-      </div>
-      <div className="metric-family-stat metric-family-delta">
-        <span>{t("delta")}</span>
-        <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
-      </div>
-      <div className="metric-family-stat metric-family-range">
-        <span>{t("range")}</span>
-        <strong>{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
-      </div>
+      <strong className="metric-family-latest">{family.latest ? formatMetricValue(family.latest) : "-"}</strong>
+      <strong className="metric-family-delta">{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+      <strong className="metric-family-range">{formatMetric(family.min)} - {formatMetric(family.max)}</strong>
       {family.trend.length ? (
         <div className="metric-trend">
-          <span>{t("span")}</span>
           <svg className="metric-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
             <polyline points={metricSparklinePoints(family.trend)} />
           </svg>
@@ -1717,19 +1706,6 @@ function formatMetricDelta(value: number, pct?: number) {
 function formatMetricSpan(start?: number, end?: number) {
   if (start == null || end == null) return "-";
   return `${formatMetric(start)} -> ${formatMetric(end)}`;
-}
-
-function groupMetricFamiliesByScale(families: ReturnType<typeof summarizeMetricFamilies>) {
-  const groups = new Map<string, typeof families>();
-  for (const family of families) {
-    const key = family.scaleKey || "value";
-    groups.set(key, [...(groups.get(key) || []), family]);
-  }
-  return Array.from(groups.entries()).map(([key, rows]) => ({
-    key,
-    label: rows[0]?.scaleLabel || rows[0]?.unit || "value",
-    families: rows
-  }));
 }
 
 function metricSparklinePoints(points: Array<{ value: number }>) {
