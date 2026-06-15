@@ -325,13 +325,27 @@ func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user st
 	go func() {
 		defer close(ch)
 		defer session.Close()
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = session.Signal(ssh.SIGINT)
+				_ = session.Close()
+			case <-done:
+			}
+		}()
+		defer close(done)
 		scanner := bufio.NewScanner(stdout)
 		scanner.Split(splitLogTokens)
 		for scanner.Scan() {
 			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			select {
 			case ch <- scanner.Text():
 			case <-ctx.Done():
-				session.Signal(ssh.SIGINT)
 				return
 			}
 		}

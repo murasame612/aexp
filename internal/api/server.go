@@ -1814,6 +1814,16 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	streamCtx, cancelStream := context.WithCancel(r.Context())
+	defer cancelStream()
+	go func() {
+		defer cancelStream()
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
 
 	if !isFalseQuery(r.URL.Query().Get("snapshot")) {
 		var lastLines []executor.LogLine
@@ -1837,9 +1847,9 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	var logCh <-chan executor.LogLine
 	var streamErr error
 	if logPath != "" {
-		logCh, streamErr = s.executor.TailLogFile(r.Context(), id, logPath, -1)
+		logCh, streamErr = s.executor.TailLogFile(streamCtx, id, logPath, -1)
 	} else {
-		logCh, streamErr = s.executor.TailLogs(r.Context(), id, source, -1)
+		logCh, streamErr = s.executor.TailLogs(streamCtx, id, source, -1)
 	}
 	if streamErr != nil {
 		conn.WriteJSON(map[string]string{"type": "error", "message": streamErr.Error()})
@@ -1854,6 +1864,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 			"line_no": line.LineNo,
 			"content": line.Content,
 		}); err != nil {
+			cancelStream()
 			break
 		}
 	}
