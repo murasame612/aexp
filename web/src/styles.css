@@ -694,53 +694,129 @@ select {
 .dashboard-findings {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0;
+  gap: 10px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
 }
 
-.dashboard-findings .finding {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "meta run"
-    "content content";
-  min-height: 0;
-  border: 0;
-  border-top: 1px solid #edf1f4;
-  border-left: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 12px;
+.dashboard-finding {
+  --finding-accent: #7a858f;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 15px 15px;
+  border: 1px solid #e5e9ee;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+  box-shadow: 0 10px 24px rgba(27, 31, 36, 0.04);
+  text-align: left;
+  cursor: pointer;
 }
 
-.dashboard-findings .finding:first-child {
-  border-top: 0;
+.dashboard-finding:hover {
+  border-color: #d7dde4;
+  background: #ffffff;
 }
 
-.dashboard-findings .finding-reason {
-  -webkit-line-clamp: 6;
+.dashboard-finding:focus-visible {
+  outline: 2px solid rgba(36, 99, 235, 0.28);
+  outline-offset: 2px;
 }
 
-.dashboard-findings .finding-evidence {
-  -webkit-line-clamp: 6;
+.dashboard-finding-good {
+  --finding-accent: #4c8a66;
 }
 
-.dashboard-findings .finding-run {
-  align-self: start;
-  justify-self: end;
-  max-width: min(360px, 100%);
-  min-height: 24px;
+.dashboard-finding-bad {
+  --finding-accent: #b95b4b;
+}
+
+.dashboard-finding-accent {
+  --finding-accent: #6b7db3;
+}
+
+.dashboard-finding-kicker,
+.dashboard-finding-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dashboard-finding-kicker {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dashboard-finding-title-row {
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding-top: 9px;
+  border-top: 3px solid var(--finding-accent);
+}
+
+.dashboard-finding-title-row strong {
+  min-width: min(320px, 100%);
+  max-width: 760px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-finding-run {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(420px, 100%);
   border-radius: 999px;
-  background: #f1f3f5;
+  background: #f2f4f6;
   color: #4f5a65;
-  padding: 3px 8px;
-  border-top: 0;
-  text-align: right;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+.dashboard-finding-run .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-finding-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.dashboard-finding-body.has-evidence {
+  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.1fr);
+  align-items: stretch;
+}
+
+.dashboard-finding-body p,
+.dashboard-finding-body code {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.dashboard-finding-body p {
+  color: #38424c;
+  font-size: 13px;
+  line-height: 1.58;
+}
+
+.dashboard-finding-body code {
+  display: block;
+  border-radius: 10px;
+  background: #f6f8fa;
+  color: #4e5964;
+  padding: 10px 11px;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .compact-list {
@@ -3252,6 +3328,30 @@ select {
     border-bottom: 1px solid #edf1f4;
   }
 
+  .dashboard-runs .run-card,
+  .project-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-card {
+    grid-template-areas:
+      "main"
+      "level"
+      "body"
+      "metrics"
+      "meta"
+      "foot";
+  }
+
+  .project-card-level,
+  .project-card-foot {
+    justify-content: flex-start;
+  }
+
+  .project-card-foot span {
+    text-align: left;
+  }
+
   .event-head {
     display: grid;
     gap: 4px;
@@ -3370,12 +3470,12 @@ select {
   }
 
   .metric-family-row {
-    grid-template-columns: repeat(3, minmax(112px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
-      "title title title"
-      "latest delta range"
-      "trend trend trend"
-      "values values values";
+      "title title"
+      "latest delta"
+      "range trend"
+      "values values";
   }
 
   .metric-family-values {
@@ -3497,20 +3597,15 @@ select {
       "run";
   }
 
-  .dashboard-findings .finding {
+  .dashboard-finding-body.has-evidence {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "meta"
-      "content"
-      "run";
+  }
+
+  .dashboard-finding-title-row {
+    align-items: flex-start;
   }
 
   .findings-section .finding-run {
-    justify-self: start;
-    text-align: left;
-  }
-
-  .dashboard-findings .finding-run {
     justify-self: start;
     text-align: left;
   }

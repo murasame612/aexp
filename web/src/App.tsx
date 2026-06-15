@@ -522,9 +522,9 @@ function Dashboard({
       <div className="dashboard-lower">
         <Section title={t("agentFindings")} className="dashboard-findings-section">
           {marks.length ? (
-            <div className="finding-list dashboard-findings">
-              {marks.slice(0, 8).map((mark) => (
-                <Finding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />
+            <div className="dashboard-findings">
+              {marks.slice(0, 5).map((mark) => (
+                <DashboardFinding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />
               ))}
             </div>
           ) : (
@@ -1549,12 +1549,42 @@ function RunListCard({
   );
 }
 
+function markTone(kind?: string) {
+  return kind === "failure" ? "bad" : kind === "key_result" ? "good" : kind === "followup" ? "accent" : "neutral";
+}
+
+function DashboardFinding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
+  const reason = mark.reason || mark.evidence || "";
+  const evidence = mark.evidence && mark.evidence !== reason ? mark.evidence : "";
+  const tone = markTone(mark.kind);
+  return (
+    <button className={`dashboard-finding dashboard-finding-${tone}`} onClick={onOpenRun} type="button">
+      <div className="dashboard-finding-kicker">
+        <Pill tone={tone}>{mark.kind || "mark"}</Pill>
+        <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
+        <span>{mark.actor || "agent"}</span>
+      </div>
+      <div className="dashboard-finding-title-row">
+        <strong>{mark.title || mark.kind || mark.run_id}</strong>
+        <span className="dashboard-finding-run">
+          <span className="mono">{mark.run_id}</span>
+          {onOpenRun ? <ExternalLink size={13} /> : null}
+        </span>
+      </div>
+      <div className={evidence ? "dashboard-finding-body has-evidence" : "dashboard-finding-body"}>
+        <p>{reason || mark.run_id}</p>
+        {evidence ? <code>{evidence}</code> : null}
+      </div>
+    </button>
+  );
+}
+
 function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
   const reason = mark.reason || mark.evidence || "";
   const evidence = mark.evidence && mark.evidence !== reason ? mark.evidence : "";
-  const tone = mark.kind === "failure" ? "bad" : mark.kind === "key_result" ? "good" : mark.kind === "followup" ? "accent" : "neutral";
+  const tone = markTone(mark.kind);
   return (
-    <button className="finding" onClick={onOpenRun}>
+    <button className="finding" onClick={onOpenRun} type="button">
       <div className="finding-meta">
         <Pill tone={tone}>{mark.kind || "mark"}</Pill>
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
