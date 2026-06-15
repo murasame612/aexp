@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -186,6 +187,76 @@ func TestProjectViewsEnrichCardsWithRunsAndMarks(t *testing.T) {
 	}
 	if len(project.Cards[0].Marks) != 1 || project.Cards[0].Marks[0].Title != "CAF improves mAP" {
 		t.Fatalf("card marks not enriched: %#v", project.Cards[0].Marks)
+	}
+}
+
+func TestRunMarkAttachmentBlob(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_mark_blob",
+		Name:    "mark-resource",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_mark_blob",
+		ResourceID: "rsrc_mark_blob",
+		Name:       "blob-run",
+		Status:     store.RunStatusSucceeded,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRunMark(ctx, &store.RunMark{
+		ID:        "mark_blob",
+		RunID:     "run_mark_blob",
+		Actor:     "agent",
+		Kind:      "key_result",
+		Title:     "Plot attached",
+		Statement: "Diagnostic plot is stored locally.",
+		BodyMD:    "![plot](aexp-attachment://att_blob)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attachmentPath := filepath.Join(t.TempDir(), "plot.svg")
+	attachmentBytes := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>`)
+	if err := os.WriteFile(attachmentPath, attachmentBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRunMarkAttachments(ctx, "mark_blob", []store.RunMarkAttachment{{
+		ID:        "att_blob",
+		MarkID:    "mark_blob",
+		Filename:  "plot.svg",
+		LocalPath: attachmentPath,
+		Mime:      "image/svg+xml",
+		Caption:   "plot",
+		Size:      int64(len(attachmentBytes)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/run-marks/mark_blob/attachments/att_blob/blob", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("content type = %q, want image/svg+xml", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), attachmentBytes) {
+		t.Fatalf("body = %q, want attachment bytes", rec.Body.String())
 	}
 }
 

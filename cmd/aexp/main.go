@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -48,8 +49,8 @@ It does not need to be installed on the remote host.
 Agent workflow:
   - Use "aexp run submit" for experiments.
   - Use "aexp run logs/status" to inspect results.
-  - After interpreting a run, attach a lightweight finding with
-    "aexp run mark <run_id> --title ... --reason ... --evidence ...".
+  - After interpreting a run, attach a lightweight Markdown finding with
+    "aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption".
     These marks are shown in the web UI so important results survive context loss.`,
 		Version:      version,
 		SilenceUsage: true,
@@ -449,7 +450,7 @@ func agentCmd() *cobra.Command {
 		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
 		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
-		"Preserve finding: aexp run mark <run_id> --title ... --reason ... --evidence ...",
+		"Preserve finding: aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption",
 		"Record project card: aexp project card <run_id> --question ... --verdict ... --metric ... --important",
 		"Review project memory: aexp project digest --important",
 	}
@@ -2503,7 +2504,7 @@ func submitConfiguredRun(ctx context.Context, resourceName string, submitReq exe
 	}
 	fmt.Printf("Launched run %s on %s\n", run.ID, resourceName)
 	printRunEventGuidance(run)
-	fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
+	fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --statement \"...\" --body-md-file notes.md --attach plot.png|caption\n", run.ID)
 	return nil
 }
 
@@ -4293,7 +4294,7 @@ For agent-human collaboration, runs are the raw execution records and marks are
 the interpretation layer. After inspecting logs, metrics, or artifacts, write a
 finding with:
 
-  aexp run mark <run_id> --title ... --reason ... --evidence ...
+  aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption
 
 The web UI shows these findings on the Dashboard and inside each run detail.`,
 	}
@@ -4420,7 +4421,7 @@ elsewhere, register the resource with that root_dir first.
 
 			fmt.Printf("Launched run %s on %s\n", run.ID, resource)
 			printRunEventGuidance(run)
-			fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --reason \"...\" --evidence \"logs/...\"\n", run.ID)
+			fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --statement \"...\" --body-md-file notes.md --attach plot.png|caption\n", run.ID)
 			return nil
 		},
 	}
@@ -5387,18 +5388,31 @@ func runIsActive(run *store.Run) bool {
 }
 
 func runMarkCmd() *cobra.Command {
-	var actor, kind, title, reason, evidence string
+	var actor, kind, title, statement, bodyMD, bodyMDFile, reason, evidence string
+	var attachments []string
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "mark <run_id>",
 		Short: "Attach an agent/human finding to a run",
-		Long: `Attach a lightweight interpretation to a run without changing the run record.
+		Long: `Attach a Markdown note to a run without changing the run record.
 Use this after reading logs or artifacts so important findings survive context loss.
 
+Agent note shape:
+  --title is the note title.
+  --statement is the short one-sentence claim shown in lists.
+  --body-md or --body-md-file is the Markdown body shown when the note is opened.
+  --attach copies a local image/file into ~/.aexp and appends Markdown image links
+    such as ![caption](aexp-attachment://att_xxx) when the body has no attachment URI.
+
+Attachment syntax:
+  --attach /path/to/plot.png
+  --attach /path/to/plot.png|Prediction window plot
+
 Examples:
-  aexp run mark run_ABC --title "IR baseline confirms signal" --reason "mAP improves over target-only" --evidence "logs/train.log"
-  aexp run mark run_ABC --kind failure --title "Conda env mismatch" --evidence "python resolved to system interpreter"`,
+  aexp run mark run_ABC --title "IR baseline confirms signal" --statement "mAP improves over target-only" --body-md "Validation selected checkpoint improves mAP." --evidence "logs/train.log"
+  aexp run mark run_ABC --kind key_result --title "Output-window plots generated" --statement "Plots explain the 192/96 delta" --body-md-file notes.md --attach outputs/plot.png|Top error cases
+  aexp run mark run_ABC --kind failure --title "Conda env mismatch" --statement "Python resolved to the system interpreter" --evidence "logs/setup.log"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := openDB()
@@ -5411,18 +5425,41 @@ Examples:
 			if run == nil {
 				return fmt.Errorf("run %s not found", args[0])
 			}
-			if strings.TrimSpace(title) == "" && strings.TrimSpace(reason) == "" && strings.TrimSpace(evidence) == "" {
-				return fmt.Errorf("title, reason, or evidence is required")
+			if bodyMDFile != "" {
+				data, err := os.ReadFile(expandPath(bodyMDFile))
+				if err != nil {
+					return fmt.Errorf("read body md file: %w", err)
+				}
+				bodyMD = string(data)
+			}
+
+			markID := genID("mark_")
+			markAttachments, err := copyRunMarkAttachments(markID, attachments)
+			if err != nil {
+				return err
+			}
+			bodyMD = appendAttachmentRefs(strings.TrimSpace(bodyMD), markAttachments)
+			if strings.TrimSpace(statement) == "" {
+				statement = deriveRunMarkStatement(bodyMD, reason, evidence)
+			}
+			if strings.TrimSpace(bodyMD) == "" {
+				bodyMD = legacyRunMarkBody(reason, evidence)
+			}
+			if strings.TrimSpace(title) == "" && strings.TrimSpace(statement) == "" && strings.TrimSpace(bodyMD) == "" && strings.TrimSpace(reason) == "" && strings.TrimSpace(evidence) == "" {
+				return fmt.Errorf("title, statement, body-md, reason, or evidence is required")
 			}
 
 			mark := store.RunMark{
-				ID:       genID("mark_"),
-				RunID:    run.ID,
-				Actor:    strings.TrimSpace(actor),
-				Kind:     strings.TrimSpace(kind),
-				Title:    strings.TrimSpace(title),
-				Reason:   strings.TrimSpace(reason),
-				Evidence: strings.TrimSpace(evidence),
+				ID:          markID,
+				RunID:       run.ID,
+				Actor:       strings.TrimSpace(actor),
+				Kind:        strings.TrimSpace(kind),
+				Title:       strings.TrimSpace(title),
+				Statement:   strings.TrimSpace(statement),
+				BodyMD:      strings.TrimSpace(bodyMD),
+				Reason:      strings.TrimSpace(reason),
+				Evidence:    strings.TrimSpace(evidence),
+				Attachments: markAttachments,
 			}
 			if mark.Actor == "" {
 				mark.Actor = "agent"
@@ -5434,10 +5471,16 @@ Examples:
 			if err := db.SaveRunMark(cmd.Context(), &mark); err != nil {
 				return fmt.Errorf("save run mark: %w", err)
 			}
+			if err := db.SaveRunMarkAttachments(cmd.Context(), mark.ID, markAttachments); err != nil {
+				return fmt.Errorf("save run mark attachments: %w", err)
+			}
 			if asJSON {
 				return printJSON(mark)
 			}
 			fmt.Printf("Marked run %s as %s (%s)\n", run.ID, mark.Kind, mark.ID)
+			for _, attachment := range markAttachments {
+				fmt.Printf("Attachment %s: ![%s](aexp-attachment://%s)\n", attachment.ID, attachment.Caption, attachment.ID)
+			}
 			return nil
 		},
 	}
@@ -5445,8 +5488,12 @@ Examples:
 	cmd.Flags().StringVar(&actor, "actor", "agent", "Actor writing the mark")
 	cmd.Flags().StringVar(&kind, "kind", "key_result", "Mark kind, e.g. key_result, failure, note, followup")
 	cmd.Flags().StringVar(&title, "title", "", "Short title for the finding")
+	cmd.Flags().StringVar(&statement, "statement", "", "One-sentence statement shown in mark lists")
+	cmd.Flags().StringVar(&bodyMD, "body-md", "", "Markdown body shown when opening the note")
+	cmd.Flags().StringVar(&bodyMDFile, "body-md-file", "", "Read Markdown body from a file")
 	cmd.Flags().StringVar(&reason, "reason", "", "Why this run matters")
 	cmd.Flags().StringVar(&evidence, "evidence", "", "Lightweight Markdown/plain-text evidence, log paths, or artifact paths")
+	cmd.Flags().StringSliceVar(&attachments, "attach", nil, "Copy a local file/image into this mark; syntax PATH or PATH|caption, repeatable")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
@@ -5886,6 +5933,147 @@ func execShowCmd() *cobra.Command {
 }
 
 // --- helpers ---
+
+func copyRunMarkAttachments(markID string, specs []string) ([]store.RunMarkAttachment, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	baseDir := expandPath(filepath.Join("~/.aexp", "attachments", "run_marks", markID))
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("create mark attachment dir: %w", err)
+	}
+
+	attachments := make([]store.RunMarkAttachment, 0, len(specs))
+	for _, spec := range specs {
+		source, caption := parseAttachmentSpec(spec)
+		if source == "" {
+			continue
+		}
+		source = expandPath(source)
+		info, err := os.Stat(source)
+		if err != nil {
+			return nil, fmt.Errorf("stat attachment %s: %w", source, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("attachment %s is a directory; attach files only", source)
+		}
+		id := genID("att_")
+		filename := filepath.Base(source)
+		if caption == "" {
+			caption = strings.TrimSuffix(filename, filepath.Ext(filename))
+		}
+		dest := filepath.Join(baseDir, id+"_"+filename)
+		if err := copyFile(source, dest); err != nil {
+			return nil, fmt.Errorf("copy attachment %s: %w", source, err)
+		}
+		attachments = append(attachments, store.RunMarkAttachment{
+			ID:        id,
+			MarkID:    markID,
+			Filename:  filename,
+			LocalPath: dest,
+			Mime:      detectMime(dest, filename),
+			Caption:   caption,
+			Size:      info.Size(),
+			CreatedAt: time.Now(),
+		})
+	}
+	return attachments, nil
+}
+
+func parseAttachmentSpec(spec string) (string, string) {
+	parts := strings.SplitN(strings.TrimSpace(spec), "|", 2)
+	source := strings.TrimSpace(parts[0])
+	caption := ""
+	if len(parts) == 2 {
+		caption = strings.TrimSpace(parts[1])
+	}
+	return source, caption
+}
+
+func copyFile(source, dest string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+func detectMime(path string, filename string) string {
+	if mt := mime.TypeByExtension(filepath.Ext(filename)); mt != "" {
+		return mt
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	defer file.Close()
+	var buf [512]byte
+	n, _ := file.Read(buf[:])
+	if n > 0 {
+		return http.DetectContentType(buf[:n])
+	}
+	return "application/octet-stream"
+}
+
+func appendAttachmentRefs(body string, attachments []store.RunMarkAttachment) string {
+	if len(attachments) == 0 || strings.Contains(body, "aexp-attachment://") {
+		return body
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(body))
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	b.WriteString("## Attachments\n\n")
+	for _, attachment := range attachments {
+		caption := attachment.Caption
+		if caption == "" {
+			caption = attachment.Filename
+		}
+		b.WriteString("![")
+		b.WriteString(strings.ReplaceAll(caption, "]", "\\]"))
+		b.WriteString("](aexp-attachment://")
+		b.WriteString(attachment.ID)
+		b.WriteString(")\n\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func deriveRunMarkStatement(bodyMD, reason, evidence string) string {
+	for _, source := range []string{reason, bodyMD, evidence} {
+		for _, line := range strings.Split(source, "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+			if line != "" && !strings.HasPrefix(line, "![") && !strings.HasPrefix(line, "```") {
+				if len(line) > 180 {
+					return line[:177] + "..."
+				}
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+func legacyRunMarkBody(reason, evidence string) string {
+	parts := []string{}
+	if strings.TrimSpace(reason) != "" {
+		parts = append(parts, strings.TrimSpace(reason))
+	}
+	if strings.TrimSpace(evidence) != "" && strings.TrimSpace(evidence) != strings.TrimSpace(reason) {
+		parts = append(parts, strings.TrimSpace(evidence))
+	}
+	return strings.Join(parts, "\n\n")
+}
 
 func openDB() *store.SQLite {
 	dbPath := expandPath("~/.aexp/aexp.db")

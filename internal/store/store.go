@@ -48,6 +48,9 @@ type Store interface {
 	SaveRunMark(ctx context.Context, m *RunMark) error
 	GetRunMark(ctx context.Context, id string) (*RunMark, error)
 	ListRunMarks(ctx context.Context, filter RunMarkFilter) ([]RunMark, error)
+	SaveRunMarkAttachments(ctx context.Context, markID string, attachments []RunMarkAttachment) error
+	GetRunMarkAttachment(ctx context.Context, markID string, attachmentID string) (*RunMarkAttachment, error)
+	ListRunMarkAttachments(ctx context.Context, markID string) ([]RunMarkAttachment, error)
 
 	// Run Bookmarks
 	SaveRunBookmark(ctx context.Context, b *RunBookmark) error

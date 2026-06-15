@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS run_marks (
     actor       TEXT NOT NULL,
     kind        TEXT NOT NULL DEFAULT 'key_result',
     title       TEXT DEFAULT '',
+    statement   TEXT DEFAULT '',
+    body_md     TEXT DEFAULT '',
     reason      TEXT DEFAULT '',
     evidence    TEXT DEFAULT '',
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -148,6 +150,19 @@ CREATE TABLE IF NOT EXISTS run_marks (
 CREATE INDEX IF NOT EXISTS idx_run_marks_run ON run_marks(run_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_run_marks_kind ON run_marks(kind, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_run_marks_actor ON run_marks(actor, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_mark_attachments (
+    id          TEXT PRIMARY KEY,
+    mark_id     TEXT NOT NULL REFERENCES run_marks(id) ON DELETE CASCADE,
+    filename    TEXT NOT NULL DEFAULT '',
+    local_path  TEXT NOT NULL DEFAULT '',
+    mime        TEXT DEFAULT '',
+    caption     TEXT DEFAULT '',
+    size        INTEGER NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_mark_attachments_mark ON run_mark_attachments(mark_id, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS run_bookmarks (
     id          TEXT PRIMARY KEY,

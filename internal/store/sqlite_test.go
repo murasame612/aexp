@@ -257,16 +257,29 @@ func TestRunMarks(t *testing.T) {
 	s.CreateRun(ctx, &Run{ID: "run_mark01", ResourceID: "rsrc_m01", Status: RunStatusSucceeded, Command: "python train.py"})
 
 	mark := &RunMark{
-		ID:       "mark_test001",
-		RunID:    "run_mark01",
-		Actor:    "agent",
-		Kind:     "key_result",
-		Title:    "Useful ablation",
-		Reason:   "Validation loss improved.",
-		Evidence: "logs/train.log",
+		ID:        "mark_test001",
+		RunID:     "run_mark01",
+		Actor:     "agent",
+		Kind:      "key_result",
+		Title:     "Useful ablation",
+		Statement: "Validation loss improved.",
+		BodyMD:    "## Result\n\nValidation loss improved.\n\n![plot](aexp-attachment://att_test001)",
+		Reason:    "Validation loss improved.",
+		Evidence:  "logs/train.log",
 	}
 	if err := s.SaveRunMark(ctx, mark); err != nil {
 		t.Fatalf("SaveRunMark: %v", err)
+	}
+	if err := s.SaveRunMarkAttachments(ctx, mark.ID, []RunMarkAttachment{{
+		ID:        "att_test001",
+		MarkID:    mark.ID,
+		Filename:  "plot.png",
+		LocalPath: "/tmp/plot.png",
+		Mime:      "image/png",
+		Caption:   "plot",
+		Size:      123,
+	}}); err != nil {
+		t.Fatalf("SaveRunMarkAttachments: %v", err)
 	}
 	if err := s.SaveRunMark(ctx, &RunMark{
 		ID:     "mark_test002",
@@ -285,6 +298,19 @@ func TestRunMarks(t *testing.T) {
 	}
 	if got.Title != "Useful ablation" {
 		t.Errorf("title = %q, want %q", got.Title, "Useful ablation")
+	}
+	if got.Statement != "Validation loss improved." || got.BodyMD == "" {
+		t.Errorf("markdown fields not preserved: %#v", got)
+	}
+	if len(got.Attachments) != 1 || got.Attachments[0].ID != "att_test001" {
+		t.Errorf("attachments = %#v, want att_test001", got.Attachments)
+	}
+	attachment, err := s.GetRunMarkAttachment(ctx, mark.ID, "att_test001")
+	if err != nil {
+		t.Fatalf("GetRunMarkAttachment: %v", err)
+	}
+	if attachment == nil || attachment.LocalPath != "/tmp/plot.png" {
+		t.Errorf("attachment = %#v, want /tmp/plot.png", attachment)
 	}
 
 	marks, err := s.ListRunMarks(ctx, RunMarkFilter{RunID: "run_mark01", Limit: 10})

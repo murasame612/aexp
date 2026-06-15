@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -120,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 		// Run Marks
 		r.Get("/run-marks", s.handleListRunMarks)
 		r.Get("/run-marks/{id}", s.handleGetRunMark)
+		r.Get("/run-marks/{id}/attachments/{attachmentID}/blob", s.handleGetRunMarkAttachmentBlob)
 
 		// Human-curated favorite runs
 		r.Get("/run-bookmarks", s.handleListRunBookmarks)
@@ -1146,6 +1148,8 @@ func (s *Server) handleCreateRunMark(w http.ResponseWriter, r *http.Request) {
 	mark.Actor = strings.TrimSpace(mark.Actor)
 	mark.Kind = strings.TrimSpace(mark.Kind)
 	mark.Title = strings.TrimSpace(mark.Title)
+	mark.Statement = strings.TrimSpace(mark.Statement)
+	mark.BodyMD = strings.TrimSpace(mark.BodyMD)
 	mark.Reason = strings.TrimSpace(mark.Reason)
 	mark.Evidence = strings.TrimSpace(mark.Evidence)
 	if mark.Actor == "" {
@@ -1154,8 +1158,8 @@ func (s *Server) handleCreateRunMark(w http.ResponseWriter, r *http.Request) {
 	if mark.Kind == "" {
 		mark.Kind = "key_result"
 	}
-	if mark.Title == "" && mark.Reason == "" && mark.Evidence == "" {
-		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "title, reason, or evidence is required")
+	if mark.Title == "" && mark.Statement == "" && mark.BodyMD == "" && mark.Reason == "" && mark.Evidence == "" {
+		writeError(w, http.StatusBadRequest, "MISSING_FIELDS", "title, statement, body_md, reason, or evidence is required")
 		return
 	}
 
@@ -1164,6 +1168,42 @@ func (s *Server) handleCreateRunMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, mark)
+}
+
+func (s *Server) handleGetRunMarkAttachmentBlob(w http.ResponseWriter, r *http.Request) {
+	markID := chi.URLParam(r, "id")
+	attachmentID := chi.URLParam(r, "attachmentID")
+	attachment, err := s.store.GetRunMarkAttachment(r.Context(), markID, attachmentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if attachment == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run mark attachment not found")
+		return
+	}
+	path := filepath.Clean(attachment.LocalPath)
+	file, err := os.Open(path)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "attachment file not found")
+		return
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil || stat.IsDir() {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "attachment file not readable")
+		return
+	}
+	contentType := attachment.Mime
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(attachment.Filename))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", attachment.Filename))
+	http.ServeContent(w, r, attachment.Filename, stat.ModTime(), file)
 }
 
 func runMarkFilterFromQuery(r *http.Request) store.RunMarkFilter {

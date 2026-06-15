@@ -212,7 +212,7 @@ printf '{"id":"mark_123","run_id":"run_ABC","kind":"note"}\n'
 	}
 	t.Setenv("AEXP_STUB_ARGS", argsFile)
 
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_mark_run","arguments":{"run_id":"run_ABC","kind":"note","title":"ok","reason":"checked"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_mark_run","arguments":{"run_id":"run_ABC","kind":"note","title":"ok","statement":"short","body_md":"## Body","reason":"checked","attachment":["/tmp/plot.png|Plot"]}}}` + "\n"
 	var out bytes.Buffer
 	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
@@ -223,7 +223,7 @@ printf '{"id":"mark_123","run_id":"run_ABC","kind":"note"}\n'
 		t.Fatalf("read args: %v", err)
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
-	wantArgs := []string{"run", "mark", "run_ABC", "--json", "--kind", "note", "--title", "ok", "--reason", "checked"}
+	wantArgs := []string{"run", "mark", "run_ABC", "--json", "--kind", "note", "--title", "ok", "--statement", "short", "--body-md", "## Body", "--reason", "checked", "--attach", "/tmp/plot.png|Plot"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}

@@ -494,11 +494,20 @@ func (s *Server) toolMarkRun(ctx context.Context, args map[string]interface{}) (
 	if v := stringArg(args, "title", ""); v != "" {
 		cli = append(cli, "--title", v)
 	}
+	if v := stringArg(args, "statement", ""); v != "" {
+		cli = append(cli, "--statement", v)
+	}
+	if v := stringArg(args, "body_md", ""); v != "" {
+		cli = append(cli, "--body-md", v)
+	}
 	if v := stringArg(args, "reason", ""); v != "" {
 		cli = append(cli, "--reason", v)
 	}
 	if v := stringArg(args, "evidence", ""); v != "" {
 		cli = append(cli, "--evidence", v)
+	}
+	for _, attachment := range stringSliceArg(args, "attachment") {
+		cli = append(cli, "--attach", attachment)
 	}
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
@@ -1537,15 +1546,18 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_mark_run",
-			Description: "Attach an agent/human finding to a run.",
+			Description: "Attach an agent/human Markdown note to a run. Prefer title + statement + body_md. Attach local images/files with attachment entries using PATH or PATH|caption; aexp copies them into ~/.aexp and uses Markdown image refs like ![caption](aexp-attachment://att_xxx).",
 			InputSchema: objectSchema(map[string]interface{}{
-				"run_id":   stringSchema("Run id."),
-				"actor":    stringSchema("Actor writing the mark."),
-				"kind":     stringSchema("Mark kind, e.g. key_result, failure, note, followup."),
-				"title":    stringSchema("Short title for the finding."),
-				"reason":   stringSchema("Why this run matters."),
-				"evidence": stringSchema("Lightweight Markdown/plain-text evidence, log paths, or artifact paths."),
-				"timeout":  numberSchema("Tool timeout in seconds."),
+				"run_id":     stringSchema("Run id."),
+				"actor":      stringSchema("Actor writing the mark."),
+				"kind":       stringSchema("Mark kind, e.g. key_result, failure, note, followup."),
+				"title":      stringSchema("Short note title."),
+				"statement":  stringSchema("One-sentence statement shown in mark lists."),
+				"body_md":    stringSchema("Markdown body shown when the note is opened. Use ordinary Markdown. For attached images use ![caption](aexp-attachment://attachment_id); if omitted, aexp appends refs for provided attachments."),
+				"reason":     stringSchema("Legacy short reason. Prefer statement/body_md for new notes."),
+				"evidence":   stringSchema("Legacy evidence text or paths. Prefer body_md plus attachment for new notes."),
+				"attachment": arrayStringSchema("Local file/image path to copy into the mark, repeatable. Syntax: PATH or PATH|caption."),
+				"timeout":    numberSchema("Tool timeout in seconds."),
 			}, []string{"run_id"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolMarkRun(ctx, args)

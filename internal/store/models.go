@@ -147,13 +147,28 @@ type AgentEvent struct {
 
 // RunMark records a human/agent interpretation of a run.
 type RunMark struct {
+	ID          string              `json:"id"`
+	RunID       string              `json:"run_id"`
+	Actor       string              `json:"actor"`
+	Kind        string              `json:"kind"`
+	Title       string              `json:"title"`
+	Statement   string              `json:"statement"`
+	BodyMD      string              `json:"body_md"`
+	Reason      string              `json:"reason"`
+	Evidence    string              `json:"evidence"`
+	Attachments []RunMarkAttachment `json:"attachments,omitempty"`
+	CreatedAt   time.Time           `json:"created_at"`
+}
+
+// RunMarkAttachment is a local file copied into a run mark note.
+type RunMarkAttachment struct {
 	ID        string    `json:"id"`
-	RunID     string    `json:"run_id"`
-	Actor     string    `json:"actor"`
-	Kind      string    `json:"kind"`
-	Title     string    `json:"title"`
-	Reason    string    `json:"reason"`
-	Evidence  string    `json:"evidence"`
+	MarkID    string    `json:"mark_id"`
+	Filename  string    `json:"filename"`
+	LocalPath string    `json:"local_path"`
+	Mime      string    `json:"mime"`
+	Caption   string    `json:"caption"`
+	Size      int64     `json:"size"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

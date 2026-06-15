@@ -449,6 +449,95 @@ func TestRunMarksAcceptsPositionalRunID(t *testing.T) {
 	}
 }
 
+func TestRunMarkCopiesAttachmentsAndAddsMarkdownRefs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dbPath := filepath.Join(home, ".aexp", "aexp.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_attach",
+		Name:    "local",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_attach",
+		ResourceID: "rsrc_attach",
+		Name:       "attach-run",
+		Status:     store.RunStatusSucceeded,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	source := filepath.Join(t.TempDir(), "plot.png")
+	if err := os.WriteFile(source, []byte("fake-png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runMarkForTest(
+		"run_attach",
+		"--title", "Plot note",
+		"--statement", "Plot explains the failure mode.",
+		"--body-md", "## Result\n\nSee attached plot.",
+		"--attach", source+"|Prediction plot",
+	)
+	if err != nil {
+		t.Fatalf("run mark failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "aexp-attachment://att_") {
+		t.Fatalf("expected attachment URI in output:\n%s", out)
+	}
+
+	db, err = store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	marks, err := db.ListRunMarks(ctx, store.RunMarkFilter{RunID: "run_attach", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("marks = %#v, want one", marks)
+	}
+	mark := marks[0]
+	if mark.Statement != "Plot explains the failure mode." {
+		t.Fatalf("statement = %q", mark.Statement)
+	}
+	if len(mark.Attachments) != 1 {
+		t.Fatalf("attachments = %#v, want one", mark.Attachments)
+	}
+	attachment := mark.Attachments[0]
+	if attachment.Caption != "Prediction plot" || attachment.Mime != "image/png" {
+		t.Fatalf("attachment metadata = %#v", attachment)
+	}
+	if !strings.Contains(mark.BodyMD, "![Prediction plot](aexp-attachment://"+attachment.ID+")") {
+		t.Fatalf("body md missing attachment ref:\n%s", mark.BodyMD)
+	}
+	data, err := os.ReadFile(attachment.LocalPath)
+	if err != nil {
+		t.Fatalf("copied attachment not readable: %v", err)
+	}
+	if string(data) != "fake-png" {
+		t.Fatalf("copied attachment = %q", string(data))
+	}
+	if !strings.HasPrefix(attachment.LocalPath, filepath.Join(home, ".aexp", "attachments", "run_marks")) {
+		t.Fatalf("attachment path = %q, want under temporary HOME", attachment.LocalPath)
+	}
+}
+
 func TestProjectDoctorConfigFixesMissingRemoteCWD(t *testing.T) {
 	cfg := &projectFileConfig{
 		Path:     filepath.Join(t.TempDir(), ".aexp.yaml"),
@@ -718,6 +807,16 @@ func runInitForTest(args ...string) (string, error) {
 
 func runMarksForTest(args ...string) (string, error) {
 	cmd := runMarksCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(args)
+	return captureStdout(func() error {
+		return cmd.Execute()
+	})
+}
+
+func runMarkForTest(args ...string) (string, error) {
+	cmd := runMarkCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs(args)

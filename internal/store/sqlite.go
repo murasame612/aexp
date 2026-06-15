@@ -83,6 +83,8 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("project_run_cards", "should_promote", "INTEGER NOT NULL", "0")
 	addColumn("project_run_cards", "proposal_reason", "TEXT", "''")
 	addColumn("project_run_cards", "related_runs", "TEXT", "''")
+	addColumn("run_marks", "statement", "TEXT", "''")
+	addColumn("run_marks", "body_md", "TEXT", "''")
 
 	return nil
 }
@@ -555,20 +557,20 @@ func (s *SQLite) ListAgentEvents(ctx context.Context, runID string) ([]AgentEven
 
 // --- Run Marks ---
 
-const runMarkColumns = "id, run_id, actor, kind, title, reason, evidence, created_at"
+const runMarkColumns = "id, run_id, actor, kind, title, statement, body_md, reason, evidence, created_at"
 
 func scanRunMark(m *RunMark) func(rowScanner) error {
 	return func(row rowScanner) error {
-		return row.Scan(&m.ID, &m.RunID, &m.Actor, &m.Kind, &m.Title, &m.Reason, &m.Evidence, &m.CreatedAt)
+		return row.Scan(&m.ID, &m.RunID, &m.Actor, &m.Kind, &m.Title, &m.Statement, &m.BodyMD, &m.Reason, &m.Evidence, &m.CreatedAt)
 	}
 }
 
 func (s *SQLite) SaveRunMark(ctx context.Context, m *RunMark) error {
 	m.CreatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO run_marks (id, run_id, actor, kind, title, reason, evidence, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.RunID, m.Actor, m.Kind, m.Title, m.Reason, m.Evidence, m.CreatedAt,
+		`INSERT INTO run_marks (id, run_id, actor, kind, title, statement, body_md, reason, evidence, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.RunID, m.Actor, m.Kind, m.Title, m.Statement, m.BodyMD, m.Reason, m.Evidence, m.CreatedAt,
 	)
 	return err
 }
@@ -580,6 +582,10 @@ func (s *SQLite) GetRunMark(ctx context.Context, id string) (*RunMark, error) {
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	m.Attachments, err = s.ListRunMarkAttachments(ctx, m.ID)
 	return m, err
 }
 
@@ -623,9 +629,82 @@ func (s *SQLite) ListRunMarks(ctx context.Context, filter RunMarkFilter) ([]RunM
 		if err := scanRunMark(&m)(rows); err != nil {
 			return nil, err
 		}
+		attachments, err := s.ListRunMarkAttachments(ctx, m.ID)
+		if err != nil {
+			return nil, err
+		}
+		m.Attachments = attachments
 		marks = append(marks, m)
 	}
 	return marks, rows.Err()
+}
+
+const runMarkAttachmentColumns = "id, mark_id, filename, local_path, mime, caption, size, created_at"
+
+func scanRunMarkAttachment(a *RunMarkAttachment) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&a.ID, &a.MarkID, &a.Filename, &a.LocalPath, &a.Mime, &a.Caption, &a.Size, &a.CreatedAt)
+	}
+}
+
+func (s *SQLite) SaveRunMarkAttachments(ctx context.Context, markID string, attachments []RunMarkAttachment) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO run_mark_attachments (`+runMarkAttachmentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for _, a := range attachments {
+		if a.CreatedAt.IsZero() {
+			a.CreatedAt = now
+		}
+		if a.MarkID == "" {
+			a.MarkID = markID
+		}
+		if _, err := stmt.ExecContext(ctx, a.ID, a.MarkID, a.Filename, a.LocalPath, a.Mime, a.Caption, a.Size, a.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) GetRunMarkAttachment(ctx context.Context, markID string, attachmentID string) (*RunMarkAttachment, error) {
+	a := &RunMarkAttachment{}
+	err := scanRunMarkAttachment(a)(s.db.QueryRowContext(ctx,
+		`SELECT `+runMarkAttachmentColumns+` FROM run_mark_attachments WHERE mark_id = ? AND id = ?`, markID, attachmentID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+func (s *SQLite) ListRunMarkAttachments(ctx context.Context, markID string) ([]RunMarkAttachment, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runMarkAttachmentColumns+` FROM run_mark_attachments WHERE mark_id = ? ORDER BY created_at ASC`, markID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	attachments := make([]RunMarkAttachment, 0)
+	for rows.Next() {
+		var a RunMarkAttachment
+		if err := scanRunMarkAttachment(&a)(rows); err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, a)
+	}
+	return attachments, rows.Err()
 }
 
 // --- Run Bookmarks ---
