@@ -281,9 +281,17 @@ export interface ParsedEvents {
   events: UIEvent[];
   metrics: MetricPoint[];
   latestMetrics: MetricPoint[];
+  params: ParamPoint[];
   progress: ProgressPoint[];
   notes: UIEvent[];
   errors: string[];
+}
+
+export interface ParamPoint {
+  name: string;
+  value: string;
+  time?: number;
+  series?: string;
 }
 
 export interface MetricPoint {

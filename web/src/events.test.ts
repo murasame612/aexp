@@ -39,8 +39,24 @@ describe("event parsing", () => {
       JSON.stringify({ type: "metric", name: "train/loss", value: 0.12, epoch: 1 })
     ]);
     expect(parsed.metrics).toHaveLength(1);
+    expect(parsed.params).toEqual([
+      { name: "batch_size", value: "16", series: undefined, time: undefined },
+      { name: "epochs", value: "30", series: undefined, time: undefined }
+    ]);
     expect(parsed.metrics[0]).toMatchObject({ name: "train/loss", value: 0.12 });
     expect(parsed.latestMetrics.map((metric) => metric.name)).toEqual(["train/loss"]);
+  });
+
+  it("keeps the latest value for repeated params", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "param", name: "learning_rate", value: "1e-3", series: "raw" }),
+      JSON.stringify({ type: "param", name: "learning_rate", value: "5e-4", series: "raw" }),
+      JSON.stringify({ type: "parameter", name: "seed", value: 42 })
+    ]);
+    expect(parsed.params).toEqual([
+      { name: "learning_rate", value: "5e-4", series: "raw", time: undefined },
+      { name: "seed", value: "42", series: undefined, time: undefined }
+    ]);
   });
 
   it("keeps progress context and summarizes repeated updates", () => {

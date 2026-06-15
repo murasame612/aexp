@@ -1024,11 +1024,13 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
+  const params = parsed.params.slice(0, 24);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
   const summary = [
     { label: t("events"), value: parsed.events.length },
     { label: t("progress"), value: parsed.progress.length },
+    { label: t("params"), value: parsed.params.length },
     { label: t("metrics"), value: parsed.metrics.length },
     { label: parsed.errors.length ? t("errors") : t("notes"), value: parsed.errors.length || parsed.notes.length }
   ];
@@ -1058,7 +1060,20 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
         <EventFoldout className="progress-panel" title={t("progress")} count={progress.length} defaultOpen>
           {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
         </EventFoldout>
-        <EventFoldout className="metric-panel" title={t("latestMetrics")} count={latest.length} defaultOpen>
+        <EventFoldout className="param-panel" title={t("params")} count={params.length} defaultOpen>
+          <div className="param-list">
+            {params.length ? params.map((param) => (
+              <div className="param-row" key={`${param.series || t("defaultSeries")}-${param.name}`}>
+                <div>
+                  <span>{param.name}</span>
+                  {param.series ? <small>{param.series}</small> : null}
+                </div>
+                <strong>{param.value || "-"}</strong>
+              </div>
+            )) : <span className="muted">{t("noParamsYet")}</span>}
+          </div>
+        </EventFoldout>
+        <EventFoldout className="metric-panel" title={t("latestMetricValues")} count={latest.length}>
           <div className="metric-list">
             {latest.length ? latest.map((metric, index) => (
               <div className="metric-row" key={`${metric.series || t("defaultSeries")}-${metric.name}-${index}`}>
@@ -1078,7 +1093,7 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
           </EventFoldout>
         ) : null}
       </div>
-      <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length}>
+      <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length} defaultOpen>
         <section className="metric-family-table" aria-label={t("metrics")}>
           <div className="metric-table-head">
             <span>{t("metrics")}</span>

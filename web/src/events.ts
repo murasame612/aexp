@@ -1,4 +1,4 @@
-import type { MetricPoint, ParsedEvents, ProgressPoint, UIEvent } from "./types";
+import type { MetricPoint, ParamPoint, ParsedEvents, ProgressPoint, UIEvent } from "./types";
 import { latestMetricByName } from "./utils";
 
 export interface MetricFamilySummary {
@@ -58,9 +58,22 @@ function eventLabel(ev: UIEvent): string | undefined {
   return label || undefined;
 }
 
+function eventValue(ev: UIEvent): string {
+  const raw = ev.value ?? ev.text ?? ev.message ?? "";
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
+  if (raw == null) return "";
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return String(raw);
+  }
+}
+
 export function parseEventLines(lines: string[]): ParsedEvents {
   const events: UIEvent[] = [];
   const metrics: MetricPoint[] = [];
+  const params: ParamPoint[] = [];
   const progress: ProgressPoint[] = [];
   const notes: UIEvent[] = [];
   const errors: string[] = [];
@@ -79,6 +92,15 @@ export function parseEventLines(lines: string[]): ParsedEvents {
     const typ = String(ev.type || "").toLowerCase();
     const name = eventName(ev);
     const value = asNumber(ev.value);
+    if ((typ === "param" || typ === "parameter") && name) {
+      params.push({
+        name,
+        value: eventValue(ev),
+        time: asNumber(ev.time),
+        series: eventSeries(ev)
+      });
+      continue;
+    }
     if ((typ === "metric" || typ === "metrics" || typ === "eval" || typ === "scalar" || (typ === "" && ev.metric != null)) && name && value !== undefined) {
       metrics.push({
         name,
@@ -109,7 +131,15 @@ export function parseEventLines(lines: string[]): ParsedEvents {
     if (typ === "note" || typ === "log" || typ === "message") notes.push(ev);
   }
 
-  return { events, metrics, latestMetrics: latestMetricByName(metrics), progress, notes, errors };
+  return { events, metrics, latestMetrics: latestMetricByName(metrics), params: latestParams(params), progress, notes, errors };
+}
+
+function latestParams(params: ParamPoint[]): ParamPoint[] {
+  const latest = new Map<string, ParamPoint>();
+  for (const param of params) {
+    latest.set(`${param.series || ""}\u0000${param.name}`, param);
+  }
+  return Array.from(latest.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function progressIdentity(name: string, series?: string) {
