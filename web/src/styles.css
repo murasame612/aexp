@@ -682,8 +682,8 @@ select {
 
 .dashboard-lower {
   display: grid;
-  grid-template-columns: minmax(0, 1.85fr) minmax(min(100%, 260px), 0.55fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   align-items: start;
 }
 
@@ -702,7 +702,8 @@ select {
 }
 
 .dashboard-findings .finding {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(130px, 0.22fr) minmax(0, 1fr) minmax(170px, 0.28fr);
+  grid-template-areas: "meta content run";
   min-height: 0;
   border: 0;
   border-top: 1px solid #edf1f4;
@@ -718,11 +719,11 @@ select {
 }
 
 .dashboard-findings .finding-reason {
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 6;
 }
 
 .dashboard-findings .finding-evidence {
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 6;
 }
 
 .compact-list {
@@ -2658,6 +2659,10 @@ select {
   gap: 10px;
 }
 
+.finding-list.dashboard-findings {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .findings-section .finding-list {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
@@ -3029,7 +3034,20 @@ select {
       "run";
   }
 
+  .dashboard-findings .finding {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "meta"
+      "content"
+      "run";
+  }
+
   .findings-section .finding-run {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .dashboard-findings .finding-run {
     justify-self: start;
     text-align: left;
   }
