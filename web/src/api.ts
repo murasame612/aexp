@@ -177,6 +177,11 @@ export function getAllRunMarks(token: string) {
   return apiFetch<RunMark[]>("/run-marks?limit=500", { token });
 }
 
+export function runMarkAttachmentBlobUrl(markId: string, attachmentId: string, token?: string) {
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${API}/run-marks/${encodeURIComponent(markId)}/attachments/${encodeURIComponent(attachmentId)}/blob${query}`;
+}
+
 export function getBookmarks(token: string) {
   return apiFetch<RunBookmark[]>("/run-bookmarks?limit=500", { token });
 }

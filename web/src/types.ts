@@ -127,8 +127,22 @@ export interface RunMark {
   actor: string;
   kind: string;
   title?: string;
+  statement?: string;
+  body_md?: string;
   reason?: string;
   evidence?: string;
+  attachments?: RunMarkAttachment[];
+  created_at?: string;
+}
+
+export interface RunMarkAttachment {
+  id: string;
+  mark_id: string;
+  filename: string;
+  local_path: string;
+  mime?: string;
+  caption?: string;
+  size?: number;
   created_at?: string;
 }
 

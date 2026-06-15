@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Activity,
   Archive,
@@ -45,6 +47,7 @@ import {
   localResourceDefaults,
   refreshResource,
   restoreRun,
+  runMarkAttachmentBlobUrl,
   saveBookmark,
   saveResource,
   statusCheck,
@@ -1003,7 +1006,7 @@ function RunDetail({
       ) : (
         <Empty t={t} />
       )}
-      {selectedMark ? <MarkDetailModal mark={selectedMark} t={t} onClose={() => setSelectedMark(null)} /> : null}
+      {selectedMark ? <MarkDetailModal mark={selectedMark} token={token} t={t} onClose={() => setSelectedMark(null)} /> : null}
     </Modal>
   );
 }
@@ -1727,12 +1730,18 @@ function Finding({ mark, onOpen }: { mark: RunMark; onOpen?: () => void }) {
 }
 
 function markStatement(mark: RunMark) {
-  const source = mark.reason || mark.evidence || "";
+  if (mark.statement?.trim()) return mark.statement.trim();
+  const source = mark.reason || mark.body_md || mark.evidence || "";
   return source.split(/\n\s*\n|\n/).map((line) => line.trim()).find(Boolean) || "";
 }
 
-function MarkDetailModal({ mark, t, onClose }: { mark: RunMark; t: T; onClose: () => void }) {
-  const body = [mark.reason, mark.evidence && mark.evidence !== mark.reason ? mark.evidence : ""].filter(Boolean).join("\n\n");
+function markBodyMarkdown(mark: RunMark) {
+  if (mark.body_md?.trim()) return mark.body_md.trim();
+  return [mark.reason, mark.evidence && mark.evidence !== mark.reason ? mark.evidence : ""].filter(Boolean).join("\n\n").trim();
+}
+
+function MarkDetailModal({ mark, token, t, onClose }: { mark: RunMark; token: string; t: T; onClose: () => void }) {
+  const body = markBodyMarkdown(mark);
   return (
     <Modal title={mark.title || mark.kind || t("agentFindings")} onClose={onClose}>
       <article className="mark-detail">
@@ -1742,9 +1751,40 @@ function MarkDetailModal({ mark, t, onClose }: { mark: RunMark; t: T; onClose: (
           <span>{mark.actor || "agent"}</span>
           <span className="mono">{mark.run_id}</span>
         </div>
-        <div className="mark-detail-body">{body || mark.run_id}</div>
+        <div className="mark-detail-body">
+          {body ? <RunMarkMarkdown mark={mark} token={token} body={body} /> : <p>{mark.run_id}</p>}
+        </div>
       </article>
     </Modal>
+  );
+}
+
+function RunMarkMarkdown({ mark, token, body }: { mark: RunMark; token: string; body: string }) {
+  const attachmentByID = new Map((mark.attachments || []).map((attachment) => [attachment.id, attachment]));
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => (url.startsWith("aexp-attachment://") ? url : defaultUrlTransform(url))}
+      components={{
+        img({ src, alt }) {
+          const rawSrc = String(src || "");
+          const attachmentID = rawSrc.startsWith("aexp-attachment://") ? rawSrc.replace("aexp-attachment://", "") : "";
+          if (!attachmentID) return <img src={rawSrc} alt={alt || ""} />;
+          const attachment = attachmentByID.get(attachmentID);
+          if (!attachment) {
+            return <span className="missing-attachment">Missing attachment {attachmentID}</span>;
+          }
+          return (
+            <figure className="mark-attachment">
+              <img src={runMarkAttachmentBlobUrl(mark.id, attachmentID, token)} alt={alt || attachment.caption || attachment.filename} loading="lazy" />
+              <figcaption>{attachment.caption || alt || attachment.filename}</figcaption>
+            </figure>
+          );
+        }
+      }}
+    >
+      {body}
+    </ReactMarkdown>
   );
 }
 
