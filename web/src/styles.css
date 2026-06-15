@@ -2698,11 +2698,11 @@ select {
 
 .findings-section .finding-list {
   grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+  gap: 10px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .finding {
@@ -2716,16 +2716,14 @@ select {
     "meta run"
     "content content";
   gap: 9px 12px;
-  border: 0;
-  border-top: 1px solid #edf1f4;
-  border-left: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 14px;
+  border: 1px solid #e6eaee;
+  border-radius: 10px;
+  background: #fbfcfd;
+  padding: 14px 15px;
 }
 
 .findings-section .finding:first-child {
-  border-top: 0;
+  border-top: 1px solid #e6eaee;
 }
 
 .finding strong {
@@ -2748,6 +2746,9 @@ select {
 
 .finding-content {
   grid-area: content;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
 }
 
 .finding-reason {
@@ -2768,11 +2769,11 @@ select {
 .finding-evidence {
   display: -webkit-box;
   min-width: 0;
-  margin-top: 2px;
+  margin-top: 0;
   border-radius: 10px;
   background: #f6f8fa;
   color: #4f5a65;
-  padding: 7px 8px;
+  padding: 9px 10px;
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   line-height: 1.45;
