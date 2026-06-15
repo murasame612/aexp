@@ -54,6 +54,7 @@ import {
 import { makeT, type I18nKey } from "./i18n";
 import { useAppStore } from "./store";
 import type {
+  Artifact,
   ConfirmState,
   ExecEvent,
   GPUInfo,
@@ -918,65 +919,85 @@ function RunDetail({
   return (
     <Modal title={run.data ? runTitle(run.data) : runId} onClose={onClose} wide>
       {run.data ? (
-        <div className="detail-grid">
-          <div className="detail-main">
-            <section className="command-card">
-              <div className="section-head">
-                <h2>{t("command")}</h2>
-                <span className="muted mono">{run.data.resolved_cwd || run.data.cwd || "-"}</span>
-              </div>
-              <pre className="command-box">{run.data.command}</pre>
-            </section>
-            {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} /> : null}
-            <Section title={t("agentFindings")} className="findings-section">
-              {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} />)}</div> : <Empty t={t} />}
-            </Section>
-            <LogPanel title="terminal" state={terminal} />
-            <LogPanel title="stdout" state={stdout} />
-            <LogPanel title="stderr" state={stderr} hiddenWhenEmpty />
-            {eventsPath ? <LogPanel title={t("events")} state={eventLog} /> : null}
-          </div>
-          <aside className="detail-side">
-            <section className="detail-summary-panel">
+        <div className="detail-shell">
+          <section className="run-overview">
+            <div className="run-overview-main">
               <div className="detail-summary-head">
                 <span className="panel-kicker">{t("runSummary")}</span>
                 <Pill tone={statusTone(run.data.status)}>{run.data.status}</Pill>
               </div>
               <strong>{resourceById.get(run.data.resource_id)?.name || run.data.resource_id}</strong>
               <span className="mono muted">{run.data.id}</span>
-              <div className="detail-facts">
-                <span>{run.data.kind || "formal"}</span>
-                <span>GPU {runGPU(run.data.gpu_index)}</span>
-              </div>
-              <div className="detail-side-actions">
-                <button onClick={() => void onStatusCheck(run.data!)}>
-                  <RefreshCcw size={16} />
-                  {t("refreshStatus")}
+            </div>
+            <div className="detail-facts">
+              <span>{run.data.kind || "formal"}</span>
+              <span>GPU {runGPU(run.data.gpu_index)}</span>
+              <span>{fmtTime(run.data.created_at)}</span>
+              <span>{run.data.resolved_env || run.data.conda_env || "-"}</span>
+            </div>
+            <div className="detail-side-actions">
+              <button onClick={() => void onStatusCheck(run.data!)}>
+                <RefreshCcw size={16} />
+                {t("refreshStatus")}
+              </button>
+              {isActiveRun(run.data) ? (
+                <button className="danger" onClick={() => onCancel(run.data!)}>
+                  {t("cancel")}
                 </button>
-                {isActiveRun(run.data) ? (
-                  <button className="danger" onClick={() => onCancel(run.data!)}>
-                    {t("cancel")}
-                  </button>
-                ) : null}
-              </div>
-            </section>
-            <section className="detail-summary-panel">
-              <span className="panel-kicker">{t("runtime")}</span>
-              <Info label={t("time")} value={fmtTime(run.data.created_at)} />
-              <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
-              <Info label="env" value={run.data.resolved_env || run.data.conda_env || "-"} />
-              <Info label="tmux" value={run.data.tmux_session || "-"} />
-              <Info label="run dir" value={run.data.remote_run_dir || "-"} />
-            </section>
-            <Section title={t("artifacts")}>
-              <pre className="mini-pre">{JSON.stringify(artifacts.data || [], null, 2)}</pre>
-            </Section>
-          </aside>
+              ) : null}
+            </div>
+          </section>
+          <div className="detail-grid">
+            <div className="detail-main">
+              <section className="command-card">
+                <div className="section-head command-head">
+                  <h2>{t("command")}</h2>
+                  <span className="muted mono">{run.data.resolved_cwd || run.data.cwd || "-"}</span>
+                </div>
+                <pre className="command-box">{run.data.command}</pre>
+              </section>
+              {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} /> : null}
+              <Section title={t("agentFindings")} className="findings-section">
+                {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} />)}</div> : <Empty t={t} />}
+              </Section>
+              <LogPanel title="terminal" state={terminal} />
+              <LogPanel title="stdout" state={stdout} />
+              <LogPanel title="stderr" state={stderr} hiddenWhenEmpty />
+              {eventsPath ? <LogPanel title={t("events")} state={eventLog} /> : null}
+            </div>
+            <aside className="detail-side">
+              <section className="detail-summary-panel">
+                <span className="panel-kicker">{t("runtime")}</span>
+                <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
+                <Info label="tmux" value={run.data.tmux_session || "-"} />
+                <Info label="run dir" value={run.data.remote_run_dir || "-"} />
+              </section>
+              <Section title={t("artifacts")} className="artifact-panel">
+                <ArtifactList artifacts={artifacts.data || []} t={t} />
+              </Section>
+            </aside>
+          </div>
         </div>
       ) : (
         <Empty t={t} />
       )}
     </Modal>
+  );
+}
+
+function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
+  if (!artifacts.length) return <Empty t={t} />;
+  return (
+    <div className="artifact-list">
+      {artifacts.map((artifact) => (
+        <div className="artifact-row" key={artifact.id || artifact.path}>
+          <div>
+            <strong>{artifact.path}</strong>
+            <span>{[artifact.type || "file", formatBytes(artifact.size), artifact.modified_at ? fmtShortTime(artifact.modified_at) : ""].filter(Boolean).join(" · ")}</span>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1623,6 +1644,18 @@ function formatMetric(value: number) {
 
 function formatMetricValue(point: MetricPoint) {
   return [formatMetric(point.value), point.unit].filter(Boolean).join(" ");
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
 function formatMetricDelta(value: number, pct?: number) {

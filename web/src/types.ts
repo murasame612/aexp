@@ -112,6 +112,15 @@ export interface LogsResponse {
   error_kind?: string;
 }
 
+export interface Artifact {
+  id: string;
+  run_id: string;
+  path: string;
+  type: string;
+  size: number;
+  modified_at?: string;
+}
+
 export interface RunMark {
   id: string;
   run_id: string;

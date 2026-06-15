@@ -4,6 +4,7 @@ import type {
   EvidenceChainNode,
   EvidenceChainEdge,
   EvidenceChainRunCandidate,
+  Artifact,
   ExecEvent,
   LogsResponse,
   Paginated,
@@ -165,7 +166,7 @@ export function getLogs(token: string, id: string, query: { source?: string; pat
 }
 
 export function getArtifacts(token: string, id: string) {
-  return apiFetch<unknown[]>(`/runs/${encodeURIComponent(id)}/artifacts`, { token });
+  return apiFetch<Artifact[]>(`/runs/${encodeURIComponent(id)}/artifacts`, { token });
 }
 
 export function getRunMarks(token: string, id: string) {
