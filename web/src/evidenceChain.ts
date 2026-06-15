@@ -198,7 +198,7 @@ export function apiEdgeToFlowEdge(edge: EvidenceChainEdge): EvidenceFlowEdge {
     id: edge.id,
     source: edge.source_node_id,
     target: edge.target_node_id,
-    label: edge.label || edgeTypeLabel(type),
+    label: edge.label ?? edgeTypeLabel(type),
     data: { type, rationale: edge.rationale || "", ...data },
     animated: type === "next_step",
     style: edgeStyle(type)
@@ -232,7 +232,7 @@ export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: Evidenc
         source_node_id: edge.source,
         target_node_id: edge.target,
         type,
-        label: String(edge.label || edgeTypeLabel(type)),
+        label: edge.label == null ? edgeTypeLabel(type) : String(edge.label),
         rationale: edge.data?.rationale || "",
         data_json: "{}"
       };
@@ -245,11 +245,11 @@ export function edgeStyle(type: EvidenceEdgeType) {
     case "supports":
       return { stroke: "#32664b", strokeWidth: 2 };
     case "does_not_prove":
-      return { stroke: "#a54235", strokeWidth: 2, strokeDasharray: "6 4" };
+      return { stroke: "#b24b43", strokeWidth: 2, strokeDasharray: "6 4" };
     case "custom":
-      return { stroke: "#5f5a52", strokeWidth: 2 };
+      return { stroke: "#56616d", strokeWidth: 2 };
     case "next_step":
     default:
-      return { stroke: "#b85f42", strokeWidth: 2 };
+      return { stroke: "#4f6f8f", strokeWidth: 2 };
   }
 }

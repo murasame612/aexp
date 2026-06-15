@@ -518,6 +518,10 @@ function isEditableTarget(target: EventTarget | null) {
   return target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
 }
 
+function isComposingInput(event: Event) {
+  return "isComposing" in event && Boolean((event as InputEvent).isComposing);
+}
+
 function CandidateItem({ candidate }: { candidate: EvidenceChainRunCandidate }) {
   const title = candidate.verdict || candidate.question || (candidate.run ? runTitle(candidate.run) : candidate.run_id);
   const meta = candidate.key_metrics || candidate.next_action || candidate.run?.status || candidate.kind;
@@ -548,9 +552,9 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
     setDraft({ title: data.title, body: data.body });
   }, [data.body, data.title]);
 
-  const updateDraft = (field: "title" | "body", value: string) => {
+  const updateDraft = (field: "title" | "body", value: string, commit = true) => {
     setDraft((current) => ({ ...current, [field]: value }));
-    if (!composingRef.current) data.onUpdateNode?.(id, { [field]: value });
+    if (commit && !composingRef.current) data.onUpdateNode?.(id, { [field]: value });
   };
 
   const finishComposition = (field: "title" | "body", value: string) => {
@@ -576,7 +580,7 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
       <input
         className="evidence-node-title nodrag nopan"
         value={draft.title}
-        onChange={(event) => updateDraft("title", event.target.value)}
+        onChange={(event) => updateDraft("title", event.target.value, !isComposingInput(event.nativeEvent))}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={(event) => finishComposition("title", event.currentTarget.value)}
         placeholder={data.labels?.titlePlaceholder || "标题"}
@@ -584,7 +588,7 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
       <textarea
         className="evidence-node-body nodrag nopan"
         value={draft.body}
-        onChange={(event) => updateDraft("body", event.target.value)}
+        onChange={(event) => updateDraft("body", event.target.value, !isComposingInput(event.nativeEvent))}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={(event) => finishComposition("body", event.currentTarget.value)}
         placeholder={data.labels?.nodeBodyPlaceholder || "写下假说、计划、结果或笔记..."}
@@ -613,9 +617,9 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     setDraft({ label: text(label), rationale: data?.rationale || "" });
   }, [data?.rationale, label]);
 
-  const updateDraft = (field: "label" | "rationale", value: string) => {
+  const updateDraft = (field: "label" | "rationale", value: string, commit = true) => {
     setDraft((current) => ({ ...current, [field]: value }));
-    if (!composingRef.current) data?.onUpdateEdge?.(id, { [field]: value });
+    if (commit && !composingRef.current) data?.onUpdateEdge?.(id, { [field]: value });
   };
 
   const finishComposition = (field: "label" | "rationale", value: string) => {
@@ -653,7 +657,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
               <input
                 autoFocus
                 value={draft.label}
-                onChange={(event) => updateDraft("label", event.target.value)}
+                onChange={(event) => updateDraft("label", event.target.value, !isComposingInput(event.nativeEvent))}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={(event) => finishComposition("label", event.currentTarget.value)}
                 onKeyDown={(event) => {
@@ -663,7 +667,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
               />
               <textarea
                 value={draft.rationale}
-                onChange={(event) => updateDraft("rationale", event.target.value)}
+                onChange={(event) => updateDraft("rationale", event.target.value, !isComposingInput(event.nativeEvent))}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={(event) => finishComposition("rationale", event.currentTarget.value)}
                 placeholder={data?.labels?.rationale || "理由"}
@@ -698,25 +702,25 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 function evidenceColor(type: EvidenceNodeType | EvidenceEdgeType) {
   switch (type) {
     case "run":
-      return "#b85f42";
+      return "#4f6f8f";
     case "hypothesis":
       return "#5d6d9b";
     case "experiment":
-      return "#80651f";
+      return "#2f6f5e";
     case "plan":
-      return "#6b6257";
+      return "#56616d";
     case "conclusion":
       return "#32664b";
     case "note":
-      return "#9b6f5d";
+      return "#6f6a60";
     case "supports":
       return "#32664b";
     case "does_not_prove":
-      return "#a54235";
+      return "#b24b43";
     case "custom":
-      return "#5f5a52";
+      return "#56616d";
     case "next_step":
     default:
-      return "#b85f42";
+      return "#4f6f8f";
   }
 }

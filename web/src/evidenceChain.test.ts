@@ -83,7 +83,22 @@ describe("evidenceChain helpers", () => {
       source_node_id: "node_run",
       target_node_id: "node_hyp",
       type: "supports",
+      label: "supports the anchor hypothesis",
       rationale: "metric improved"
     });
+  });
+
+  it("preserves an intentionally empty edge label", () => {
+    const payload = serializeEvidenceGraph([], [
+      {
+        id: "edge_blank",
+        source: "node_a",
+        target: "node_b",
+        label: "",
+        data: { type: "custom", rationale: "" }
+      }
+    ]);
+
+    expect(payload.edges[0].label).toBe("");
   });
 });

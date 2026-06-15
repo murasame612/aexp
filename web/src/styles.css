@@ -1122,15 +1122,15 @@ select {
 }
 
 .project-signal.accent {
-  box-shadow: inset 0 2px 0 #8a6a5a;
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .project-signal.good {
-  box-shadow: inset 0 2px 0 #5b806c;
+  box-shadow: inset 0 2px 0 var(--good);
 }
 
 .project-signal.warn {
-  box-shadow: inset 0 2px 0 #b88b4a;
+  box-shadow: inset 0 2px 0 #7a6b2e;
 }
 
 .project-signal span {
@@ -1245,7 +1245,7 @@ select {
 .project-card.prominent {
   grid-column: 1 / -1;
   background: #f8fafb;
-  box-shadow: inset 3px 0 0 #8a6a5a;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .project-card:hover {
