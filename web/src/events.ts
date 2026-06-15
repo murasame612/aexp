@@ -79,7 +79,7 @@ export function parseEventLines(lines: string[]): ParsedEvents {
     const typ = String(ev.type || "").toLowerCase();
     const name = eventName(ev);
     const value = asNumber(ev.value);
-    if ((typ === "metric" || typ === "metrics" || typ === "eval" || typ === "scalar" || value !== undefined) && name && value !== undefined) {
+    if ((typ === "metric" || typ === "metrics" || typ === "eval" || typ === "scalar" || (typ === "" && ev.metric != null)) && name && value !== undefined) {
       metrics.push({
         name,
         value,

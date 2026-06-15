@@ -1055,18 +1055,10 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
         </div>
       ) : null}
       <div className="event-layout">
-        <div className="event-panel progress-panel">
-          <div className="event-panel-head">
-            <span className="panel-kicker">{t("progress")}</span>
-            <span className="muted">{progress.length}</span>
-          </div>
+        <EventFoldout className="progress-panel" title={t("progress")} count={progress.length} defaultOpen>
           {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
-        </div>
-        <div className="event-panel metric-panel">
-          <div className="event-panel-head">
-            <span className="panel-kicker">{t("latestMetrics")}</span>
-            <span className="muted">{latest.length}</span>
-          </div>
+        </EventFoldout>
+        <EventFoldout className="metric-panel" title={t("latestMetrics")} count={latest.length} defaultOpen>
           <div className="metric-list">
             {latest.length ? latest.map((metric, index) => (
               <div className="metric-row" key={`${metric.series || t("defaultSeries")}-${metric.name}-${index}`}>
@@ -1078,26 +1070,41 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
               </div>
             )) : <span className="muted">{t("noMetricsYet")}</span>}
           </div>
-        </div>
+        </EventFoldout>
         {(parsed.errors.length || notes.length) ? (
-          <div className="event-panel event-notes">
-            <span className="panel-kicker">{parsed.errors.length ? t("errors") : t("notes")}</span>
+          <EventFoldout className="event-notes" title={parsed.errors.length ? t("errors") : t("notes")} count={parsed.errors.length || notes.length} defaultOpen={!!parsed.errors.length}>
             {parsed.errors.slice(0, 3).map((error, index) => <p key={`error-${index}`}>{error}</p>)}
             {notes.map((note, index) => <p key={`note-${index}`}>{text(note.text || note.message || note.name || "")}</p>)}
-          </div>
+          </EventFoldout>
         ) : null}
       </div>
-      <section className="metric-family-table" aria-label={t("metrics")}>
-        <div className="metric-table-head">
-          <span>{t("metrics")}</span>
-          <span>{t("latest")}</span>
-          <span>{t("delta")}</span>
-          <span>{t("range")}</span>
-          <span>{t("span")}</span>
-        </div>
-        {metricFamilies.length ? metricFamilies.map((family) => <MetricFamilyTableRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
-      </section>
+      <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length}>
+        <section className="metric-family-table" aria-label={t("metrics")}>
+          <div className="metric-table-head">
+            <span>{t("metrics")}</span>
+            <span>{t("latest")}</span>
+            <span>{t("delta")}</span>
+            <span>{t("range")}</span>
+            <span>{t("span")}</span>
+          </div>
+          {metricFamilies.length ? metricFamilies.map((family) => <MetricFamilyTableRow key={`${family.name}-${family.scaleKey}`} family={family} t={t} />) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
+        </section>
+      </EventFoldout>
     </section>
+  );
+}
+
+function EventFoldout({ title, count, defaultOpen = false, className, children }: { title: string; count: number; defaultOpen?: boolean; className?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`event-panel ${className || ""} ${open ? "open" : "collapsed"}`}>
+      <button className="event-panel-toggle" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className="panel-kicker">{title}</span>
+        <span className="event-panel-count">{count}</span>
+        <ChevronRight className="event-panel-chevron" size={15} />
+      </button>
+      {open ? <div className="event-panel-body">{children}</div> : null}
+    </div>
   );
 }
 

@@ -32,6 +32,17 @@ describe("event parsing", () => {
     });
   });
 
+  it("does not turn numeric params into metric series", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "param", name: "epochs", value: 30 }),
+      JSON.stringify({ type: "param", name: "batch_size", value: 16 }),
+      JSON.stringify({ type: "metric", name: "train/loss", value: 0.12, epoch: 1 })
+    ]);
+    expect(parsed.metrics).toHaveLength(1);
+    expect(parsed.metrics[0]).toMatchObject({ name: "train/loss", value: 0.12 });
+    expect(parsed.latestMetrics.map((metric) => metric.name)).toEqual(["train/loss"]);
+  });
+
   it("keeps progress context and summarizes repeated updates", () => {
     const parsed = parseEventLines([
       JSON.stringify({ type: "progress", name: "epoch", current: 4, total: 30, series: "iTransformer/raw", stage: "train", label: "raw input", time: 1 }),
