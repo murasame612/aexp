@@ -1344,6 +1344,7 @@ function RunListCard({
         <span>{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
         <span>{run.kind || "formal"}</span>
         <span>GPU {runGPU(run.gpu_index)}</span>
+        {markCount ? <span>{markCount} {t("marks")}</span> : null}
         <span>{fmtShortTime(run.created_at)}</span>
       </div>
       <span className="command-snippet">{run.command}</span>
