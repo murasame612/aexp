@@ -302,6 +302,8 @@ export interface ProgressPoint {
   total?: number;
   percent?: number;
   time?: number;
+  series?: string;
+  label?: string;
 }
 
 export interface ConfirmState {

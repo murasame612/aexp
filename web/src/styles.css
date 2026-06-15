@@ -2745,30 +2745,114 @@ select {
 
 .progress-row {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 13px 0;
+  padding: 13px 0 14px;
   border-bottom: 1px solid #eee9e1;
+}
+
+.progress-row-done {
+  color: #6f766f;
 }
 
 .progress-row:last-child {
   border-bottom: 0;
 }
 
-.progress-row > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
+.progress-row-title,
+.progress-row-meter,
+.progress-row-foot {
   min-width: 0;
 }
 
-.progress-row strong,
-.progress-row span {
+.progress-row-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.progress-row-title > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.progress-row-title strong,
+.progress-row-title span,
+.progress-row-foot span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.progress-row-title strong {
+  color: #1f2429;
   font-size: 14px;
+  line-height: 1.25;
+}
+
+.progress-row-title span,
+.progress-row-foot span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.progress-row-meter {
+  min-width: 0;
+}
+
+.progress-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.progress-meter > div {
+  min-width: 0;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ded9ce;
+}
+
+.progress-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.progress-meter strong {
+  color: #1f2429;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.progress-row-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.progress-state {
+  justify-self: end;
+  border-radius: 999px;
+  background: #f2f0eb;
+  color: #6a6258;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.progress-row-done .progress-state {
+  background: #ecf4ee;
+  color: #50715a;
 }
 
 .progress-value {

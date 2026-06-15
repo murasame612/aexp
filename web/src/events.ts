@@ -19,6 +19,16 @@ export interface MetricFamilySummary {
   series: MetricPoint[];
 }
 
+export interface ProgressSummary {
+  key: string;
+  name: string;
+  series?: string;
+  label?: string;
+  latest: ProgressPoint;
+  count: number;
+  done: boolean;
+}
+
 function asNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -40,6 +50,12 @@ function eventSeries(ev: UIEvent): string | undefined {
 function eventUnit(ev: UIEvent): string | undefined {
   const unit = String(ev.unit || ev.units || ev.value_unit || ev.valueUnit || "").trim();
   return unit || undefined;
+}
+
+function eventLabel(ev: UIEvent): string | undefined {
+  const hasExplicitName = String(ev.name || ev.metric || ev.key || "").trim() !== "";
+  const label = String(ev.title || ev.label_text || ev.display || ev.caption || (hasExplicitName ? ev.label : "") || "").trim();
+  return label || undefined;
 }
 
 export function parseEventLines(lines: string[]): ParsedEvents {
@@ -78,12 +94,15 @@ export function parseEventLines(lines: string[]): ParsedEvents {
     const current = asNumber(ev.current);
     if ((typ === "progress" || current !== undefined) && name && current !== undefined) {
       const total = asNumber(ev.total);
+      const identity = progressIdentity(name, eventSeries(ev));
       progress.push({
-        name,
+        name: identity.name,
         current,
         total,
         percent: total ? (current / total) * 100 : undefined,
-        time: asNumber(ev.time)
+        time: asNumber(ev.time),
+        series: identity.series,
+        label: eventLabel(ev)
       });
       continue;
     }
@@ -91,6 +110,43 @@ export function parseEventLines(lines: string[]): ParsedEvents {
   }
 
   return { events, metrics, latestMetrics: latestMetricByName(metrics), progress, notes, errors };
+}
+
+function progressIdentity(name: string, series?: string) {
+  if (series) return { name, series };
+  const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return { name, series };
+  const leaf = parts[parts.length - 1];
+  const context = parts.slice(0, -1).join("/");
+  if (/^(epoch|step|trial|fold|batch|iter|iteration|phase|train|eval|validation|test|progress)$/i.test(leaf) || context.length > 20) {
+    return { name: leaf, series: context };
+  }
+  return { name, series };
+}
+
+export function summarizeProgress(points: ProgressPoint[]): ProgressSummary[] {
+  const grouped = new Map<string, ProgressPoint[]>();
+  for (const point of points) {
+    const key = `${point.series || ""}\u0000${point.name}`;
+    grouped.set(key, [...(grouped.get(key) || []), point]);
+  }
+  return Array.from(grouped.entries())
+    .map(([key, rows]) => {
+      const latest = rows[rows.length - 1];
+      return {
+        key,
+        name: latest.name,
+        series: latest.series,
+        label: latest.label,
+        latest,
+        count: rows.length,
+        done: latest.total != null && latest.current >= latest.total
+      };
+    })
+    .sort((a, b) => {
+      if (a.done !== b.done) return a.done ? 1 : -1;
+      return (b.latest.time || 0) - (a.latest.time || 0);
+    });
 }
 
 function metricAxis(point: MetricPoint, fallback: number): number {

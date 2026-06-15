@@ -61,6 +61,7 @@ import type {
   LogsResponse,
   MetricPoint,
   ParsedEvents,
+  ProgressPoint,
   ProjectRunCard,
   ProjectView,
   Resource,
@@ -85,7 +86,7 @@ import {
   text,
   uiEventsPath
 } from "./utils";
-import { parseEventLines, summarizeMetricFamilies } from "./events";
+import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type ProgressSummary } from "./events";
 import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
 
@@ -1022,7 +1023,7 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 
 function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
   const latest = parsed.latestMetrics.slice(0, 16);
-  const progress = parsed.progress.slice(-8);
+  const progress = summarizeProgress(parsed.progress).slice(0, 8);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
   const summary = [
@@ -1059,15 +1060,7 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
             <span className="panel-kicker">{t("progress")}</span>
             <span className="muted">{progress.length}</span>
           </div>
-          {progress.length ? progress.map((row, index) => (
-            <div className="progress-row" key={`${row.name}-${index}`}>
-              <div>
-                <strong>{row.name}</strong>
-                <span>{row.total ? `${row.current}/${row.total}` : String(row.current)}</span>
-              </div>
-              {row.percent != null ? <Meter value={row.percent} /> : <span className="progress-value mono">{formatMetric(row.current)}</span>}
-            </div>
-          )) : <span className="muted">{t("noProgressEvents")}</span>}
+          {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
         </div>
         <div className="event-panel metric-panel">
           <div className="event-panel-head">
@@ -1106,6 +1099,48 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
       </section>
     </section>
   );
+}
+
+function ProgressStatusRow({ row, t }: { row: ProgressSummary; t: T }) {
+  const latest = row.latest;
+  const percent = progressPercent(latest);
+  return (
+    <div className={row.done ? "progress-row progress-row-done" : "progress-row"}>
+      <div className="progress-row-title">
+        <div>
+          <strong>{row.label || row.name}</strong>
+          {row.label && row.label !== row.name ? <span>{row.name}</span> : null}
+          {row.series ? <span>{row.series}</span> : null}
+        </div>
+        <span className="progress-state">{row.done ? t("complete") : t("active")}</span>
+      </div>
+      <div className="progress-row-meter">
+        {percent != null ? <ProgressMeter value={percent} /> : <span className="progress-value mono">{formatMetric(latest.current)}</span>}
+      </div>
+      <div className="progress-row-foot">
+        <span>{latest.total ? `${formatMetric(latest.current)}/${formatMetric(latest.total)}` : formatMetric(latest.current)}</span>
+        <span>{row.count} {t("updates")}</span>
+      </div>
+    </div>
+  );
+}
+
+function ProgressMeter({ value }: { value: number }) {
+  const pct = Math.max(0, Math.min(100, value || 0));
+  return (
+    <div className="progress-meter">
+      <div>
+        <i style={{ width: `${pct}%` }} />
+      </div>
+      <strong>{formatMetric(pct)}%</strong>
+    </div>
+  );
+}
+
+function progressPercent(point: ProgressPoint): number | undefined {
+  if (point.percent != null) return Math.max(0, Math.min(100, point.percent));
+  if (point.total && point.total > 0) return Math.max(0, Math.min(100, (point.current / point.total) * 100));
+  return undefined;
 }
 
 function latestMetricContext(metric: MetricPoint, t: T) {

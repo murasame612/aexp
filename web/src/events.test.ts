@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEventLines, summarizeMetricFamilies } from "./events";
+import { parseEventLines, summarizeMetricFamilies, summarizeProgress } from "./events";
 
 describe("event parsing", () => {
   it("parses metric, progress, and note events", () => {
@@ -30,6 +30,44 @@ describe("event parsing", () => {
       time: 99,
       series: "raw/seed42/val/eval"
     });
+  });
+
+  it("keeps progress context and summarizes repeated updates", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "progress", name: "epoch", current: 4, total: 30, series: "iTransformer/raw", stage: "train", label: "raw input", time: 1 }),
+      JSON.stringify({ type: "progress", name: "epoch", current: 5, total: 30, series: "iTransformer/raw", stage: "train", label: "raw input", time: 2 }),
+      JSON.stringify({ type: "progress", name: "epoch", current: 2, total: 30, series: "iTransformer/saits", stage: "train", label: "saits input", time: 3 })
+    ]);
+    expect(parsed.progress[0]).toMatchObject({
+      name: "epoch",
+      series: "iTransformer/raw/train",
+      label: "raw input"
+    });
+    const summary = summarizeProgress(parsed.progress);
+    expect(summary).toHaveLength(2);
+    expect(summary.map((row) => [row.name, row.series, row.latest.current, row.count])).toEqual([
+      ["epoch", "iTransformer/saits/train", 2, 1],
+      ["epoch", "iTransformer/raw/train", 5, 2]
+    ]);
+  });
+
+  it("splits legacy slash progress names into context and dimension", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "progress", name: "iTransformer/raw/epoch", current: 8, total: 30 }),
+      JSON.stringify({ type: "progress", name: "iTransformer/raw/epoch", current: 9, total: 30 })
+    ]);
+    expect(parsed.progress[0]).toMatchObject({
+      name: "epoch",
+      series: "iTransformer/raw"
+    });
+    const summary = summarizeProgress(parsed.progress);
+    expect(summary).toHaveLength(1);
+    expect(summary[0]).toMatchObject({
+      name: "epoch",
+      series: "iTransformer/raw",
+      count: 2
+    });
+    expect(summary[0].latest.current).toBe(9);
   });
 
   it("summarizes metric families by metric name, unit, and series", () => {

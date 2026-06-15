@@ -1474,7 +1474,7 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 	fmt.Fprintf(&b, "  no_gpu: true\n\n")
 	fmt.Fprintf(&b, "# Optional structured UI events inside scripts:\n")
 	fmt.Fprintf(&b, "#   aexp event metric train/loss 0.23 --epoch 1\n")
-	fmt.Fprintf(&b, "#   aexp event progress train 1 --total 100\n")
+	fmt.Fprintf(&b, "#   aexp event progress epoch 1 --total 100 --series model/dataset --stage train\n")
 	fmt.Fprintf(&b, "#   aexp-event note \"finished validation\"\n")
 	fmt.Fprintf(&b, "# Python scripts can also import: from aexp_events import metric, progress, param, note\n")
 	appendProjectTrainConfig(&b, cfg)
@@ -3575,9 +3575,15 @@ func joinShellArgs(args []string) string {
 // --- event ---
 
 type eventOptions struct {
-	path   string
-	strict bool
-	fields []string
+	path    string
+	strict  bool
+	fields  []string
+	series  string
+	run     string
+	variant string
+	split   string
+	stage   string
+	label   string
 }
 
 func eventCmd() *cobra.Command {
@@ -3590,7 +3596,7 @@ func eventCmd() *cobra.Command {
 This is intended for training/setup scripts running inside an aexp run:
 
   aexp event metric train/loss 0.23 --epoch 3
-  aexp event progress train 30 --total 100
+  aexp event progress epoch 30 --total 100 --series iTransformer/raw --stage train
   aexp event note "finished validation"
 
 The same command also works as aexp-event when the binary is symlinked with
@@ -3615,7 +3621,7 @@ func eventMetricCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("metric value must be numeric: %w", err)
 			}
-			event, err := eventFromFields(opts.fields)
+			event, err := eventFromFields(opts)
 			if err != nil {
 				return err
 			}
@@ -3657,7 +3663,7 @@ func eventProgressCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("current must be numeric: %w", err)
 			}
-			event, err := eventFromFields(opts.fields)
+			event, err := eventFromFields(opts)
 			if err != nil {
 				return err
 			}
@@ -3686,7 +3692,7 @@ func eventParamCmd() *cobra.Command {
 		Short: "Emit a run parameter event",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			event, err := eventFromFields(opts.fields)
+			event, err := eventFromFields(opts)
 			if err != nil {
 				return err
 			}
@@ -3707,7 +3713,7 @@ func eventNoteCmd() *cobra.Command {
 		Short: "Emit a note event",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			event, err := eventFromFields(opts.fields)
+			event, err := eventFromFields(opts)
 			if err != nil {
 				return err
 			}
@@ -3724,11 +3730,17 @@ func addEventFlags(cmd *cobra.Command, opts *eventOptions) {
 	cmd.Flags().StringVar(&opts.path, "path", "", "Event JSONL path (default: $AEXP_UI_EVENTS)")
 	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Fail if no event path is available")
 	cmd.Flags().StringArrayVar(&opts.fields, "field", nil, "Extra field as key=value; may be repeated")
+	cmd.Flags().StringVar(&opts.series, "series", "", "Series/context label for grouping related events")
+	cmd.Flags().StringVar(&opts.run, "run", "", "Run or sub-run label for grouping related events")
+	cmd.Flags().StringVar(&opts.variant, "variant", "", "Variant label, e.g. model or ablation name")
+	cmd.Flags().StringVar(&opts.split, "split", "", "Data split label, e.g. train/val/test")
+	cmd.Flags().StringVar(&opts.stage, "stage", "", "Stage label, e.g. setup/train/eval")
+	cmd.Flags().StringVar(&opts.label, "label", "", "Human display label")
 }
 
-func eventFromFields(fields []string) (map[string]interface{}, error) {
-	event := make(map[string]interface{}, len(fields)+4)
-	for _, field := range fields {
+func eventFromFields(opts eventOptions) (map[string]interface{}, error) {
+	event := make(map[string]interface{}, len(opts.fields)+10)
+	for _, field := range opts.fields {
 		key, value, ok := strings.Cut(field, "=")
 		key = strings.TrimSpace(key)
 		if !ok || key == "" {
@@ -3736,7 +3748,20 @@ func eventFromFields(fields []string) (map[string]interface{}, error) {
 		}
 		event[key] = parseEventValue(value)
 	}
+	setEventStringField(event, "series", opts.series)
+	setEventStringField(event, "run", opts.run)
+	setEventStringField(event, "variant", opts.variant)
+	setEventStringField(event, "split", opts.split)
+	setEventStringField(event, "stage", opts.stage)
+	setEventStringField(event, "label", opts.label)
 	return event, nil
+}
+
+func setEventStringField(event map[string]interface{}, key, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		event[key] = value
+	}
 }
 
 func emitStructuredEvent(opts eventOptions, event map[string]interface{}) error {

@@ -27,12 +27,15 @@ func TestEventMetricCommandWritesJSONL(t *testing.T) {
 func TestEventProgressCommandUsesEnvPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	t.Setenv("AEXP_UI_EVENTS", path)
-	if err := runEventCommandForTest("progress", "train", "30", "--total", "100"); err != nil {
+	if err := runEventCommandForTest("progress", "epoch", "30", "--total", "100", "--series", "iTransformer/raw", "--stage", "train", "--label", "raw input epoch"); err != nil {
 		t.Fatal(err)
 	}
 	event := readSingleEvent(t, path)
-	if event["type"] != "progress" || event["name"] != "train" {
+	if event["type"] != "progress" || event["name"] != "epoch" {
 		t.Fatalf("unexpected progress event: %#v", event)
+	}
+	if event["series"] != "iTransformer/raw" || event["stage"] != "train" || event["label"] != "raw input epoch" {
+		t.Fatalf("unexpected progress context: %#v", event)
 	}
 	if event["current"] != float64(30) || event["total"] != float64(100) {
 		t.Fatalf("unexpected progress values: %#v", event)

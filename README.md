@@ -249,12 +249,15 @@ generated helper:
 from aexp_events import metric, progress, param, note
 
 param("model", "iTransformer")
-progress("epoch", current=1, total=20)
-metric("val/loss", 0.123, step=1)
+progress("epoch", current=1, total=20, series="iTransformer/raw", stage="train", label="raw input")
+metric("val/loss", 0.123, step=1, series="iTransformer/raw", split="val")
 note("first checkpoint written")
 ```
 
-The dashboard renders these events as progress cards, metric cards, and charts.
+Use `name` for the thing being advanced (`epoch`, `trial`, `fold`) and put
+model/data/split/stage context in fields such as `series`, `variant`, `split`,
+and `stage`. The dashboard groups repeated progress updates by that context and
+renders metrics as trend tables and charts.
 Agents can read the same low-noise event stream without scraping raw logs:
 
 ```bash
