@@ -2598,8 +2598,8 @@ select {
 
 .event-dashboard {
   display: grid;
-  gap: 18px;
-  padding: 18px;
+  gap: 12px;
+  padding: 14px;
   background: #fffdf9;
 }
 
@@ -2607,6 +2607,11 @@ select {
   align-items: flex-start;
   flex-wrap: nowrap;
   padding-bottom: 2px;
+}
+
+.event-head h2 {
+  font-size: 18px;
+  line-height: 1.2;
 }
 
 .event-alert,
@@ -2638,20 +2643,21 @@ select {
   max-width: min(720px, 100%);
   overflow-wrap: anywhere;
   text-align: left;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .event-layout {
   display: grid;
-  grid-template-columns: minmax(280px, .9fr) minmax(360px, 1.35fr);
-  gap: 14px;
+  grid-template-columns: minmax(230px, .8fr) minmax(300px, 1.2fr);
+  gap: 10px;
   align-items: start;
   min-width: 0;
 }
 
 .event-summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(70px, auto));
+  grid-template-columns: repeat(5, minmax(58px, auto));
   gap: 0;
   min-width: 0;
   overflow: hidden;
@@ -2662,9 +2668,9 @@ select {
 
 .event-summary-item {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-left: 1px solid #eee9e1;
 }
 
@@ -2687,7 +2693,7 @@ select {
   min-width: 0;
   overflow-wrap: anywhere;
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
 }
 
@@ -2701,14 +2707,14 @@ select {
   gap: 0;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   background: #fff;
-  padding: 14px 16px;
+  padding: 10px 12px;
   box-shadow: none;
 }
 
 .event-panel.collapsed {
-  padding-bottom: 12px;
+  padding-bottom: 9px;
 }
 
 .event-panel:first-child {
@@ -2721,7 +2727,7 @@ select {
 
 .panel-kicker {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2729,10 +2735,10 @@ select {
 
 .event-panel-toggle {
   justify-content: start;
-  gap: 9px;
+  gap: 7px;
   min-width: 0;
-  min-height: 26px;
-  padding: 0 0 12px;
+  min-height: 22px;
+  padding: 0 0 8px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -2744,15 +2750,15 @@ select {
 }
 
 .event-panel-count {
-  min-height: 22px;
-  min-width: 22px;
+  min-height: 18px;
+  min-width: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
   background: #f1f3f5;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .event-panel-chevron {
@@ -2772,7 +2778,7 @@ select {
 }
 
 .metric-family-foldout {
-  padding: 12px 14px 14px;
+  padding: 10px 12px 12px;
 }
 
 .metric-family-foldout .event-panel-body {
@@ -2781,9 +2787,9 @@ select {
 
 .progress-row {
   display: grid;
-  gap: 10px;
+  gap: 7px;
   min-width: 0;
-  padding: 13px 0 14px;
+  padding: 9px 0 10px;
   border-bottom: 1px solid #eee9e1;
 }
 
@@ -2804,7 +2810,7 @@ select {
 .progress-row-title {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: start;
 }
 
@@ -2824,14 +2830,14 @@ select {
 
 .progress-row-title strong {
   color: #1f2429;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.25;
 }
 
 .progress-row-title span,
 .progress-row-foot span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.25;
 }
 
@@ -2842,14 +2848,14 @@ select {
 .progress-meter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   min-width: 0;
 }
 
 .progress-meter > div {
   min-width: 0;
-  height: 8px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: #ded9ce;
@@ -2865,7 +2871,7 @@ select {
 .progress-meter strong {
   color: #1f2429;
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
 }
 
@@ -2880,8 +2886,8 @@ select {
   border-radius: 999px;
   background: #f2f0eb;
   color: #6a6258;
-  padding: 3px 8px;
-  font-size: 11px;
+  padding: 2px 6px;
+  font-size: 10px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -2893,14 +2899,14 @@ select {
 
 .progress-value {
   justify-self: start;
-  min-height: 22px;
+  min-height: 19px;
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
   background: #eef2f5;
   color: #4f5a65;
-  padding: 2px 8px;
-  font-size: 12px;
+  padding: 2px 6px;
+  font-size: 11px;
 }
 
 .metric-list {
@@ -2915,11 +2921,11 @@ select {
 
 .param-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(84px, auto);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, auto);
+  gap: 12px;
   align-items: baseline;
   min-width: 0;
-  padding: 11px 0;
+  padding: 8px 0;
   border-bottom: 1px solid #eee9e1;
 }
 
@@ -2941,14 +2947,14 @@ select {
 
 .param-row span {
   color: #4f5a65;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.3;
 }
 
 .param-row small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.25;
 }
 
@@ -2957,7 +2963,7 @@ select {
   max-width: 100%;
   color: #1f2429;
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -2966,11 +2972,11 @@ select {
 
 .metric-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(96px, auto);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(82px, auto);
+  gap: 12px;
   align-items: baseline;
   min-width: 0;
-  padding: 13px 0;
+  padding: 9px 0;
   border-bottom: 1px solid #eee9e1;
   background: transparent;
 }
@@ -2993,14 +2999,14 @@ select {
 
 .metric-row-name {
   color: #4f5a65;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1.32;
 }
 
 .metric-row-context {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.25;
 }
 
@@ -3009,7 +3015,7 @@ select {
   max-width: 100%;
   color: #1f2429;
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 700;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -3019,8 +3025,8 @@ select {
 .event-notes p {
   margin: 0;
   color: #4f5a65;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -3029,21 +3035,21 @@ select {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   background: #fff;
 }
 
 .metric-table-head {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(96px, .28fr) minmax(118px, .32fr) minmax(118px, .36fr) minmax(160px, .52fr);
+  grid-template-columns: minmax(180px, 1fr) minmax(74px, .24fr) minmax(94px, .3fr) minmax(96px, .32fr) minmax(120px, .44fr);
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
-  padding: 10px 16px;
+  padding: 7px 10px;
   background: #fbfaf8;
   border-bottom: 1px solid #eee9e1;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -3055,14 +3061,14 @@ select {
 
 .metric-family-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(96px, .28fr) minmax(118px, .32fr) minmax(118px, .36fr) minmax(160px, .52fr);
+  grid-template-columns: minmax(180px, 1fr) minmax(74px, .24fr) minmax(94px, .3fr) minmax(96px, .32fr) minmax(120px, .44fr);
   grid-template-areas:
     "title latest delta range trend"
     "values values values values values";
   align-items: center;
-  gap: 12px 14px;
+  gap: 8px 10px;
   min-width: 0;
-  padding: 14px 16px;
+  padding: 10px 10px;
   border-top: 1px solid #eee9e1;
 }
 
@@ -3072,7 +3078,7 @@ select {
   flex-wrap: wrap;
   align-items: baseline;
   align-content: start;
-  gap: 5px 10px;
+  gap: 3px 8px;
   min-width: 0;
   padding: 2px 1px 0;
 }
@@ -3080,14 +3086,14 @@ select {
 .metric-family-title strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 15px;
+  font-size: 12px;
   line-height: 1.28;
 }
 
 .metric-family-title span {
   min-width: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -3099,7 +3105,7 @@ select {
   overflow-wrap: anywhere;
   color: #1f2429;
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1.35;
   text-align: left;
 }
@@ -3120,13 +3126,13 @@ select {
   grid-area: trend;
   display: block;
   min-width: 0;
-  min-height: 44px;
+  min-height: 34px;
   padding: 0;
 }
 
 .metric-family-values-label {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -3134,7 +3140,7 @@ select {
 .metric-sparkline {
   width: 100%;
   height: 100%;
-  min-height: 44px;
+  min-height: 34px;
   min-width: 0;
   background: transparent;
   overflow: hidden;
@@ -3156,9 +3162,9 @@ select {
 .metric-family-values {
   grid-area: values;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   align-content: start;
-  gap: 8px 14px;
+  gap: 5px 10px;
   min-width: 0;
   padding-top: 2px;
 }
@@ -3170,7 +3176,7 @@ select {
 .metric-family-values div {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: baseline;
   min-width: 0;
   padding: 0;
@@ -3179,13 +3185,13 @@ select {
 .metric-family-values span {
   min-width: 0;
   color: #4f5a65;
-  font-size: 12px;
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 
 .metric-family-values strong {
   font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
   min-width: 0;
   overflow-wrap: anywhere;
   text-align: right;
@@ -3674,7 +3680,7 @@ select {
   }
 
   .metric-family-row {
-    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(90px, auto));
+    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(76px, auto));
     grid-template-areas:
       "title title title title"
       "latest delta range trend"
@@ -3682,7 +3688,7 @@ select {
   }
 
   .metric-table-head {
-    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(90px, auto)) minmax(140px, .6fr);
+    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(76px, auto)) minmax(110px, .55fr);
   }
 
   .metric-family-values {
@@ -3699,6 +3705,15 @@ select {
 @media (max-width: 760px) {
   .workspace {
     padding: 14px;
+  }
+
+  .event-dashboard {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .event-head h2 {
+    font-size: 16px;
   }
 
   .toolbar.dense {
@@ -3736,6 +3751,7 @@ select {
   }
 
   .event-panel {
+    padding: 9px 10px;
     border-left: 0;
     border-top: 1px solid #edf1f4;
   }
@@ -3745,6 +3761,8 @@ select {
   }
 
   .metric-family-row {
+    gap: 6px;
+    padding: 9px 10px;
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "title"
@@ -3763,7 +3781,7 @@ select {
     content: "Latest ";
     color: var(--muted);
     font-family: Inter, system-ui, sans-serif;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
   }
@@ -3772,7 +3790,7 @@ select {
     content: "Delta ";
     color: var(--muted);
     font-family: Inter, system-ui, sans-serif;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
   }
@@ -3781,7 +3799,7 @@ select {
     content: "Range ";
     color: var(--muted);
     font-family: Inter, system-ui, sans-serif;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
   }
@@ -3790,13 +3808,18 @@ select {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .param-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .param-row strong,
   .metric-row strong {
     justify-self: start;
     text-align: left;
   }
 
   .metric-sparkline {
-    min-height: 68px;
+    min-height: 46px;
   }
 
   .project-row {
@@ -3916,6 +3939,47 @@ select {
   .project-evidence,
   .finding-list {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-dashboard {
+    padding: 8px;
+  }
+
+  .event-summary-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-summary-item:nth-child(n) {
+    border-left: 0;
+    border-top: 1px solid #edf1f4;
+  }
+
+  .event-summary-item:first-child {
+    border-top: 0;
+  }
+
+  .event-panel {
+    border-radius: 8px;
+  }
+
+  .metric-family-table {
+    border-radius: 8px;
+  }
+
+  .metric-family-title strong,
+  .metric-row-name,
+  .param-row span {
+    font-size: 11px;
+  }
+
+  .metric-family-latest,
+  .metric-family-delta,
+  .metric-family-range,
+  .metric-family-values span,
+  .metric-family-values strong,
+  .metric-row strong,
+  .param-row strong {
+    font-size: 10.5px;
   }
 
   .run-list-card {
