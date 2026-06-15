@@ -636,7 +636,11 @@ select {
 }
 
 .dashboard-runs .run-card {
-  grid-template-columns: minmax(220px, 0.62fr) minmax(180px, 0.48fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head time"
+    "meta meta"
+    "command command";
   align-items: start;
   gap: 8px 14px;
   min-height: 0;
@@ -658,18 +662,29 @@ select {
 }
 
 .dashboard-runs .run-card .card-head {
+  grid-area: head;
   align-items: flex-start;
 }
 
 .dashboard-runs .run-card .card-head strong {
-  -webkit-line-clamp: 1;
+  -webkit-line-clamp: 2;
+}
+
+.dashboard-runs .run-card > .mono.muted {
+  grid-area: time;
+  justify-self: end;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .dashboard-runs .run-card-meta {
+  grid-area: meta;
   align-content: flex-start;
 }
 
 .dashboard-runs .run-command-line {
+  grid-area: command;
   align-self: stretch;
   -webkit-line-clamp: 2;
 }
@@ -2840,11 +2855,11 @@ select {
 
 .metric-family-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(112px, 1fr)) minmax(180px, 0.7fr);
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(96px, 0.44fr));
   grid-template-areas:
-    "title title title values"
-    "latest delta range values"
-    "trend trend trend values";
+    "title latest delta range"
+    "trend trend trend trend"
+    "values values values values";
   align-items: stretch;
   gap: 10px;
   min-width: 0;
@@ -2887,9 +2902,10 @@ select {
   align-content: center;
   gap: 3px;
   min-width: 0;
-  min-height: 58px;
+  min-height: 54px;
+  border: 1px solid #edf1f4;
   border-radius: 8px;
-  background: #f6f8fa;
+  background: #fbfcfd;
   padding: 8px 9px;
 }
 
@@ -2926,7 +2942,7 @@ select {
   display: grid;
   gap: 6px;
   min-width: 0;
-  min-height: 76px;
+  min-height: 64px;
   border-radius: 9px;
   background: #f8fafb;
   padding: 8px;
@@ -2966,27 +2982,34 @@ select {
 .metric-family-values {
   grid-area: values;
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   align-content: start;
-  gap: 0;
+  gap: 6px;
   min-width: 0;
   border: 1px solid #edf1f4;
   border-radius: 8px;
   background: #fbfcfd;
-  padding: 8px 8px 0;
+  padding: 8px;
+}
+
+.metric-family-values-label {
+  grid-column: 1 / -1;
 }
 
 .metric-family-values div {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(86px, 0.72fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
   align-items: baseline;
   min-width: 0;
-  padding: 7px 0;
-  border-bottom: 1px solid #edf1f4;
+  padding: 7px 8px;
+  border: 1px solid #edf1f4;
+  border-radius: 7px;
+  background: #fff;
 }
 
 .metric-family-values div:last-child {
-  border-bottom: 0;
+  border-bottom: 1px solid #edf1f4;
 }
 
 .metric-family-values span {
@@ -3001,7 +3024,7 @@ select {
   font-size: 12px;
   min-width: 0;
   overflow-wrap: anywhere;
-  text-align: right;
+  text-align: left;
 }
 
 .metric-tile {
@@ -3352,6 +3375,16 @@ select {
 
   .dashboard-runs .run-card {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "meta"
+      "time"
+      "command";
+  }
+
+  .dashboard-runs .run-card > .mono.muted {
+    justify-self: start;
+    text-align: left;
   }
 
   .project-card-top,
@@ -3477,12 +3510,12 @@ select {
   }
 
   .metric-family-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-areas:
-      "title title"
-      "latest delta"
-      "range trend"
-      "values values";
+      "title title title"
+      "latest delta range"
+      "trend trend trend"
+      "values values values";
   }
 
   .metric-family-values {
