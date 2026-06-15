@@ -1063,6 +1063,7 @@ select {
   gap: 0;
   padding: 0;
   overflow: hidden;
+  background: var(--surface);
 }
 
 .project-summary {
@@ -1186,13 +1187,14 @@ select {
 .project-evidence {
   display: grid;
   align-content: start;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 10px;
   margin-top: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  background: transparent;
+  background: var(--surface);
+  padding: 12px;
 }
 
 .project-evidence-head {
@@ -1200,10 +1202,11 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  grid-column: 1 / -1;
   min-width: 0;
-  padding: 10px 12px;
-  background: #fbfcfd;
-  border-bottom: 1px solid #edf1f4;
+  padding: 0 2px 2px;
+  background: transparent;
+  border-bottom: 0;
 }
 
 .project-evidence-head > span:last-child {
@@ -1229,17 +1232,16 @@ select {
   gap: 7px 12px;
   width: 100%;
   min-height: 0;
-  border: 0;
-  border-top: 1px solid #edf1f4;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid #e6eaee;
+  border-radius: 10px;
+  background: #fbfcfd;
   box-shadow: none;
   padding: 11px 12px;
   text-align: left;
 }
 
 .project-card:first-child {
-  border-top: 0;
+  border-top: 1px solid #e6eaee;
 }
 
 .project-card.prominent {
@@ -1473,10 +1475,13 @@ select {
 }
 
 .project-empty {
+  grid-column: 1 / -1;
   display: grid;
   place-items: center;
   min-height: 96px;
   padding: 14px;
+  border: 1px dashed #d9e0e6;
+  border-radius: 10px;
   background: #fbfcfd;
 }
 
@@ -1487,7 +1492,8 @@ select {
   flex-wrap: wrap;
   gap: 8px;
   min-height: 42px;
-  border-top: 1px solid #edf1f4;
+  border: 1px dashed #d9e0e6;
+  border-radius: 10px;
   background: #f8fafb;
   color: var(--muted);
   text-align: center;
