@@ -2267,6 +2267,30 @@ select {
   align-items: flex-start;
 }
 
+.event-alert,
+.log-error {
+  min-width: 0;
+  border: 1px solid #f2d6c7;
+  border-radius: 10px;
+  background: #fff7f2;
+  color: #8c3f22;
+  overflow-wrap: anywhere;
+}
+
+.event-alert {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.log-error {
+  padding: 9px 11px;
+  font-size: 12px;
+}
+
 .event-path {
   min-width: 0;
   max-width: min(720px, 100%);

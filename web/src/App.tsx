@@ -85,6 +85,7 @@ import {
   uiEventsPath
 } from "./utils";
 import { parseEventLines, summarizeMetricFamilies } from "./events";
+import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
 
 type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
@@ -851,7 +852,7 @@ function RunDetail({
               </div>
               <pre className="command-box">{run.data.command}</pre>
             </section>
-            {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} /> : null}
+            {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} /> : null}
             <Section title={t("agentFindings")} className="findings-section">
               {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} />)}</div> : <Empty t={t} />}
             </Section>
@@ -904,7 +905,7 @@ function RunDetail({
   );
 }
 
-function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path: string }) {
+function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
   const latest = parsed.latestMetrics.slice(0, 6);
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
@@ -916,6 +917,12 @@ function EventDashboard({ t, parsed, path }: { t: T; parsed: ParsedEvents; path:
         <h2>{t("events")}</h2>
         <span className="muted mono event-path">{path}</span>
       </div>
+      {snapshotError ? (
+        <div className="event-alert">
+          <strong>{t("logSnapshotFailed")}</strong>
+          <span>{snapshotError}</span>
+        </div>
+      ) : null}
       <div className="event-layout">
         <div className="event-panel progress-panel">
           <div className="event-panel-head">
@@ -1019,6 +1026,8 @@ function CompareModal({ t, token, runs, onClose }: { t: T; token: string; runs: 
       queryKey: ["compare-events", token, run.id, uiEventsPath(run)],
       queryFn: async () => {
         const logs = await getLogs(token, run.id, { path: uiEventsPath(run), limit: 5000, tail: true });
+        const snapshotError = logSnapshotError(logs);
+        if (snapshotError) throw new Error(snapshotError);
         return { run, parsed: parseEventLines(logs.lines.map((line) => line.content)) };
       },
       enabled: !!uiEventsPath(run)
@@ -1150,18 +1159,39 @@ function ConfirmModal({ t, state, onClose }: { t: T; state: ConfirmState; onClos
 function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null) {
   const [lines, setLines] = useState<{ content: string; line_no?: number; source?: string }[]>([]);
   const [state, setState] = useState<"idle" | "live" | "reconnecting" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let closed = false;
     let ws: WebSocket | null = null;
+    let retryTimer: number | undefined;
     setLines([]);
+    setError(null);
     if (!query) return;
-    getLogs(token, runId, { ...query, limit: query.path ? 5000 : 500, tail: true })
-      .then((logs: LogsResponse) => {
-        if (!closed) setLines(logs.lines || []);
-      })
-      .catch(() => {
-        if (!closed) setState("error");
-      });
+    const fetchSnapshot = (attempt = 0) => {
+      getLogs(token, runId, { ...query, limit: query.path ? 5000 : 500, tail: true })
+        .then((logs: LogsResponse) => {
+          if (closed) return;
+          const snapshotError = logSnapshotError(logs);
+          if (snapshotError) {
+            setError(snapshotError);
+            if (attempt < 3) retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 900 * 2 ** attempt);
+            return;
+          }
+          if (isEmptyRemotePathSnapshot(logs) && attempt < 5) {
+            retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 700 * (attempt + 1));
+            return;
+          }
+          setError(null);
+          setLines((prev) => mergeLogSnapshot(logs.lines || [], prev));
+        })
+        .catch((err: unknown) => {
+          if (closed) return;
+          setError(err instanceof Error ? err.message : String(err));
+          setState("error");
+          if (attempt < 3) retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 900 * 2 ** attempt);
+        });
+    };
+    fetchSnapshot();
     const connect = () => {
       if (closed) return;
       setState("reconnecting");
@@ -1185,10 +1215,11 @@ function useLiveLog(token: string, runId: string, query: { source?: string; path
     connect();
     return () => {
       closed = true;
+      window.clearTimeout(retryTimer);
       ws?.close();
     };
   }, [token, runId, query?.source, query?.path]);
-  return { lines, state };
+  return { lines, state, error };
 }
 
 function useParsedEvents(lines: string[]): ParsedEvents {
@@ -1225,6 +1256,7 @@ function LogPanel({ title, state, hiddenWhenEmpty }: { title: string; state: Ret
         <h2>{title}</h2>
         <Pill tone={state.state === "live" ? "good" : state.state === "error" ? "bad" : "warn"}>{state.state}</Pill>
       </div>
+      {state.error ? <div className="log-error">{state.error}</div> : null}
       <pre className="log-pane">{state.lines.map((line) => line.content).join("\n") || "-"}</pre>
     </section>
   );
