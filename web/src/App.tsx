@@ -981,11 +981,18 @@ function RunDetail({
 }
 
 function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
-  const latest = parsed.latestMetrics.slice(0, 6);
+  const latest = parsed.latestMetrics.slice(0, 8);
   const progress = parsed.progress.slice(-5);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 10);
   const metricGroups = groupMetricFamiliesByScale(metricFamilies);
+  const summary = [
+    { label: t("events"), value: parsed.events.length },
+    { label: t("metrics"), value: parsed.metrics.length },
+    { label: t("metricScales"), value: metricGroups.length },
+    { label: t("progress"), value: parsed.progress.length },
+    { label: parsed.errors.length ? t("errors") : t("notes"), value: parsed.errors.length || parsed.notes.length }
+  ];
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
@@ -998,6 +1005,14 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
           <span>{snapshotError}</span>
         </div>
       ) : null}
+      <div className="event-summary-strip">
+        {summary.map((item) => (
+          <div className="event-summary-item" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
       <div className="event-layout">
         <div className="event-panel progress-panel">
           <div className="event-panel-head">
@@ -1022,7 +1037,10 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
           <div className="metric-list">
             {latest.length ? latest.map((metric, index) => (
               <div className="metric-row" key={`${metric.series || t("defaultSeries")}-${metric.name}-${index}`}>
-                <span>{metric.series ? metric.series + "/" + metric.name : metric.name}</span>
+                <div className="metric-row-main">
+                  <span className="metric-row-name">{metric.name}</span>
+                  <span className="metric-row-context">{latestMetricContext(metric, t)}</span>
+                </div>
                 <strong>{formatMetricValue(metric)}</strong>
               </div>
             )) : <span className="muted">{t("noMetricsYet")}</span>}
@@ -1049,6 +1067,10 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
       </div>
     </section>
   );
+}
+
+function latestMetricContext(metric: MetricPoint, t: T) {
+  return [metric.series || t("defaultSeries"), metric.unit].filter(Boolean).join(" · ");
 }
 
 function MetricFamilyRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
