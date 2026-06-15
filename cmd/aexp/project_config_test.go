@@ -600,11 +600,19 @@ dataset/raw/
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		".git/",
+		"node_modules/",
+		".conda/",
 		".venv/",
+		".pytest_cache/",
 		"__pycache__/",
 		"dataset/",
 		"outputs/",
+		"outputs_remote/",
+		"runs/",
 		"runs/detect/",
+		"*.csv",
+		"*.parquet",
 		"dataset/raw/",
 		"*.tmp",
 		"local-only/",
@@ -625,13 +633,42 @@ func TestResolveSyncExcludesCodeDataKeepsDataDirs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, unwanted := range []string{"dataset/", "outputs/", "*.zip"} {
+	for _, unwanted := range []string{"dataset/", "outputs/", "runs/", "*.zip"} {
 		if containsString(excludes, unwanted) {
 			t.Fatalf("code-data should not exclude %q by default: %#v", unwanted, excludes)
 		}
 	}
-	if !containsString(excludes, ".venv/") {
-		t.Fatalf("code-data should still exclude env/cache dirs: %#v", excludes)
+	for _, want := range []string{".conda/", ".venv/", "node_modules/", ".git/"} {
+		if !containsString(excludes, want) {
+			t.Fatalf("code-data should still exclude env/cache dirs; missing %q in %#v", want, excludes)
+		}
+	}
+}
+
+func TestResolveSyncExcludesCodeProfileProtectsCommonLocalArtifacts(t *testing.T) {
+	excludes, _, err := resolveSyncExcludes(t.TempDir(), "code", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		".conda/",
+		"node_modules/",
+		".git/",
+		".codegraph/",
+		"outputs/",
+		"outputs_remote/",
+		"dataset/",
+		"runs/",
+		"mlruns/",
+		"lightning_logs/",
+		"*.csv",
+		"*.parquet",
+		"*.npz",
+		"*.safetensors",
+	} {
+		if !containsString(excludes, want) {
+			t.Fatalf("code profile should exclude %q by default: %#v", want, excludes)
+		}
 	}
 }
 
