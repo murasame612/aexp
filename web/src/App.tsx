@@ -60,6 +60,7 @@ import type {
   GPUInfo,
   LogsResponse,
   MetricPoint,
+  ParamPoint,
   ParsedEvents,
   ProgressPoint,
   ProjectRunCard,
@@ -1063,7 +1064,7 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
         <EventFoldout className="param-panel" title={t("params")} count={params.length} defaultOpen>
           <div className="param-list">
             {params.length ? params.map((param) => (
-              <div className="param-row" key={`${param.series || t("defaultSeries")}-${param.name}`}>
+              <div className={paramCardClass(param)} key={`${param.series || t("defaultSeries")}-${param.name}`}>
                 <div>
                   <span>{param.name}</span>
                   {param.series ? <small>{param.series}</small> : null}
@@ -1167,6 +1168,14 @@ function progressPercent(point: ProgressPoint): number | undefined {
 
 function latestMetricContext(metric: MetricPoint, t: T) {
   return [metric.series || t("defaultSeries"), metric.unit].filter(Boolean).join(" · ");
+}
+
+function paramCardClass(param: ParamPoint) {
+  const value = param.value || "";
+  const name = param.name || "";
+  const longValue = value.length > 34 || value.includes("/") || value.includes("\\");
+  const longName = name.length > 24;
+  return `param-row${longValue || longName ? " param-row-wide" : ""}`;
 }
 
 function MetricFamilyTableRow({ family, t }: { family: ReturnType<typeof summarizeMetricFamilies>[number]; t: T }) {
