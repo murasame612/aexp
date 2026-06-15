@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
@@ -1067,7 +1067,7 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
         <EventFoldout className="param-panel" title={t("params")} count={params.length} defaultOpen>
           <div className="param-list">
             {params.length ? params.map((param) => (
-              <div className={paramCardClass(param)} key={`${param.series || t("defaultSeries")}-${param.name}`}>
+              <div className={paramCardClass(param)} style={paramCardStyle(param)} key={`${param.series || t("defaultSeries")}-${param.name}`}>
                 <div>
                   <span>{param.name}</span>
                   {param.series ? <small>{param.series}</small> : null}
@@ -1197,6 +1197,14 @@ function paramCardClass(param: ParamPoint) {
   const longValue = value.length > 34 || value.includes("/") || value.includes("\\");
   const longName = name.length > 24;
   return `param-row${longValue || longName ? " param-row-wide" : ""}`;
+}
+
+function paramCardStyle(param: ParamPoint): CSSProperties {
+  const value = param.value || "";
+  const name = param.name || "";
+  const visualLength = Math.max(value.length, name.length * 0.8);
+  const rows = Math.max(4, Math.min(10, 4 + Math.ceil(visualLength / 56)));
+  return { "--param-rows": rows } as CSSProperties;
 }
 
 type MetricFamily = ReturnType<typeof summarizeMetricFamilies>[number];

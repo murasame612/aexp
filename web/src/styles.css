@@ -2946,25 +2946,39 @@ select {
 
 .param-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-auto-rows: 8px;
   grid-auto-flow: dense;
-  align-items: start;
+  align-items: stretch;
   gap: 8px;
 }
 
 .param-row {
   --param-accent: #4285f4;
   --param-bg: #f3f7ff;
+  position: relative;
   display: grid;
   align-content: start;
   gap: 6px;
+  grid-row: span var(--param-rows, 4);
   min-width: 0;
-  min-height: 58px;
-  padding: 8px 9px;
-  border: 1px solid #dfe7f8;
-  border-top: 3px solid var(--param-accent);
+  min-height: 0;
+  padding: 8px 22px 8px 9px;
+  border: 1px solid #e2e7ec;
   border-radius: 8px;
   background: var(--param-bg);
+}
+
+.param-row::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--param-accent);
+  opacity: 0.42;
 }
 
 .param-row:nth-child(4n + 1) {
