@@ -843,7 +843,13 @@ select {
   min-width: 0;
 }
 
+.mark-detail > .finding-meta {
+  grid-area: auto;
+  justify-content: flex-start;
+}
+
 .mark-detail-body {
+  grid-column: 1;
   min-width: 0;
   border: 1px solid #e6eaee;
   border-radius: 10px;
