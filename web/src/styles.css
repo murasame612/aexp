@@ -800,13 +800,12 @@ select {
 .dashboard-finding-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: 0;
   min-width: 0;
 }
 
 .dashboard-finding-body.has-evidence {
-  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.1fr);
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .dashboard-finding-body p,
@@ -818,9 +817,13 @@ select {
 }
 
 .dashboard-finding-body p {
+  display: -webkit-box;
   color: #38424c;
   font-size: 13px;
   line-height: 1.58;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .dashboard-finding-body code {
@@ -832,6 +835,25 @@ select {
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   line-height: 1.5;
+}
+
+.mark-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mark-detail-body {
+  min-width: 0;
+  border: 1px solid #e6eaee;
+  border-radius: 10px;
+  background: #fbfcfd;
+  color: #30363d;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .compact-list {
@@ -1584,18 +1606,18 @@ select {
 }
 
 .run-project-group > .run-list {
-  gap: 0;
+  gap: 8px;
+  padding: 8px;
 }
 
 .run-project-group > .run-list .run-list-card {
-  border-width: 0;
-  border-top: 1px solid #edf1f4;
-  border-radius: 0;
+  border: 1px solid #e1e7ec;
+  border-radius: 10px;
   background: #fff;
 }
 
 .run-project-group > .run-list .run-list-card:first-child {
-  border-top: 0;
+  border-top: 1px solid #e1e7ec;
 }
 
 .run-project-group > .run-list .run-list-card:hover {
@@ -1647,14 +1669,14 @@ select {
 .run-project-context {
   grid-area: project;
   display: grid;
-  grid-template-columns: minmax(96px, auto) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  border: 1px solid #edf1f4;
-  border-radius: 10px;
-  background: #fff;
-  padding: 7px 9px;
+  border-left: 3px solid #d6e4dc;
+  border-radius: 8px;
+  background: #f8faf7;
+  padding: 6px 8px;
 }
 
 .run-project-context > span:not(.pill),
@@ -1715,10 +1737,18 @@ select {
 
 .run-list-actions {
   grid-area: actions;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  justify-content: end;
   align-items: center;
-  flex-wrap: wrap;
-  max-width: 150px;
+  gap: 6px;
+  max-width: 112px;
+}
+
+.run-list-actions .run-compare-toggle,
+.run-list-actions .mark-badge {
+  grid-column: 1 / -1;
+  justify-self: end;
 }
 
 .project-empty {
@@ -2917,20 +2947,44 @@ select {
 .param-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-auto-flow: dense;
   align-items: start;
   gap: 8px;
 }
 
 .param-row {
+  --param-accent: #4285f4;
+  --param-bg: #f3f7ff;
   display: grid;
   align-content: start;
   gap: 6px;
   min-width: 0;
   min-height: 58px;
   padding: 8px 9px;
-  border: 1px solid #eee9e1;
+  border: 1px solid #dfe7f8;
+  border-top: 3px solid var(--param-accent);
   border-radius: 8px;
-  background: #fffdf9;
+  background: var(--param-bg);
+}
+
+.param-row:nth-child(4n + 1) {
+  --param-accent: #4285f4;
+  --param-bg: #f3f7ff;
+}
+
+.param-row:nth-child(4n + 2) {
+  --param-accent: #ea4335;
+  --param-bg: #fff5f3;
+}
+
+.param-row:nth-child(4n + 3) {
+  --param-accent: #fbbc05;
+  --param-bg: #fffaf0;
+}
+
+.param-row:nth-child(4n) {
+  --param-accent: #34a853;
+  --param-bg: #f2faf5;
 }
 
 .param-row-wide {
@@ -3360,7 +3414,8 @@ select {
   border: 1px solid #e6eaee;
   border-radius: 10px;
   background: #fbfcfd;
-  padding: 14px 15px;
+  padding: 11px 12px;
+  text-align: left;
 }
 
 .findings-section .finding:first-child {
@@ -3388,7 +3443,7 @@ select {
 .finding-content {
   grid-area: content;
   display: grid;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -3398,36 +3453,13 @@ select {
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 2;
 }
 
 .findings-section .finding-reason {
-  display: block;
-  overflow: visible;
-  -webkit-line-clamp: unset;
-}
-
-.finding-evidence {
   display: -webkit-box;
-  min-width: 0;
-  margin-top: 0;
-  border-radius: 10px;
-  background: #f6f8fa;
-  color: #4f5a65;
-  padding: 9px 10px;
-  font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.45;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 6;
-}
-
-.findings-section .finding-evidence {
-  display: block;
-  overflow: visible;
-  -webkit-line-clamp: unset;
+  -webkit-line-clamp: 2;
 }
 
 .finding-run {

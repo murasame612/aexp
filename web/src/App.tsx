@@ -932,6 +932,7 @@ function RunDetail({
   const eventsPath = run.data ? uiEventsPath(run.data) : "";
   const eventLog = useLiveLog(token, runId, eventsPath ? { path: eventsPath } : null);
   const parsedEvents = useParsedEvents(eventLog.lines.map((line) => line.content));
+  const [selectedMark, setSelectedMark] = useState<RunMark | null>(null);
 
   useEffect(() => {
     history.replaceState(null, "", `/ui-v2/runs/${encodeURIComponent(runId)}`);
@@ -979,7 +980,7 @@ function RunDetail({
               </section>
               {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} /> : null}
               <Section title={t("agentFindings")} className="findings-section">
-                {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} />)}</div> : <Empty t={t} />}
+                {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}</div> : <Empty t={t} />}
               </Section>
               <LogPanel title="terminal" state={terminal} />
               <LogPanel title="stdout" state={stdout} />
@@ -1002,6 +1003,7 @@ function RunDetail({
       ) : (
         <Empty t={t} />
       )}
+      {selectedMark ? <MarkDetailModal mark={selectedMark} t={t} onClose={() => setSelectedMark(null)} /> : null}
     </Modal>
   );
 }
@@ -1623,7 +1625,6 @@ function RunListCard({
       </div>
       {projectMeta ? (
         <div className="run-project-context">
-          <span>{projectMeta.projectName}</span>
           <strong>{projectMeta.cardTitle}</strong>
           {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
         </div>
@@ -1676,8 +1677,7 @@ function markTone(kind?: string) {
 }
 
 function DashboardFinding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
-  const reason = mark.reason || mark.evidence || "";
-  const evidence = mark.evidence && mark.evidence !== reason ? mark.evidence : "";
+  const statement = markStatement(mark);
   const tone = markTone(mark.kind);
   return (
     <button className={`dashboard-finding dashboard-finding-${tone}`} onClick={onOpenRun} type="button">
@@ -1693,20 +1693,18 @@ function DashboardFinding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () =
           {onOpenRun ? <ExternalLink size={13} /> : null}
         </span>
       </div>
-      <div className={evidence ? "dashboard-finding-body has-evidence" : "dashboard-finding-body"}>
-        <p>{reason || mark.run_id}</p>
-        {evidence ? <code>{evidence}</code> : null}
+      <div className="dashboard-finding-body">
+        <p>{statement || mark.run_id}</p>
       </div>
     </button>
   );
 }
 
-function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
-  const reason = mark.reason || mark.evidence || "";
-  const evidence = mark.evidence && mark.evidence !== reason ? mark.evidence : "";
+function Finding({ mark, onOpen }: { mark: RunMark; onOpen?: () => void }) {
+  const statement = markStatement(mark);
   const tone = markTone(mark.kind);
   return (
-    <button className="finding" onClick={onOpenRun} type="button">
+    <button className="finding" onClick={onOpen} type="button">
       <div className="finding-meta">
         <Pill tone={tone}>{mark.kind || "mark"}</Pill>
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
@@ -1714,11 +1712,32 @@ function Finding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void })
       </div>
       <div className="finding-content">
         <strong>{mark.title || mark.kind}</strong>
-        <span className="finding-reason">{reason || mark.run_id}</span>
-        {evidence ? <code className="finding-evidence">{evidence}</code> : null}
+        <span className="finding-reason">{statement || mark.run_id}</span>
       </div>
       <span className="finding-run mono">{mark.run_id}</span>
     </button>
+  );
+}
+
+function markStatement(mark: RunMark) {
+  const source = mark.reason || mark.evidence || "";
+  return source.split(/\n\s*\n|\n/).map((line) => line.trim()).find(Boolean) || "";
+}
+
+function MarkDetailModal({ mark, t, onClose }: { mark: RunMark; t: T; onClose: () => void }) {
+  const body = [mark.reason, mark.evidence && mark.evidence !== mark.reason ? mark.evidence : ""].filter(Boolean).join("\n\n");
+  return (
+    <Modal title={mark.title || mark.kind || t("agentFindings")} onClose={onClose}>
+      <article className="mark-detail">
+        <div className="finding-meta">
+          <Pill tone={markTone(mark.kind)}>{mark.kind || "mark"}</Pill>
+          <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
+          <span>{mark.actor || "agent"}</span>
+          <span className="mono">{mark.run_id}</span>
+        </div>
+        <div className="mark-detail-body">{body || mark.run_id}</div>
+      </article>
+    </Modal>
   );
 }
 
