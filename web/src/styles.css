@@ -3523,21 +3523,49 @@ select {
 
 .metric-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  transition: padding 180ms ease, gap 180ms ease;
+}
+
+.metric-card-grid.has-expanded {
+  gap: 8px;
+  padding: 2px 0 8px;
+}
+
+.metric-card-row {
+  display: flex;
+  align-items: flex-start;
   gap: 10px;
   min-width: 0;
 }
 
+.metric-card-row.active {
+  gap: 8px;
+}
+
 .metric-family-card {
+  position: relative;
+  flex: 1 1 0;
   min-width: 0;
   border: 1px solid #e7e1d8;
   border-radius: 12px;
   background: #fffdf9;
   overflow: hidden;
+  transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, flex 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
 }
 
 .metric-family-card.expanded {
+  flex: 2.35 1 0;
   border-color: var(--accent);
+  background: #fffaf4;
+  box-shadow: 0 14px 36px rgba(55, 45, 32, 0.1);
+  z-index: 2;
+}
+
+.metric-family-card.compressed {
+  flex: 0.72 1 0;
+  background: #fffdfa;
 }
 
 .metric-card-button {
@@ -3552,6 +3580,26 @@ select {
   background: transparent;
   color: inherit;
   text-align: left;
+}
+
+.metric-family-card.expanded .metric-card-button {
+  min-height: 116px;
+}
+
+.metric-family-card.compressed .metric-card-button {
+  min-height: 116px;
+}
+
+.metric-family-card.compressed .metric-card-head {
+  gap: 7px;
+}
+
+.metric-family-card.compressed .metric-card-head strong {
+  font-size: 18px;
+}
+
+.metric-family-card.compressed .metric-card-foot {
+  white-space: normal;
 }
 
 .metric-card-button:hover:not(:disabled) {
@@ -3678,6 +3726,7 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
   padding: 0 12px 12px;
 }
 
@@ -3699,6 +3748,10 @@ select {
   min-height: 0;
   border-top: 1px solid #eee9e1;
   padding-top: 8px;
+}
+
+.metric-family-card.expanded .metric-card-detail .chart {
+  height: 240px;
 }
 
 .metric-card-detail > div {
@@ -4391,6 +4444,15 @@ select {
   }
 
   .metric-card-grid {
+    display: grid;
+  }
+
+  .metric-card-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .metric-card-detail {
     grid-template-columns: minmax(0, 1fr);
   }
 

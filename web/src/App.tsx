@@ -1135,11 +1135,14 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 
 function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null; run: Run }) {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
+  const [metricGridColumns, setMetricGridColumns] = useState(1);
+  const metricGridRef = useRef<HTMLElement | null>(null);
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
   const params = parsed.params.slice(0, 24);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
+  const metricRows = chunkMetricFamilies(metricFamilies, metricGridColumns);
   const summary = [
     { label: t("events"), value: parsed.events.length },
     { label: t("progress"), value: parsed.progress.length },
@@ -1147,6 +1150,25 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
     { label: t("metrics"), value: parsed.metrics.length },
     { label: parsed.errors.length ? t("errors") : t("notes"), value: parsed.errors.length || parsed.notes.length }
   ];
+
+  useEffect(() => {
+    const node = metricGridRef.current;
+    if (!node) return;
+    const updateColumns = () => {
+      const width = node.getBoundingClientRect().width;
+      const columns = width >= 1120 ? 4 : width >= 820 ? 3 : width >= 560 ? 2 : 1;
+      setMetricGridColumns(columns);
+    };
+    updateColumns();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateColumns) : null;
+    observer?.observe(node);
+    window.addEventListener("resize", updateColumns);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateColumns);
+    };
+  }, [metricFamilies.length]);
+
   return (
     <section className="event-dashboard">
       <div className="section-head event-head">
@@ -1207,17 +1229,26 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
         ) : null}
       </div>
       <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length} defaultOpen>
-        <section className="metric-card-grid" aria-label={t("metrics")}>
-          {metricFamilies.length ? metricFamilies.map((family) => {
-            const key = metricFamilyKey(family);
+        <section ref={metricGridRef} className={`metric-card-grid ${expandedMetric ? "has-expanded" : ""}`} aria-label={t("metrics")}>
+          {metricRows.length ? metricRows.map((row, rowIndex) => {
+            const activeRow = row.some((family) => metricFamilyKey(family) === expandedMetric);
             return (
-              <MetricFamilyCard
-                key={key}
-                family={family}
-                t={t}
-                expanded={expandedMetric === key}
-                onToggle={() => setExpandedMetric((current) => (current === key ? null : key))}
-              />
+              <div className={`metric-card-row ${activeRow ? "active" : ""}`} key={`metric-row-${rowIndex}`}>
+                {row.map((family) => {
+                  const key = metricFamilyKey(family);
+                  const expanded = expandedMetric === key;
+                  return (
+                    <MetricFamilyCard
+                      key={key}
+                      family={family}
+                      t={t}
+                      compressed={!!expandedMetric && activeRow && !expanded}
+                      expanded={expanded}
+                      onToggle={() => setExpandedMetric((current) => (current === key ? null : key))}
+                    />
+                  );
+                })}
+              </div>
             );
           }) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
         </section>
@@ -1336,26 +1367,39 @@ function metricFamilyKey(family: MetricFamily) {
   return `${family.name}\u0000${family.scaleKey}`;
 }
 
-function MetricFamilyCard({ family, t, expanded, onToggle }: { family: MetricFamily; t: T; expanded: boolean; onToggle: () => void }) {
+function chunkMetricFamilies(families: MetricFamily[], columns: number) {
+  const size = Math.max(1, columns || 1);
+  const rows: MetricFamily[][] = [];
+  for (let index = 0; index < families.length; index += size) {
+    rows.push(families.slice(index, index + size));
+  }
+  return rows;
+}
+
+function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { family: MetricFamily; t: T; compressed: boolean; expanded: boolean; onToggle: () => void }) {
   const primary = family.series.length > 1 ? `${family.series.length} ${t("series").toLowerCase()}` : family.latest ? formatMetricValue(family.latest) : "-";
   const seriesPreview = family.series.slice(0, 2);
   const axisLabel = formatMetricSpan(family.axisStart, family.axisEnd);
   return (
-    <article className={expanded ? "metric-family-card expanded" : "metric-family-card"}>
+    <motion.article
+      className={`metric-family-card ${expanded ? "expanded" : ""} ${compressed ? "compressed" : ""}`}
+      layout
+      transition={{ layout: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
+    >
       <button className="metric-card-button" type="button" onClick={onToggle} aria-expanded={expanded}>
         <div className="metric-card-head">
           <span>{metricTitle(family.name)}</span>
           <strong>{primary}</strong>
         </div>
-        <div className="metric-card-series">
+        {!compressed ? <div className="metric-card-series">
           {seriesPreview.map((row, index) => (
             <div key={`${row.series || t("defaultSeries")}-${index}`}>
               <span>{shortSeriesName(row.series || t("defaultSeries"))}</span>
               <strong>{formatMetricValue(row)}</strong>
             </div>
           ))}
-        </div>
-        {family.trend.length ? (
+        </div> : null}
+        {!expanded && !compressed && family.trend.length ? (
           <div className="metric-card-sparkline-wrap" aria-hidden="true">
             <span>{formatMetric(family.max)}</span>
             <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none">
@@ -1366,44 +1410,54 @@ function MetricFamilyCard({ family, t, expanded, onToggle }: { family: MetricFam
             </svg>
             <span>{formatMetric(family.min)}</span>
           </div>
-        ) : <div className="metric-card-sparkline metric-sparkline-empty" aria-hidden="true" />}
+        ) : null}
+        {!expanded && !compressed && !family.trend.length ? <div className="metric-card-sparkline metric-sparkline-empty" aria-hidden="true" /> : null}
         <span className="metric-card-foot">{axisLabel} · {family.count} {t("points")}</span>
       </button>
-      {expanded ? (
-        <div className="metric-card-detail">
-          <div className="metric-card-chart-head">
-            <span>{t("range")}: {axisLabel}</span>
-            <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
-          </div>
-          <MetricChart points={family.points} compact />
-          <div>
-            <span>{t("low")}</span>
-            <strong>{formatMetric(family.min)}</strong>
-          </div>
-          <div>
-            <span>{t("high")}</span>
-            <strong>{formatMetric(family.max)}</strong>
-          </div>
-          <div>
-            <span>{t("delta")}</span>
-            <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
-          </div>
-          <div className="metric-card-rangebar" aria-hidden="true">
-            <i />
-            <b style={{ left: `${metricRangePosition(family)}%` }} />
-          </div>
-          <div className="metric-card-detail-series">
-            <span>{t("series")}</span>
-            {family.series.map((row, index) => (
-              <p key={`${row.series || t("defaultSeries")}-${index}`}>
-                <span>{row.series || t("defaultSeries")}</span>
-                <strong>{formatMetricValue(row)}</strong>
-              </p>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </article>
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            className="metric-card-detail"
+            key="metric-detail"
+            initial={{ opacity: 0, height: 0, y: -8 }}
+            animate={{ opacity: 1, height: "auto", y: 0 }}
+            exit={{ opacity: 0, height: 0, y: -8 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="metric-card-chart-head">
+              <span>{t("range")}: {axisLabel}</span>
+              <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
+            </div>
+            <MetricChart points={family.points} />
+            <div>
+              <span>{t("low")}</span>
+              <strong>{formatMetric(family.min)}</strong>
+            </div>
+            <div>
+              <span>{t("high")}</span>
+              <strong>{formatMetric(family.max)}</strong>
+            </div>
+            <div>
+              <span>{t("delta")}</span>
+              <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+            </div>
+            <div className="metric-card-rangebar" aria-hidden="true">
+              <i />
+              <b style={{ left: `${metricRangePosition(family)}%` }} />
+            </div>
+            <div className="metric-card-detail-series">
+              <span>{t("series")}</span>
+              {family.series.map((row, index) => (
+                <p key={`${row.series || t("defaultSeries")}-${index}`}>
+                  <span>{row.series || t("defaultSeries")}</span>
+                  <strong>{formatMetricValue(row)}</strong>
+                </p>
+              ))}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </motion.article>
   );
 }
 
@@ -1476,8 +1530,11 @@ function MetricChart({ points, compact = false }: { points: MetricPoint[]; compa
       }))
     });
     const resize = () => chart.resize();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
+    if (observer) observer.observe(ref.current);
     window.addEventListener("resize", resize);
     return () => {
+      observer?.disconnect();
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
