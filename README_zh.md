@@ -236,9 +236,25 @@ Python 脚本可以写事件：
 from aexp_events import metric, progress, param, note
 
 param("model", "iTransformer")
-progress("epoch", current=1, total=20)
-metric("val/loss", 0.123, step=1)
+progress("epoch", current=1, total=20, series="iTransformer/raw", stage="train")
+metric("val/loss", 0.123, step=1, series="iTransformer/raw", split="val")
 note("first checkpoint written")
+```
+
+事件名字要短而稳定，例如 `train/loss`、`val/mse`、`epoch`、`trial`。
+不要把完整模型配置、数据集路径、trial id 塞进指标名里；这些上下文应该
+放在 `series`、`variant`、`split`、`stage`、`trial` 这类字段里。
+
+超参数搜索建议这样写，同一个 loss 名字会在同一张图里解析成不同 trial 曲线：
+
+```python
+for trial_id, cfg in enumerate(search_space):
+    param("learning_rate", cfg.lr, trial=trial_id)
+    progress("trial", current=trial_id + 1, total=len(search_space))
+    for epoch in range(max_epochs):
+        progress("epoch", current=epoch + 1, total=max_epochs, trial=trial_id, stage="train")
+        metric("train/loss", train_loss, epoch=epoch + 1, trial=trial_id)
+        metric("val/loss", val_loss, epoch=epoch + 1, trial=trial_id, split="val")
 ```
 
 前端会把这些事件显示成进度卡、指标卡和图表：

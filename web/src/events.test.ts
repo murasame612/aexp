@@ -19,17 +19,32 @@ describe("event parsing", () => {
     expect(parsed.errors.length).toBe(1);
   });
 
-  it("builds series labels from run, variant, split, and stage", () => {
+  it("builds series labels from run, variant, trial, split, and stage", () => {
     const parsed = parseEventLines([
-      JSON.stringify({ type: "metric", metric: "mse", value: "1.5", epoch: "2", time: "99", run: "raw", variant: "seed42", split: "val", stage: "eval" })
+      JSON.stringify({ type: "metric", metric: "mse", value: "1.5", epoch: "2", time: "99", run: "raw", variant: "saits", trial: "7", split: "val", stage: "eval" })
     ]);
     expect(parsed.metrics[0]).toMatchObject({
       name: "mse",
       value: 1.5,
       epoch: 2,
       time: 99,
-      series: "raw/seed42/val/eval"
+      series: "raw/saits/trial:7/val/eval"
     });
+  });
+
+  it("separates hyperparameter trials that emit the same metric name", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "train/loss", value: 0.9, epoch: 1, trial: "1" }),
+      JSON.stringify({ type: "metric", name: "train/loss", value: 0.7, epoch: 1, trial: "2" }),
+      JSON.stringify({ type: "metric", name: "train/loss", value: 0.6, epoch: 2, trial: "2" })
+    ]);
+    expect(parsed.metrics.map((metric) => metric.series)).toEqual(["trial:1", "trial:2", "trial:2"]);
+
+    const family = summarizeMetricFamilies(parsed.metrics).find((row) => row.name === "train/loss");
+    expect(family?.series.map((point) => [point.series, point.value])).toEqual([
+      ["trial:1", 0.9],
+      ["trial:2", 0.6]
+    ]);
   });
 
   it("does not turn numeric params into metric series", () => {

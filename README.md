@@ -254,10 +254,25 @@ metric("val/loss", 0.123, step=1, series="iTransformer/raw", split="val")
 note("first checkpoint written")
 ```
 
-Use `name` for the thing being advanced (`epoch`, `trial`, `fold`) and put
-model/data/split/stage context in fields such as `series`, `variant`, `split`,
-and `stage`. The dashboard groups repeated progress updates by that context and
-renders metrics as trend tables and charts.
+Use short, stable `name` values for the quantity itself (`train/loss`,
+`val/mse`, `epoch`, `trial`, `fold`). Put model/data/split/stage context in
+fields such as `series`, `variant`, `split`, and `stage`. For hyperparameter
+search, keep the metric name the same across trials and identify the trial with
+`trial` or a stable `series` label:
+
+```python
+for trial_id, cfg in enumerate(search_space):
+    param("learning_rate", cfg.lr, trial=trial_id)
+    progress("trial", current=trial_id + 1, total=len(search_space))
+    for epoch in range(max_epochs):
+        progress("epoch", current=epoch + 1, total=max_epochs, trial=trial_id, stage="train")
+        metric("train/loss", train_loss, epoch=epoch + 1, trial=trial_id)
+        metric("val/loss", val_loss, epoch=epoch + 1, trial=trial_id, split="val")
+```
+
+Do not encode full model, dataset, or trial config in the metric name. The
+dashboard groups repeated progress updates by context and renders metrics with
+the same name as comparable series on one chart.
 Agents can read the same low-noise event stream without scraping raw logs:
 
 ```bash

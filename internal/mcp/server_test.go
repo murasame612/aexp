@@ -195,6 +195,10 @@ func TestMCPRunEventGuidanceUsesStatusPath(t *testing.T) {
 	if !ok || len(monitor) == 0 || !strings.Contains(monitor[0], "run_ABC") {
 		t.Fatalf("unexpected monitor guidance: %#v", guidance["monitor"])
 	}
+	rules, ok := guidance["rules"].([]string)
+	if !ok || len(rules) == 0 || !strings.Contains(strings.Join(rules, "\n"), "trial") {
+		t.Fatalf("expected trial-aware event rules: %#v", guidance["rules"])
+	}
 }
 
 func TestMarkRunToolInvokesAexpBinary(t *testing.T) {
@@ -459,7 +463,7 @@ printf 'ok\n'
 	}
 	t.Setenv("AEXP_STUB_ARGS", argsFile)
 
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_event_metric","arguments":{"name":"train/loss","value":0.25,"path":"/tmp/events.jsonl","epoch":3,"field":["split=train"]}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_event_metric","arguments":{"name":"train/loss","value":0.25,"path":"/tmp/events.jsonl","epoch":3,"trial":"7","variant":"raw","field":["split=train"]}}}` + "\n"
 	var out bytes.Buffer
 	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
@@ -470,7 +474,7 @@ printf 'ok\n'
 		t.Fatalf("read args: %v", err)
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
-	wantArgs := []string{"event", "metric", "train/loss", "0.25", "--path", "/tmp/events.jsonl", "--field", "split=train", "--epoch", "3"}
+	wantArgs := []string{"event", "metric", "train/loss", "0.25", "--path", "/tmp/events.jsonl", "--variant", "raw", "--trial", "7", "--field", "split=train", "--epoch", "3"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}

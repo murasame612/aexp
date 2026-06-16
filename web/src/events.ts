@@ -43,8 +43,24 @@ function eventName(ev: UIEvent): string {
   return String(ev.name || ev.metric || ev.key || ev.label || "").trim();
 }
 
+function eventContext(ev: UIEvent, key: string, prefix?: string): string | undefined {
+  const value = String(ev[key] || "").trim();
+  if (!value) return undefined;
+  return prefix ? `${prefix}:${value}` : value;
+}
+
 function eventSeries(ev: UIEvent): string | undefined {
-  const parts = [ev.series, ev.run, ev.variant, ev.split, ev.stage].map((v) => String(v || "").trim()).filter(Boolean);
+  const rawParts = [
+    eventContext(ev, "series"),
+    eventContext(ev, "run"),
+    eventContext(ev, "variant"),
+    eventContext(ev, "trial", "trial"),
+    eventContext(ev, "seed", "seed"),
+    eventContext(ev, "fold", "fold"),
+    eventContext(ev, "split"),
+    eventContext(ev, "stage")
+  ].filter(Boolean) as string[];
+  const parts = rawParts.filter((part, index) => rawParts.indexOf(part) === index);
   return parts.length ? parts.join("/") : undefined;
 }
 

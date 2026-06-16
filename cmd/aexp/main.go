@@ -3585,6 +3585,9 @@ type eventOptions struct {
 	split   string
 	stage   string
 	label   string
+	trial   string
+	seed    string
+	fold    string
 }
 
 func eventCmd() *cobra.Command {
@@ -3598,7 +3601,14 @@ This is intended for training/setup scripts running inside an aexp run:
 
   aexp event metric train/loss 0.23 --epoch 3
   aexp event progress epoch 30 --total 100 --series iTransformer/raw --stage train
+  aexp event metric val/loss 0.19 --epoch 3 --trial 7 --split val
   aexp event note "finished validation"
+
+Keep metric names short and stable, such as train/loss, val/loss, or val/mse.
+Put model, dataset, split, stage, and hyperparameter-trial context in fields
+like --series, --variant, --split, --stage, and --trial. Do not encode a full
+experiment config in the metric name; the UI uses these context fields to draw
+multiple trials or variants in one chart.
 
 The same command also works as aexp-event when the binary is symlinked with
 that name.`,
@@ -3737,6 +3747,9 @@ func addEventFlags(cmd *cobra.Command, opts *eventOptions) {
 	cmd.Flags().StringVar(&opts.split, "split", "", "Data split label, e.g. train/val/test")
 	cmd.Flags().StringVar(&opts.stage, "stage", "", "Stage label, e.g. setup/train/eval")
 	cmd.Flags().StringVar(&opts.label, "label", "", "Human display label")
+	cmd.Flags().StringVar(&opts.trial, "trial", "", "Trial id/label for hyperparameter search")
+	cmd.Flags().StringVar(&opts.seed, "seed", "", "Seed id/label")
+	cmd.Flags().StringVar(&opts.fold, "fold", "", "Fold id/label")
 }
 
 func eventFromFields(opts eventOptions) (map[string]interface{}, error) {
@@ -3755,6 +3768,9 @@ func eventFromFields(opts eventOptions) (map[string]interface{}, error) {
 	setEventStringField(event, "split", opts.split)
 	setEventStringField(event, "stage", opts.stage)
 	setEventStringField(event, "label", opts.label)
+	setEventStringField(event, "trial", opts.trial)
+	setEventStringField(event, "seed", opts.seed)
+	setEventStringField(event, "fold", opts.fold)
 	return event, nil
 }
 
@@ -5194,13 +5210,29 @@ func eventName(ev map[string]interface{}) string {
 }
 
 func eventSeries(ev map[string]interface{}) string {
-	parts := make([]string, 0, 4)
-	for _, key := range []string{"series", "run", "variant", "split", "stage"} {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"series", "run", "variant", "trial", "seed", "fold", "split", "stage"} {
 		if s := asEventString(ev[key]); s != "" {
-			parts = append(parts, s)
+			part := s
+			switch key {
+			case "trial", "seed", "fold":
+				part = key + ":" + s
+			}
+			if !stringSliceContains(parts, part) {
+				parts = append(parts, part)
+			}
 		}
 	}
 	return strings.Join(parts, "/")
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func metricKey(row MetricRow) string {

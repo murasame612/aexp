@@ -882,6 +882,15 @@ func addSyncFlags(cli *[]string, args map[string]interface{}, includeProfile boo
 func addEventCommonFlags(cli *[]string, args map[string]interface{}) {
 	addOptionalStringFlag(cli, args, "path", "--path")
 	addBoolFlag(cli, args, "strict", "--strict")
+	addOptionalStringFlag(cli, args, "series", "--series")
+	addOptionalStringFlag(cli, args, "run", "--run")
+	addOptionalStringFlag(cli, args, "variant", "--variant")
+	addOptionalStringFlag(cli, args, "split", "--split")
+	addOptionalStringFlag(cli, args, "stage", "--stage")
+	addOptionalStringFlag(cli, args, "label", "--label")
+	addOptionalStringFlag(cli, args, "trial", "--trial")
+	addOptionalStringFlag(cli, args, "seed", "--seed")
+	addOptionalStringFlag(cli, args, "fold", "--fold")
 	for _, field := range stringSliceArg(args, "field") {
 		*cli = append(*cli, "--field", field)
 	}
@@ -972,8 +981,14 @@ func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
 		},
 		"python": []string{
 			"from aexp_events import metric, progress, param, note",
-			"metric(\"train/loss\", loss, epoch=epoch, step=step)",
-			"progress(\"epoch\", epoch, total=max_epochs)",
+			"metric(\"train/loss\", loss, epoch=epoch, step=step, trial=trial_id)",
+			"metric(\"val/loss\", val_loss, epoch=epoch, step=step, trial=trial_id, split=\"val\")",
+			"progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, stage=\"train\")",
+		},
+		"rules": []string{
+			"Keep metric/progress names short and stable, e.g. train/loss, val/loss, val/mse, epoch, trial.",
+			"Put model, dataset, split, stage, seed, fold, and hyperparameter-trial context in series/run/variant/split/stage/trial fields.",
+			"Do not embed a full experiment config or trial id in the metric name; the UI uses context fields to draw one chart with multiple series.",
 		},
 		"monitor": []string{
 			"aexp_get_run_snapshot(run_id=\"" + runID + "\")",
@@ -1603,9 +1618,9 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_event_metric",
-			Description: "Emit a numeric metric event to a structured UI event JSONL file.",
+			Description: "Emit a numeric metric event to a structured UI event JSONL file. Keep metric names short/stable; use series/variant/split/stage/trial fields for context.",
 			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"name":    stringSchema("Metric name, e.g. train/loss."),
+				"name":    stringSchema("Short stable metric name, e.g. train/loss, val/loss, or val/mse. Do not include model, dataset, or trial config here."),
 				"value":   stringSchema("Numeric metric value."),
 				"epoch":   numberSchema("Optional epoch value."),
 				"step":    numberSchema("Optional step value."),
@@ -1619,7 +1634,7 @@ func toolRegistry() []toolSpec {
 			Name:        "aexp_event_progress",
 			Description: "Emit a progress event to a structured UI event JSONL file.",
 			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"name":    stringSchema("Progress name, e.g. epoch."),
+				"name":    stringSchema("Short stable progress dimension, e.g. epoch, trial, fold, or batch."),
 				"current": stringSchema("Current progress value."),
 				"total":   numberSchema("Optional total progress value."),
 				"timeout": numberSchema("Tool timeout in seconds."),
@@ -1908,6 +1923,15 @@ func projectInitSchema(base map[string]interface{}) map[string]interface{} {
 func eventSchema(base map[string]interface{}) map[string]interface{} {
 	base["path"] = stringSchema("Event JSONL path. Use explicit path when calling from MCP.")
 	base["strict"] = boolSchema("Fail if no event path is available.")
+	base["series"] = stringSchema("Series/context label for grouping related events. For sweeps, prefer a stable label such as trial:7 or use trial.")
+	base["run"] = stringSchema("Run or sub-run label for grouping related events.")
+	base["variant"] = stringSchema("Variant label, e.g. model, ablation, or data condition.")
+	base["split"] = stringSchema("Data split label, e.g. train, val, or test.")
+	base["stage"] = stringSchema("Stage label, e.g. setup, train, eval, or cleanup.")
+	base["label"] = stringSchema("Short human display label.")
+	base["trial"] = stringSchema("Trial id/label for hyperparameter search; the UI treats it as a separate series.")
+	base["seed"] = stringSchema("Seed id/label; the UI treats it as part of the series identity.")
+	base["fold"] = stringSchema("Fold id/label; the UI treats it as part of the series identity.")
 	base["field"] = arrayStringSchema("Extra fields as key=value strings.")
 	base["fields"] = mapSchema("Extra fields as an object.")
 	return base

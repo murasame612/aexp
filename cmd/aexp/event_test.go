@@ -9,12 +9,15 @@ import (
 
 func TestEventMetricCommandWritesJSONL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events", "run.jsonl")
-	if err := runEventCommandForTest("metric", "train/loss", "0.23", "--epoch", "3", "--field", "split=train", "--path", path); err != nil {
+	if err := runEventCommandForTest("metric", "train/loss", "0.23", "--epoch", "3", "--trial", "7", "--seed", "2021", "--field", "split=train", "--path", path); err != nil {
 		t.Fatal(err)
 	}
 	event := readSingleEvent(t, path)
 	if event["type"] != "metric" || event["name"] != "train/loss" || event["split"] != "train" {
 		t.Fatalf("unexpected event identity: %#v", event)
+	}
+	if event["trial"] != "7" || event["seed"] != "2021" {
+		t.Fatalf("unexpected sweep context: %#v", event)
 	}
 	if event["value"] != 0.23 || event["epoch"] != float64(3) {
 		t.Fatalf("unexpected metric values: %#v", event)
