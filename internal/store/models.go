@@ -227,6 +227,25 @@ type ProjectRunCardFilter struct {
 	Offset        int
 }
 
+// ManualProjectCategory is a lightweight user-managed grouping for runs.
+type ManualProjectCategory struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	RunCount    int       `json:"run_count,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RunProjectAssignment records a manual run-to-category assignment.
+type RunProjectAssignment struct {
+	RunID        string    `json:"run_id"`
+	CategoryID   string    `json:"category_id"`
+	CategoryName string    `json:"category_name,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // EvidenceChain is a human-curated research reasoning board.
 type EvidenceChain struct {
 	ID          string    `json:"id"`

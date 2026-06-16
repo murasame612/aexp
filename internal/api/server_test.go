@@ -190,6 +190,115 @@ func TestProjectViewsEnrichCardsWithRunsAndMarks(t *testing.T) {
 	}
 }
 
+func TestManualProjectCategoryAPI(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_manual_project_api",
+		Name:    "mu-manual",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_manual_project_api",
+		ResourceID: "rsrc_manual_project_api",
+		Name:       "manual-category-run",
+		Kind:       store.RunKindAblation,
+		Status:     store.RunStatusSucceeded,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/manual-project-categories", bytes.NewBufferString(`{"name":"Dam downstream","description":"Manual bucket"}`))
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var category store.ManualProjectCategory
+	if err := json.Unmarshal(createRec.Body.Bytes(), &category); err != nil {
+		t.Fatalf("decode category: %v", err)
+	}
+	if category.ID == "" || category.Name != "Dam downstream" {
+		t.Fatalf("category = %#v", category)
+	}
+
+	assignBody := fmt.Sprintf(`{"category_id":%q}`, category.ID)
+	assignReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run_manual_project_api/manual-project-category", bytes.NewBufferString(assignBody))
+	assignRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(assignRec, assignReq)
+	if assignRec.Code != http.StatusOK {
+		t.Fatalf("assign status = %d body=%s", assignRec.Code, assignRec.Body.String())
+	}
+	var assignment store.RunProjectAssignment
+	if err := json.Unmarshal(assignRec.Body.Bytes(), &assignment); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if assignment.RunID != "run_manual_project_api" || assignment.CategoryID != category.ID || assignment.CategoryName != "Dam downstream" {
+		t.Fatalf("assignment = %#v", assignment)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/manual-project-categories", nil)
+	listRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var categories []store.ManualProjectCategory
+	if err := json.Unmarshal(listRec.Body.Bytes(), &categories); err != nil {
+		t.Fatalf("decode categories: %v", err)
+	}
+	if len(categories) != 1 || categories[0].RunCount != 1 {
+		t.Fatalf("categories = %#v, want one category with one run", categories)
+	}
+
+	assignmentsReq := httptest.NewRequest(http.MethodGet, "/api/v1/manual-run-project-assignments", nil)
+	assignmentsRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(assignmentsRec, assignmentsReq)
+	if assignmentsRec.Code != http.StatusOK {
+		t.Fatalf("assignments status = %d body=%s", assignmentsRec.Code, assignmentsRec.Body.String())
+	}
+	var assignments []store.RunProjectAssignment
+	if err := json.Unmarshal(assignmentsRec.Body.Bytes(), &assignments); err != nil {
+		t.Fatalf("decode assignments: %v", err)
+	}
+	if len(assignments) != 1 || assignments[0].RunID != "run_manual_project_api" {
+		t.Fatalf("assignments = %#v, want run_manual_project_api", assignments)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run_manual_project_api/manual-project-category", bytes.NewBufferString(`{"category_id":"missing"}`))
+	missingRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing category status = %d body=%s", missingRec.Code, missingRec.Body.String())
+	}
+
+	unassignReq := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/run_manual_project_api/manual-project-category", nil)
+	unassignRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(unassignRec, unassignReq)
+	if unassignRec.Code != http.StatusNoContent {
+		t.Fatalf("unassign status = %d body=%s", unassignRec.Code, unassignRec.Body.String())
+	}
+	got, err := db.GetRunProjectAssignment(ctx, "run_manual_project_api")
+	if err != nil {
+		t.Fatalf("GetRunProjectAssignment: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("assignment after unassign = %#v, want nil", got)
+	}
+}
+
 func TestRunMarkAttachmentBlob(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))

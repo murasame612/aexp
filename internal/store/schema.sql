@@ -199,6 +199,25 @@ CREATE INDEX IF NOT EXISTS idx_project_run_cards_project ON project_run_cards(pr
 CREATE INDEX IF NOT EXISTS idx_project_run_cards_important ON project_run_cards(project_id, important, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_project_run_cards_level ON project_run_cards(project_id, evidence_level, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS manual_project_categories (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_project_categories_name ON manual_project_categories(name);
+
+CREATE TABLE IF NOT EXISTS manual_run_project_assignments (
+    run_id      TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    category_id TEXT NOT NULL REFERENCES manual_project_categories(id) ON DELETE CASCADE,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_run_project_assignments_category ON manual_run_project_assignments(category_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS evidence_chains (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,

@@ -881,6 +881,132 @@ func (s *SQLite) ListProjectRunCards(ctx context.Context, filter ProjectRunCardF
 	return cards, rows.Err()
 }
 
+// --- Manual Project Categories ---
+
+const manualProjectCategoryColumns = "id, name, description, created_at, updated_at"
+
+func scanManualProjectCategory(c *ManualProjectCategory, includeRunCount bool) func(rowScanner) error {
+	return func(row rowScanner) error {
+		dest := []interface{}{&c.ID, &c.Name, &c.Description, &c.CreatedAt, &c.UpdatedAt}
+		if includeRunCount {
+			dest = append(dest, &c.RunCount)
+		}
+		return row.Scan(dest...)
+	}
+}
+
+func (s *SQLite) CreateManualProjectCategory(ctx context.Context, c *ManualProjectCategory) error {
+	now := time.Now()
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = now
+	}
+	c.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO manual_project_categories (`+manualProjectCategoryColumns+`)
+		 VALUES (?, ?, ?, ?, ?)`,
+		c.ID, c.Name, c.Description, c.CreatedAt, c.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetManualProjectCategory(ctx context.Context, id string) (*ManualProjectCategory, error) {
+	c := &ManualProjectCategory{}
+	err := scanManualProjectCategory(c, true)(s.db.QueryRowContext(ctx,
+		`SELECT c.`+strings.ReplaceAll(manualProjectCategoryColumns, ", ", ", c.")+`, COUNT(a.run_id) AS run_count
+		 FROM manual_project_categories c
+		 LEFT JOIN manual_run_project_assignments a ON a.category_id = c.id
+		 WHERE c.id = ?
+		 GROUP BY c.id`,
+		id,
+	))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return c, err
+}
+
+func (s *SQLite) ListManualProjectCategories(ctx context.Context) ([]ManualProjectCategory, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.`+strings.ReplaceAll(manualProjectCategoryColumns, ", ", ", c.")+`, COUNT(a.run_id) AS run_count
+		 FROM manual_project_categories c
+		 LEFT JOIN manual_run_project_assignments a ON a.category_id = c.id
+		 GROUP BY c.id
+		 ORDER BY lower(c.name), c.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	categories := make([]ManualProjectCategory, 0)
+	for rows.Next() {
+		var c ManualProjectCategory
+		if err := scanManualProjectCategory(&c, true)(rows); err != nil {
+			return nil, err
+		}
+		categories = append(categories, c)
+	}
+	return categories, rows.Err()
+}
+
+func (s *SQLite) AssignRunToManualProjectCategory(ctx context.Context, runID string, categoryID string) error {
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO manual_run_project_assignments (run_id, category_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET
+			category_id=excluded.category_id,
+			updated_at=excluded.updated_at`,
+		runID, categoryID, now, now,
+	)
+	return err
+}
+
+func scanRunProjectAssignment(a *RunProjectAssignment) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&a.RunID, &a.CategoryID, &a.CategoryName, &a.CreatedAt, &a.UpdatedAt)
+	}
+}
+
+func (s *SQLite) GetRunProjectAssignment(ctx context.Context, runID string) (*RunProjectAssignment, error) {
+	a := &RunProjectAssignment{}
+	err := scanRunProjectAssignment(a)(s.db.QueryRowContext(ctx,
+		`SELECT a.run_id, a.category_id, c.name, a.created_at, a.updated_at
+		 FROM manual_run_project_assignments a
+		 JOIN manual_project_categories c ON c.id = a.category_id
+		 WHERE a.run_id = ?`,
+		runID,
+	))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+func (s *SQLite) ListRunProjectAssignments(ctx context.Context) ([]RunProjectAssignment, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT a.run_id, a.category_id, c.name, a.created_at, a.updated_at
+		 FROM manual_run_project_assignments a
+		 JOIN manual_project_categories c ON c.id = a.category_id
+		 ORDER BY a.updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	assignments := make([]RunProjectAssignment, 0)
+	for rows.Next() {
+		var a RunProjectAssignment
+		if err := scanRunProjectAssignment(&a)(rows); err != nil {
+			return nil, err
+		}
+		assignments = append(assignments, a)
+	}
+	return assignments, rows.Err()
+}
+
+func (s *SQLite) UnassignRunFromManualProjectCategory(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM manual_run_project_assignments WHERE run_id = ?`, runID)
+	return err
+}
+
 // --- Evidence Chains ---
 
 const evidenceChainColumns = "id, title, description, created_at, updated_at"

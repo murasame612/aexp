@@ -63,6 +63,15 @@ type Store interface {
 	GetProjectRunCard(ctx context.Context, runID string) (*ProjectRunCard, error)
 	ListProjectRunCards(ctx context.Context, filter ProjectRunCardFilter) ([]ProjectRunCard, error)
 
+	// Manual Project Categories
+	CreateManualProjectCategory(ctx context.Context, c *ManualProjectCategory) error
+	GetManualProjectCategory(ctx context.Context, id string) (*ManualProjectCategory, error)
+	ListManualProjectCategories(ctx context.Context) ([]ManualProjectCategory, error)
+	AssignRunToManualProjectCategory(ctx context.Context, runID string, categoryID string) error
+	GetRunProjectAssignment(ctx context.Context, runID string) (*RunProjectAssignment, error)
+	ListRunProjectAssignments(ctx context.Context) ([]RunProjectAssignment, error)
+	UnassignRunFromManualProjectCategory(ctx context.Context, runID string) error
+
 	// Evidence Chains
 	CreateEvidenceChain(ctx context.Context, c *EvidenceChain) error
 	GetEvidenceChain(ctx context.Context, id string) (*EvidenceChain, error)

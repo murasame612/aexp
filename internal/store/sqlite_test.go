@@ -399,6 +399,72 @@ func TestProjectRunCards(t *testing.T) {
 	}
 }
 
+func TestManualProjectCategoriesAndAssignments(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_manual_project", Name: "res-manual-project", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_manual_project", ResourceID: "rsrc_manual_project", Status: RunStatusSucceeded, Kind: RunKindAblation, Command: "python train.py"}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	category := &ManualProjectCategory{
+		ID:          "mpc_test001",
+		Name:        "Dam downstream",
+		Description: "Manual category",
+	}
+	if err := s.CreateManualProjectCategory(ctx, category); err != nil {
+		t.Fatalf("CreateManualProjectCategory: %v", err)
+	}
+
+	got, err := s.GetManualProjectCategory(ctx, "mpc_test001")
+	if err != nil || got == nil {
+		t.Fatalf("GetManualProjectCategory: %v", err)
+	}
+	if got.Name != "Dam downstream" || got.RunCount != 0 {
+		t.Fatalf("unexpected category: %#v", got)
+	}
+
+	if err := s.AssignRunToManualProjectCategory(ctx, "run_manual_project", "mpc_test001"); err != nil {
+		t.Fatalf("AssignRunToManualProjectCategory: %v", err)
+	}
+	assignment, err := s.GetRunProjectAssignment(ctx, "run_manual_project")
+	if err != nil || assignment == nil {
+		t.Fatalf("GetRunProjectAssignment: %v", err)
+	}
+	if assignment.CategoryID != "mpc_test001" || assignment.CategoryName != "Dam downstream" {
+		t.Fatalf("unexpected assignment: %#v", assignment)
+	}
+
+	categories, err := s.ListManualProjectCategories(ctx)
+	if err != nil {
+		t.Fatalf("ListManualProjectCategories: %v", err)
+	}
+	if len(categories) != 1 || categories[0].RunCount != 1 {
+		t.Fatalf("categories = %#v, want one category with one run", categories)
+	}
+	assignments, err := s.ListRunProjectAssignments(ctx)
+	if err != nil {
+		t.Fatalf("ListRunProjectAssignments: %v", err)
+	}
+	if len(assignments) != 1 || assignments[0].RunID != "run_manual_project" {
+		t.Fatalf("assignments = %#v, want run_manual_project", assignments)
+	}
+
+	if err := s.UnassignRunFromManualProjectCategory(ctx, "run_manual_project"); err != nil {
+		t.Fatalf("UnassignRunFromManualProjectCategory: %v", err)
+	}
+	assignment, err = s.GetRunProjectAssignment(ctx, "run_manual_project")
+	if err != nil {
+		t.Fatalf("GetRunProjectAssignment after unassign: %v", err)
+	}
+	if assignment != nil {
+		t.Fatalf("assignment after unassign = %#v, want nil", assignment)
+	}
+}
+
 func TestRunBookmarks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

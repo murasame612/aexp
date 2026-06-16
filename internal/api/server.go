@@ -112,6 +112,8 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/{id}/marks", s.handleCreateRunMark)
 			r.Post("/{id}/bookmark", s.handleSaveRunBookmark)
 			r.Delete("/{id}/bookmark", s.handleDeleteRunBookmark)
+			r.Put("/{id}/manual-project-category", s.handleAssignRunManualProjectCategory)
+			r.Delete("/{id}/manual-project-category", s.handleUnassignRunManualProjectCategory)
 			r.Post("/{id}/status-check", s.handleStatusCheck)
 		})
 
@@ -129,6 +131,9 @@ func (s *Server) Handler() http.Handler {
 		// Project-level experiment memory
 		r.Get("/projects", s.handleListProjects)
 		r.Get("/projects/{id}", s.handleGetProject)
+		r.Get("/manual-project-categories", s.handleListManualProjectCategories)
+		r.Post("/manual-project-categories", s.handleCreateManualProjectCategory)
+		r.Get("/manual-run-project-assignments", s.handleListManualRunProjectAssignments)
 
 		// Evidence Chain reasoning boards
 		r.Get("/evidence-chains", s.handleListEvidenceChains)
@@ -1499,6 +1504,117 @@ func appendProjectRunCard(view *projectView, card projectRunCardView) {
 			view.RunningRuns++
 		}
 	}
+}
+
+type manualProjectCategoryRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type runManualProjectAssignmentRequest struct {
+	CategoryID string `json:"category_id"`
+}
+
+func (s *Server) handleListManualProjectCategories(w http.ResponseWriter, r *http.Request) {
+	categories, err := s.store.ListManualProjectCategories(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, categories)
+}
+
+func (s *Server) handleCreateManualProjectCategory(w http.ResponseWriter, r *http.Request) {
+	var req manualProjectCategoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "name is required")
+		return
+	}
+	category := store.ManualProjectCategory{
+		ID:          genID("mpc_"),
+		Name:        req.Name,
+		Description: req.Description,
+	}
+	if err := s.store.CreateManualProjectCategory(r.Context(), &category); err != nil {
+		writeError(w, http.StatusConflict, "CREATE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, category)
+}
+
+func (s *Server) handleListManualRunProjectAssignments(w http.ResponseWriter, r *http.Request) {
+	assignments, err := s.store.ListRunProjectAssignments(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, assignments)
+}
+
+func (s *Server) handleAssignRunManualProjectCategory(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	var req runManualProjectAssignmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	req.CategoryID = strings.TrimSpace(req.CategoryID)
+	if req.CategoryID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "category_id is required")
+		return
+	}
+	run, err := s.store.GetRun(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+	category, err := s.store.GetManualProjectCategory(r.Context(), req.CategoryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if category == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "manual project category not found")
+		return
+	}
+	if err := s.store.AssignRunToManualProjectCategory(r.Context(), runID, req.CategoryID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	assignment, err := s.store.GetRunProjectAssignment(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, assignment)
+}
+
+func (s *Server) handleUnassignRunManualProjectCategory(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	run, err := s.store.GetRun(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
+		return
+	}
+	if err := s.store.UnassignRunFromManualProjectCategory(r.Context(), runID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Evidence Chains ---
