@@ -1069,6 +1069,26 @@ function RunDetail({
               ) : null}
             </div>
           </section>
+          <div className="detail-context-grid">
+            <section className="detail-summary-panel">
+              <span className="panel-kicker">{t("runtime")}</span>
+              <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
+              <Info label="tmux" value={run.data.tmux_session || "-"} />
+              <Info label="run dir" value={run.data.remote_run_dir || "-"} />
+            </section>
+            <Section title={t("artifacts")} className="artifact-panel">
+              <ArtifactList artifacts={artifacts.data || []} t={t} />
+            </Section>
+            <Section title={t("manualProject")} className="manual-project-panel">
+              <ProjectAssignmentControl
+                t={t}
+                categories={manualCategories}
+                assignment={manualAssignment}
+                onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
+                onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
+              />
+            </Section>
+          </div>
           <div className="detail-grid">
             <div className="detail-main">
               <section className="command-card">
@@ -1087,26 +1107,6 @@ function RunDetail({
               <LogPanel title="stderr" state={stderr} hiddenWhenEmpty />
               {eventsPath ? <LogPanel title={t("events")} state={eventLog} /> : null}
             </div>
-            <aside className="detail-side">
-              <section className="detail-summary-panel">
-                <span className="panel-kicker">{t("runtime")}</span>
-                <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
-                <Info label="tmux" value={run.data.tmux_session || "-"} />
-                <Info label="run dir" value={run.data.remote_run_dir || "-"} />
-              </section>
-              <Section title={t("artifacts")} className="artifact-panel">
-                <ArtifactList artifacts={artifacts.data || []} t={t} />
-              </Section>
-              <Section title={t("manualProject")} className="manual-project-panel">
-                <ProjectAssignmentControl
-                  t={t}
-                  categories={manualCategories}
-                  assignment={manualAssignment}
-                  onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
-                  onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
-                />
-              </Section>
-            </aside>
           </div>
         </div>
       ) : (
