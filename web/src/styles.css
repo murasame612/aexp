@@ -1969,7 +1969,7 @@ select {
 .run-mark-previews {
   grid-area: markpreviews;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   min-width: 0;
 }
@@ -2009,8 +2009,20 @@ select {
 }
 
 .run-mark-preview-human {
+  order: 2;
   border-color: #dfd0a5;
   background: #fffaf0;
+}
+
+.run-mark-preview-human:not(.has-note) {
+  border-style: dashed;
+  background: #fffdf7;
+  color: #8a7552;
+}
+
+.run-mark-preview-human:not(.has-note) .run-mark-preview-copy strong {
+  color: #8a7552;
+  font-weight: 650;
 }
 
 .run-mark-preview-meta,

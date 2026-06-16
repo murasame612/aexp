@@ -15,6 +15,7 @@ import {
   Languages,
   Network,
   PlayCircle,
+  Plus,
   RefreshCcw,
   Server,
   Settings,
@@ -1799,7 +1800,7 @@ function RunListCard({
           <span className="run-fact-value">{createdAt}</span>
         </span>
       </div>
-      {visibleMarks.length || bookmarkNote ? (
+      {visibleMarks.length || !trash ? (
         <div className="run-mark-previews" aria-label={t("agentFindings")}>
           {visibleMarks.map((mark) => {
             const statement = markStatement(mark);
@@ -1815,13 +1816,13 @@ function RunListCard({
               </button>
             );
           })}
-          {bookmarkNote ? (
-            <button className="run-mark-preview run-mark-preview-human" type="button" onClick={promptBookmarkNote}>
+          {!trash ? (
+            <button className={bookmarkNote ? "run-mark-preview run-mark-preview-human has-note" : "run-mark-preview run-mark-preview-human"} type="button" onClick={promptBookmarkNote}>
               <span className="run-mark-preview-meta">
                 <Pill tone="accent">{t("humanMark")}</Pill>
               </span>
               <span className="run-mark-preview-copy">
-                <strong>{bookmarkNote}</strong>
+                <strong>{bookmarkNote || t("addHumanMark")}</strong>
               </span>
             </button>
           ) : null}
@@ -2229,7 +2230,7 @@ function ProjectAssignmentControl({
       />
       {compact ? (
         <button className="icon-action" type="button" title={t("newManualProject")} disabled={saving} onClick={() => void create()}>
-          <Star size={14} />
+          <Plus size={14} />
         </button>
       ) : (
         <div className="project-assignment-create">
