@@ -1731,12 +1731,11 @@ select {
     "head actions"
     "project actions"
     "facts actions"
-    "markpreviews actions"
-    "human actions";
+    "markpreviews actions";
   align-items: start;
-  gap: 8px 14px;
+  gap: 7px 14px;
   min-width: 0;
-  padding: 12px;
+  padding: 11px 12px;
   border: 1px solid #e6eaee;
   border-radius: 10px;
   background: #fbfcfd;
@@ -1772,7 +1771,9 @@ select {
 .run-project-stack {
   grid-area: project;
   display: grid;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 300px);
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -1785,7 +1786,7 @@ select {
   border-left: 3px solid #b8d4c3;
   border-radius: 8px;
   background: #f7faf8;
-  padding: 6px 8px;
+  padding: 5px 8px;
 }
 
 .run-project-context > span:not(.pill),
@@ -1809,7 +1810,7 @@ select {
   font-size: 12px;
   line-height: 1.35;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .project-assignment-control {
@@ -1819,7 +1820,9 @@ select {
 }
 
 .project-assignment-control.compact {
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 6px;
 }
 
 .project-assignment-control label {
@@ -1841,7 +1844,7 @@ select {
 .project-assignment-control select {
   min-width: 0;
   width: 100%;
-  height: 30px;
+  height: 28px;
   border-radius: 8px;
   font-size: 12px;
 }
@@ -1863,7 +1866,7 @@ select {
 .run-list-facts {
   grid-area: facts;
   display: grid;
-  grid-template-columns: minmax(136px, 1.15fr) minmax(108px, 0.76fr) minmax(72px, 0.45fr) minmax(118px, 0.82fr) minmax(86px, 0.48fr);
+  grid-template-columns: minmax(136px, 1.1fr) minmax(108px, 0.72fr) minmax(72px, 0.42fr) minmax(118px, 0.78fr);
   gap: 6px;
   min-width: 0;
 }
@@ -1966,7 +1969,7 @@ select {
 .run-mark-previews {
   grid-area: markpreviews;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 6px;
   min-width: 0;
 }
@@ -1974,8 +1977,11 @@ select {
 .run-mark-preview {
   min-width: 0;
   display: grid;
-  gap: 4px;
-  padding: 7px 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 8px;
   border: 1px solid #e1e7ec;
   border-radius: 8px;
   background: #fff;
@@ -2002,6 +2008,11 @@ select {
   background: #f5f8fb;
 }
 
+.run-mark-preview-human {
+  border-color: #dfd0a5;
+  background: #fffaf0;
+}
+
 .run-mark-preview-meta,
 .run-mark-preview-copy {
   min-width: 0;
@@ -2016,8 +2027,9 @@ select {
 }
 
 .run-mark-preview-copy {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .run-mark-preview-copy strong,
@@ -2031,63 +2043,12 @@ select {
 .run-mark-preview-copy strong {
   color: var(--ink);
   font-size: 12px;
+  line-height: 1.2;
 }
 
 .run-mark-preview-copy span {
   color: var(--muted);
   font-size: 11px;
-}
-
-.run-human-mark {
-  grid-area: human;
-  min-width: 0;
-}
-
-.run-human-mark-button {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border: 1px dashed #ccd6de;
-  border-radius: 8px;
-  background: #fbfcfd;
-  color: var(--muted);
-  text-align: left;
-}
-
-.run-human-mark.has-mark .run-human-mark-button {
-  border-style: solid;
-  border-color: #d7c89e;
-  background: #fffaf0;
-  color: #73561c;
-}
-
-.run-human-mark-button > span {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.run-human-mark-button strong,
-.run-human-mark-button em {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-human-mark-button strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-style: normal;
-}
-
-.run-human-mark-button em {
-  font-size: 11px;
-  font-style: normal;
 }
 
 .run-list-actions {
@@ -2100,16 +2061,9 @@ select {
   max-width: 112px;
 }
 
-.run-list-actions .run-compare-toggle,
-.run-list-actions .mark-badge {
+.run-list-actions .run-compare-toggle {
   grid-column: 1 / -1;
   justify-self: end;
-}
-
-.run-list-actions .mark-badge {
-  width: auto;
-  min-width: 58px;
-  padding: 0 7px;
 }
 
 .project-empty {
@@ -4167,13 +4121,20 @@ select {
       "project"
       "facts"
       "markpreviews"
-      "human"
       "actions";
   }
 
   .run-list-actions {
     justify-content: flex-start;
     max-width: none;
+  }
+
+  .run-project-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-assignment-control.compact {
+    max-width: 360px;
   }
 
   .run-list-facts {
@@ -4448,7 +4409,6 @@ select {
       "project"
       "facts"
       "markpreviews"
-      "human"
       "actions";
     padding: 10px;
   }

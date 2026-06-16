@@ -1746,6 +1746,7 @@ function RunListCard({
   const gpu = runGPU(run.gpu_index);
   const createdAt = fmtShortTime(run.created_at);
   const bookmarkNote = bookmark?.note?.trim() || "";
+  const visibleMarks = compactMarkPreviews(markPreviews);
   const assignmentControl = (
     <ProjectAssignmentControl
       t={t}
@@ -1797,16 +1798,10 @@ function RunListCard({
           <span className="run-fact-label">{t("time")}</span>
           <span className="run-fact-value">{createdAt}</span>
         </span>
-        {markCount ? (
-          <span className="run-fact run-fact-marks" aria-label={`${t("marks")}: ${markCount}`}>
-            <span className="run-fact-label">{t("marks")}</span>
-            <span className="run-fact-value">{markCount}</span>
-          </span>
-        ) : null}
       </div>
-      {markPreviews.length ? (
+      {visibleMarks.length || bookmarkNote ? (
         <div className="run-mark-previews" aria-label={t("agentFindings")}>
-          {markPreviews.slice(0, 2).map((mark) => {
+          {visibleMarks.map((mark) => {
             const statement = markStatement(mark);
             return (
               <button key={mark.id} className={`run-mark-preview run-mark-preview-${markTone(mark.kind)}`} type="button" onClick={() => onOpenMark(mark)}>
@@ -1816,22 +1811,20 @@ function RunListCard({
                 </span>
                 <span className="run-mark-preview-copy">
                   <strong>{mark.title || statement || mark.kind || t("notes")}</strong>
-                  {statement && statement !== mark.title ? <span>{statement}</span> : null}
                 </span>
               </button>
             );
           })}
-        </div>
-      ) : null}
-      {!trash ? (
-        <div className={bookmark ? "run-human-mark has-mark" : "run-human-mark"}>
-          <button className="run-human-mark-button" type="button" onClick={promptBookmarkNote}>
-            <Heart size={15} fill={bookmark ? "currentColor" : "none"} />
-            <span>
-              <strong>{bookmark ? t("humanMark") : t("addHumanMark")}</strong>
-              <em>{bookmarkNote || t("bookmarkNoteEmpty")}</em>
-            </span>
-          </button>
+          {bookmarkNote ? (
+            <button className="run-mark-preview run-mark-preview-human" type="button" onClick={promptBookmarkNote}>
+              <span className="run-mark-preview-meta">
+                <Pill tone="accent">{t("humanMark")}</Pill>
+              </span>
+              <span className="run-mark-preview-copy">
+                <strong>{bookmarkNote}</strong>
+              </span>
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div className="run-list-actions">
@@ -1863,7 +1856,6 @@ function RunListCard({
             </button>
           </>
         )}
-        {markCount ? <span className="mark-badge">{markCount} {t("marks")}</span> : null}
       </div>
     </article>
   );
@@ -1886,6 +1878,20 @@ function marksByRun(marks: RunMark[]) {
     row.sort((a, b) => markCreatedMs(b) - markCreatedMs(a));
   }
   return out;
+}
+
+function compactMarkPreviews(marks: RunMark[]) {
+  const seen = new Set<string>();
+  const visible: RunMark[] = [];
+  for (const mark of marks) {
+    if ((mark.actor || "").toLowerCase() === "human") continue;
+    const key = [mark.kind || "", mark.title || "", markStatement(mark) || ""].join("\0").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    visible.push(mark);
+    if (visible.length >= 1) break;
+  }
+  return visible;
 }
 
 function markCreatedMs(mark: RunMark) {
