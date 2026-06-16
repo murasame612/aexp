@@ -146,6 +146,8 @@ export function App() {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [selectedRunListMark, setSelectedRunListMark] = useState<RunMark | null>(null);
+  const [bookmarkEditor, setBookmarkEditor] = useState<{ run: Run; note: string } | null>(null);
+  const [projectEditorRun, setProjectEditorRun] = useState<Run | null>(null);
 
   const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), refetchInterval: 5000 });
   const resources = useQuery({ queryKey: ["resources", token], queryFn: () => getResources(token), refetchInterval: 5000 });
@@ -393,7 +395,6 @@ export function App() {
                 }}
                 projectOptions={runProjectOptions}
                 runProjectById={runProjectById}
-                manualCategories={manualCategoryList}
                 manualAssignments={manualAssignmentByRun}
                 kind={runKind}
                 setKind={(value) => {
@@ -449,8 +450,8 @@ export function App() {
                   else await saveBookmark(token, run.id, note);
                   await invalidateOperationalData();
                 }}
-                onAssignManualProject={assignManualProject}
-                onCreateAndAssignManualProject={createAndAssignManualProject}
+                onEditBookmarkNote={(run, note) => setBookmarkEditor({ run, note })}
+                onEditManualProject={setProjectEditorRun}
               />
             )}
             {tab === "favorites" && (
@@ -529,6 +530,36 @@ export function App() {
       ) : null}
 
       {compareOpen ? <CompareModal t={t} token={token} runs={selectedRuns} onClose={() => setCompareOpen(false)} /> : null}
+      {bookmarkEditor ? (
+        <BookmarkNoteModal
+          t={t}
+          initialNote={bookmarkEditor.note}
+          run={bookmarkEditor.run}
+          onClose={() => setBookmarkEditor(null)}
+          onSave={async (note) => {
+            await saveBookmark(token, bookmarkEditor.run.id, note);
+            setBookmarkEditor(null);
+            await invalidateOperationalData();
+          }}
+        />
+      ) : null}
+      {projectEditorRun ? (
+        <ManualProjectModal
+          t={t}
+          run={projectEditorRun}
+          categories={manualCategoryList}
+          assignment={manualAssignmentByRun.get(projectEditorRun.id)}
+          onClose={() => setProjectEditorRun(null)}
+          onAssign={async (categoryID) => {
+            await assignManualProject(projectEditorRun.id, categoryID);
+            setProjectEditorRun(null);
+          }}
+          onCreateAndAssign={async (name) => {
+            await createAndAssignManualProject(projectEditorRun.id, name);
+            setProjectEditorRun(null);
+          }}
+        />
+      ) : null}
       {confirm ? <ConfirmModal t={t} state={confirm} onClose={() => setConfirm(null)} /> : null}
       {selectedRunListMark ? <MarkDetailModal mark={selectedRunListMark} token={token} t={t} onClose={() => setSelectedRunListMark(null)} /> : null}
     </div>
@@ -685,7 +716,6 @@ function RunsTab(props: {
   setProject: (project: string) => void;
   projectOptions: [string, string][];
   runProjectById: Map<string, RunProjectMeta>;
-  manualCategories: ManualProjectCategory[];
   manualAssignments: Map<string, RunProjectAssignment>;
   kind: string;
   setKind: (kind: string) => void;
@@ -704,8 +734,8 @@ function RunsTab(props: {
   onRestore: (run: Run) => Promise<void>;
   onDelete: (run: Run) => void;
   onToggleBookmark: (run: Run, bookmarked: boolean, note?: string) => Promise<void>;
-  onAssignManualProject: (runID: string, categoryID: string) => Promise<void>;
-  onCreateAndAssignManualProject: (runID: string, name: string) => Promise<void>;
+  onEditBookmarkNote: (run: Run, note: string) => void;
+  onEditManualProject: (run: Run) => void;
 }) {
   const selectedRunIds = useAppStore((s) => s.selectedRunIds);
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
@@ -719,7 +749,6 @@ function RunsTab(props: {
         run={run}
         resourceById={props.resourceById}
         projectMeta={props.runProjectById.get(run.id)}
-        manualCategories={props.manualCategories}
         manualAssignment={props.manualAssignments.get(run.id)}
         markCount={props.marks.get(run.id) || 0}
         markPreviews={props.markPreviews.get(run.id) || []}
@@ -730,12 +759,11 @@ function RunsTab(props: {
         onOpenMark={props.onOpenMark}
         onSelect={(checked) => toggleSelectedRun(run, checked)}
         onToggleBookmark={() => void props.onToggleBookmark(run, !!bookmark)}
-        onSaveBookmarkNote={(note) => void props.onToggleBookmark(run, false, note)}
+        onEditBookmarkNote={() => props.onEditBookmarkNote(run, bookmark?.note?.trim() || "")}
+        onEditManualProject={() => props.onEditManualProject(run)}
         onArchive={() => props.onArchive(run)}
         onRestore={() => void props.onRestore(run)}
         onDelete={() => props.onDelete(run)}
-        onAssignManualProject={(categoryID) => props.onAssignManualProject(run.id, categoryID)}
-        onCreateAndAssignManualProject={(name) => props.onCreateAndAssignManualProject(run.id, name)}
         t={props.t}
       />
     );
@@ -1512,6 +1540,105 @@ function ConfirmModal({ t, state, onClose }: { t: T; state: ConfirmState; onClos
   );
 }
 
+function BookmarkNoteModal({ t, run, initialNote, onClose, onSave }: { t: T; run: Run; initialNote: string; onClose: () => void; onSave: (note: string) => Promise<void> }) {
+  const [note, setNote] = useState(initialNote);
+  const [saving, setSaving] = useState(false);
+  return (
+    <Modal title={t("humanMark")} onClose={onClose}>
+      <form
+        className="note-editor-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setSaving(true);
+          try {
+            await onSave(note.trim());
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        <span className="muted mono">{run.id}</span>
+        <strong>{runTitle(run)}</strong>
+        <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={t("bookmarkNoteEmpty")} rows={4} autoFocus />
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>
+            {t("cancel")}
+          </button>
+          <button className="primary" type="submit" disabled={saving}>
+            {t("save")}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ManualProjectModal({
+  t,
+  run,
+  categories,
+  assignment,
+  onClose,
+  onAssign,
+  onCreateAndAssign
+}: {
+  t: T;
+  run: Run;
+  categories: ManualProjectCategory[];
+  assignment?: RunProjectAssignment;
+  onClose: () => void;
+  onAssign: (categoryID: string) => Promise<void>;
+  onCreateAndAssign: (name: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const current = assignment?.category_id || "";
+  const choose = async (categoryID: string) => {
+    setSaving(true);
+    try {
+      await onAssign(categoryID);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const create = async () => {
+    const name = draft.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      await onCreateAndAssign(name);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title={t("manualProject")} onClose={onClose}>
+      <div className="manual-project-editor">
+        <span className="muted mono">{run.id}</span>
+        <strong>{runTitle(run)}</strong>
+        <div className="manual-project-choice-list">
+          <button className={!current ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose("")}>
+            <span>{t("unassignedRuns")}</span>
+          </button>
+          {categories.map((category) => (
+            <button key={category.id} className={current === category.id ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose(category.id)}>
+              <span>{category.name}</span>
+              {category.run_count ? <em>{category.run_count}</em> : null}
+            </button>
+          ))}
+        </div>
+        <div className="manual-project-create-row">
+          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
+          <button className="primary" type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
+            <Plus size={14} />
+            {t("createCategory")}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null) {
   const [lines, setLines] = useState<{ content: string; line_no?: number; source?: string }[]>([]);
   const [state, setState] = useState<"idle" | "live" | "reconnecting" | "error">("idle");
@@ -1700,7 +1827,6 @@ function RunListCard({
   run,
   resourceById,
   projectMeta,
-  manualCategories,
   manualAssignment,
   markCount,
   markPreviews,
@@ -1711,18 +1837,16 @@ function RunListCard({
   onOpenMark,
   onSelect,
   onToggleBookmark,
-  onSaveBookmarkNote,
+  onEditBookmarkNote,
+  onEditManualProject,
   onArchive,
   onRestore,
   onDelete,
-  onAssignManualProject,
-  onCreateAndAssignManualProject,
   t
 }: {
   run: Run;
   resourceById: Map<string, Resource>;
   projectMeta?: RunProjectMeta;
-  manualCategories: ManualProjectCategory[];
   manualAssignment?: RunProjectAssignment;
   markCount: number;
   markPreviews: RunMark[];
@@ -1733,12 +1857,11 @@ function RunListCard({
   onOpenMark: (mark: RunMark) => void;
   onSelect: (checked: boolean) => void;
   onToggleBookmark: () => void;
-  onSaveBookmarkNote: (note: string) => void;
+  onEditBookmarkNote: () => void;
+  onEditManualProject: () => void;
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
-  onAssignManualProject: (categoryID: string) => Promise<void>;
-  onCreateAndAssignManualProject: (name: string) => Promise<void>;
   t: T;
 }) {
   const compareEligible = isCompareEligible(run) && !trash;
@@ -1748,21 +1871,7 @@ function RunListCard({
   const createdAt = fmtShortTime(run.created_at);
   const bookmarkNote = bookmark?.note?.trim() || "";
   const visibleMarks = compactMarkPreviews(markPreviews);
-  const assignmentControl = (
-    <ProjectAssignmentControl
-      t={t}
-      categories={manualCategories}
-      assignment={manualAssignment}
-      onAssign={onAssignManualProject}
-      onCreateAndAssign={onCreateAndAssignManualProject}
-      compact
-    />
-  );
-  const promptBookmarkNote = () => {
-    const next = window.prompt(t("bookmarkNotePrompt"), bookmarkNote);
-    if (next == null) return;
-    onSaveBookmarkNote(next.trim());
-  };
+  const manualProjectName = manualAssignment?.category_name || t("unassignedRuns");
   return (
     <article className="run-list-card">
       <div className="run-list-card-head">
@@ -1780,7 +1889,10 @@ function RunListCard({
             {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
           </div>
         ) : null}
-        {assignmentControl}
+        <button className={manualAssignment ? "run-project-assignment-summary assigned" : "run-project-assignment-summary"} type="button" onClick={onEditManualProject} title={t("manualProject")}>
+          <span>{t("manualProject")}</span>
+          <strong>{manualProjectName}</strong>
+        </button>
       </div>
       <div className="run-list-facts">
         <span className="run-fact run-fact-resource" title={resourceName} aria-label={`${t("resource")}: ${resourceName}`}>
@@ -1817,7 +1929,7 @@ function RunListCard({
             );
           })}
           {!trash ? (
-            <button className={bookmarkNote ? "run-mark-preview run-mark-preview-human has-note" : "run-mark-preview run-mark-preview-human"} type="button" onClick={promptBookmarkNote}>
+            <button className={bookmarkNote ? "run-mark-preview run-mark-preview-human has-note" : "run-mark-preview run-mark-preview-human"} type="button" onClick={onEditBookmarkNote}>
               <span className="run-mark-preview-meta">
                 <Pill tone="accent">{t("humanMark")}</Pill>
               </span>
@@ -2187,15 +2299,13 @@ function ProjectAssignmentControl({
   categories,
   assignment,
   onAssign,
-  onCreateAndAssign,
-  compact = false
+  onCreateAndAssign
 }: {
   t: T;
   categories: ManualProjectCategory[];
   assignment?: RunProjectAssignment;
   onAssign: (categoryID: string) => Promise<void>;
   onCreateAndAssign: (name: string) => Promise<void>;
-  compact?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -2208,7 +2318,7 @@ function ProjectAssignmentControl({
     options.splice(1, 0, [current, assignment?.category_name || current]);
   }
   const create = async () => {
-    const name = compact ? window.prompt(t("newManualProject"), draft)?.trim() : draft.trim();
+    const name = draft.trim();
     if (!name) return;
     setSaving(true);
     try {
@@ -2219,7 +2329,7 @@ function ProjectAssignmentControl({
     }
   };
   return (
-    <div className={compact ? "project-assignment-control compact" : "project-assignment-control"}>
+    <div className="project-assignment-control">
       <Select
         value={current}
         onChange={(value: string) => {
@@ -2228,18 +2338,12 @@ function ProjectAssignmentControl({
         }}
         options={options}
       />
-      {compact ? (
-        <button className="icon-action" type="button" title={t("newManualProject")} disabled={saving} onClick={() => void create()}>
-          <Plus size={14} />
+      <div className="project-assignment-create">
+        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
+        <button type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
+          {t("newManualProject")}
         </button>
-      ) : (
-        <div className="project-assignment-create">
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
-          <button type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
-            {t("newManualProject")}
-          </button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
