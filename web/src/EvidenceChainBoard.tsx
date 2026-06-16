@@ -3,6 +3,7 @@ import {
   addEdge,
   Background,
   BaseEdge,
+  ConnectionMode,
   Controls,
   EdgeLabelRenderer,
   Handle,
@@ -10,7 +11,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  getBezierPath,
+  getSmoothStepPath,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -37,6 +38,7 @@ import {
   candidateMatches,
   candidateToNode,
   createTextNode,
+  evidenceMarkerEnd,
   edgeStyle,
   edgeTypeLabel,
   evidenceEdgeTypes,
@@ -44,6 +46,7 @@ import {
   groupRunCandidatesByProject,
   nodeTypeLabel,
   serializeEvidenceGraph,
+  type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
   type EvidenceNodeData
@@ -53,6 +56,8 @@ import type { EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType } fr
 import { fmtShortTime, runTitle, text } from "./utils";
 
 const candidateMime = "application/x-aexp-run-candidate";
+const evidenceHandleSides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+type EvidenceHandleSide = (typeof evidenceHandleSides)[number];
 
 export function EvidenceChainBoard({ token, t, onOpenRun }: { token: string; t: (key: I18nKey) => string; onOpenRun: (id: string) => void }) {
   return (
@@ -131,6 +136,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
             label: patch.label ?? edge.label ?? edgeTypeLabel(type),
             data: { ...edge.data, type, rationale: patch.rationale ?? edge.data?.rationale ?? "" },
             animated: type === "next_step",
+            markerEnd: evidenceMarkerEnd(type),
             style: edgeStyle(type)
           };
         })
@@ -154,7 +160,20 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     setNodes((current) => current.map((node) => ({ ...node, selected: false })));
   }, [setEdges, setNodes]);
   const withNodeHandlers = useCallback((node: EvidenceFlowNode): EvidenceFlowNode => ({ ...node, data: { ...node.data, labels: boardLabels, onOpenRun, onUpdateNode: updateNodeData } }), [boardLabels, onOpenRun, updateNodeData]);
-  const withEdgeHandlers = useCallback((edge: EvidenceFlowEdge): EvidenceFlowEdge => ({ ...edge, type: "evidence", data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, labels: boardLabels, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData } }), [boardLabels, selectEdge, updateEdgeData]);
+  const withEdgeHandlers = useCallback(
+    (edge: EvidenceFlowEdge): EvidenceFlowEdge => {
+      const type = edge.data?.type || "next_step";
+      return {
+        ...edge,
+        type: "evidence",
+        animated: type === "next_step",
+        markerEnd: evidenceMarkerEnd(type),
+        style: edgeStyle(type),
+        data: { type, rationale: edge.data?.rationale || "", ...edge.data, labels: boardLabels, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData }
+      };
+    },
+    [boardLabels, selectEdge, updateEdgeData]
+  );
 
   useEffect(() => {
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, labels: boardLabels } })));
@@ -163,8 +182,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
 
   useEffect(() => {
     if (!detail.data) return;
-    setNodes((detail.data.nodes || []).map(apiNodeToFlowNode).map(withNodeHandlers));
-    setEdges((detail.data.edges || []).map(apiEdgeToFlowEdge).map(withEdgeHandlers));
+    const nextNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(withNodeHandlers);
+    const nextEdges = autoRouteEvidenceEdges((detail.data.edges || []).map(apiEdgeToFlowEdge).map(withEdgeHandlers), nextNodes);
+    setNodes(nextNodes);
+    setEdges(nextEdges);
     setChainTitleDraft(detail.data.title || "");
     setChainDescriptionDraft(detail.data.description || "");
     lastSavedMeta.current = { id: detail.data.id, title: detail.data.title || "", description: detail.data.description || "" };
@@ -208,6 +229,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     },
     [markDirty, onNodesChangeBase, selected]
   );
+  useEffect(() => {
+    setEdges((current) => autoRouteEvidenceEdges(current, nodes));
+  }, [nodes, setEdges]);
+
   const onEdgesChange = useCallback(
     (changes: Parameters<typeof onEdgesChangeBase>[0]) => {
       onEdgesChangeBase(changes);
@@ -282,24 +307,29 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     (connection: Connection) => {
       const id = `edge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
       const type: EvidenceEdgeType = "next_step";
+      const hasManualHandles = Boolean(connection.sourceHandle && connection.targetHandle);
       setEdges((current) =>
-        addEdge(
-          {
-            ...connection,
-            id,
-            type: "evidence",
-            label: edgeTypeLabel(type),
-            data: { type, rationale: "", onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData },
-            animated: true,
-            style: edgeStyle(type)
-          },
-          current
-    )
-  );
+        autoRouteEvidenceEdges(
+          addEdge(
+            {
+              ...connection,
+              id,
+              type: "evidence",
+              label: edgeTypeLabel(type),
+              data: { type, rationale: "", autoHandles: !hasManualHandles, onSelectEdge: selectEdge, onUpdateEdge: updateEdgeData },
+              animated: true,
+              markerEnd: evidenceMarkerEnd(type),
+              style: edgeStyle(type)
+            },
+            current
+          ),
+          nodes
+        )
+      );
       setSelected({ kind: "edge", id });
       markDirty();
     },
-    [markDirty, selectEdge, setEdges, updateEdgeData]
+    [markDirty, nodes, selectEdge, setEdges, updateEdgeData]
   );
 
   const deleteSelection = useCallback(() => {
@@ -417,6 +447,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
             onEdgeClick={onEdgeClick}
             onNodeDoubleClick={onNodeDoubleClick}
             onPaneClick={clearSelection}
+            connectionMode={ConnectionMode.Loose}
             fitView
           >
             <Background gap={24} color="#dce2e8" />
@@ -565,7 +596,7 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
 
   return (
     <div className={`evidence-node ${data.type} ${selected ? "selected" : ""}`} style={{ "--evidence-color": color } as CSSProperties}>
-      <Handle type="target" position={Position.Left} />
+      <EvidenceNodeHandles />
       <div className="evidence-node-category">
         <select className="nodrag nopan" value={data.type} onChange={(event) => data.onUpdateNode?.(id, { type: event.target.value as EvidenceNodeType })}>
           {typeOptions.map((type) => (
@@ -599,8 +630,20 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
           {data.labels?.openRun || "打开实验"}
         </button>
       ) : null}
-      <Handle type="source" position={Position.Right} />
     </div>
+  );
+}
+
+function EvidenceNodeHandles() {
+  return (
+    <>
+      {evidenceHandleSides.map((side) => (
+        <Handle key={`source-${side}`} id={handleId("source", side)} className={`evidence-handle evidence-handle-${side} evidence-handle-source`} type="source" position={side} />
+      ))}
+      {evidenceHandleSides.map((side) => (
+        <Handle key={`target-${side}`} id={handleId("target", side)} className={`evidence-handle evidence-handle-${side} evidence-handle-target`} type="target" position={side} />
+      ))}
+    </>
   );
 }
 
@@ -609,7 +652,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const [editing, setEditing] = useState(false);
   const composingRef = useRef(false);
   const [draft, setDraft] = useState({ label: text(label), rationale: data?.rationale || "" });
-  const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  const [edgePath, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 18, offset: 32 });
   const displayLabel = text(label) || edgeTypeLabel(type);
 
   useEffect(() => {
@@ -697,6 +740,72 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
       </EdgeLabelRenderer>
     </>
   );
+}
+
+function autoRouteEvidenceEdges(edges: EvidenceFlowEdge[], nodes: EvidenceFlowNode[]): EvidenceFlowEdge[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  return edges.map((edge) => {
+    const type = edge.data?.type || "next_step";
+    const data: EvidenceEdgeData = { ...(edge.data ?? {}), type, rationale: edge.data?.rationale || "" };
+    const base: EvidenceFlowEdge = {
+      ...edge,
+      type: "evidence",
+      animated: type === "next_step",
+      markerEnd: evidenceMarkerEnd(type),
+      style: edgeStyle(type),
+      data
+    };
+    const shouldAutoRoute = base.data?.autoHandles === true || !base.sourceHandle || !base.targetHandle;
+    if (!shouldAutoRoute) return base;
+    const source = nodeById.get(base.source);
+    const target = nodeById.get(base.target);
+    if (!source || !target) return base;
+    const handles = chooseEvidenceHandles(source, target);
+    const routedData: EvidenceEdgeData = { ...data, autoHandles: true };
+    return {
+      ...base,
+      sourceHandle: handleId("source", handles.source),
+      targetHandle: handleId("target", handles.target),
+      data: routedData
+    };
+  });
+}
+
+function chooseEvidenceHandles(source: EvidenceFlowNode, target: EvidenceFlowNode): { source: EvidenceHandleSide; target: EvidenceHandleSide } {
+  const sourceCenter = nodeCenter(source);
+  const targetCenter = nodeCenter(target);
+  const dx = targetCenter.x - sourceCenter.x;
+  const dy = targetCenter.y - sourceCenter.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const sourceSide = dx >= 0 ? Position.Right : Position.Left;
+    return { source: sourceSide, target: oppositeSide(sourceSide) };
+  }
+  const sourceSide = dy >= 0 ? Position.Bottom : Position.Top;
+  return { source: sourceSide, target: oppositeSide(sourceSide) };
+}
+
+function nodeCenter(node: EvidenceFlowNode) {
+  const measured = node.measured as { width?: number; height?: number } | undefined;
+  const width = measured?.width || node.width || 286;
+  const height = measured?.height || node.height || 184;
+  return { x: node.position.x + width / 2, y: node.position.y + height / 2 };
+}
+
+function oppositeSide(side: EvidenceHandleSide): EvidenceHandleSide {
+  switch (side) {
+    case Position.Top:
+      return Position.Bottom;
+    case Position.Bottom:
+      return Position.Top;
+    case Position.Left:
+      return Position.Right;
+    case Position.Right:
+      return Position.Left;
+  }
+}
+
+function handleId(kind: "source" | "target", side: EvidenceHandleSide) {
+  return `${kind}-${side}`;
 }
 
 function evidenceColor(type: EvidenceNodeType | EvidenceEdgeType) {

@@ -2538,16 +2538,76 @@ select {
 }
 
 .evidence-node .react-flow__handle {
+  pointer-events: all;
+}
+
+.evidence-node .evidence-handle-source {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #ffffff;
+  background: var(--evidence-color);
+  box-shadow: 0 0 0 1px rgba(35, 41, 49, 0.24), 0 2px 7px rgba(35, 41, 49, 0.16);
+  opacity: 0.62;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 3;
+}
+
+.evidence-node .evidence-handle-target {
+  width: 19px;
+  height: 19px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  z-index: 2;
+}
+
+.evidence-node:hover .evidence-handle-source,
+.evidence-node.selected .evidence-handle-source {
+  opacity: 1;
+}
+
+.evidence-node .evidence-handle-top {
+  top: -5px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.evidence-node .evidence-handle-right {
   top: 50%;
-  transform: translateY(-50%);
+  right: -5px;
+  transform: translate(50%, -50%);
 }
 
-.evidence-node .react-flow__handle-left {
-  left: -4px;
+.evidence-node .evidence-handle-bottom {
+  bottom: -5px;
+  left: 50%;
+  transform: translate(-50%, 50%);
 }
 
-.evidence-node .react-flow__handle-right {
-  right: -4px;
+.evidence-node .evidence-handle-left {
+  top: 50%;
+  left: -5px;
+  transform: translate(-50%, -50%);
+}
+
+.evidence-node .evidence-handle-source:hover {
+  transform: scale(1.25);
+}
+
+.evidence-node .evidence-handle-source.evidence-handle-top:hover {
+  transform: translate(-50%, -50%) scale(1.25);
+}
+
+.evidence-node .evidence-handle-source.evidence-handle-right:hover {
+  transform: translate(50%, -50%) scale(1.25);
+}
+
+.evidence-node .evidence-handle-source.evidence-handle-bottom:hover {
+  transform: translate(-50%, 50%) scale(1.25);
+}
+
+.evidence-node .evidence-handle-source.evidence-handle-left:hover {
+  transform: translate(-50%, -50%) scale(1.25);
 }
 
 .evidence-node.selected {
@@ -2653,7 +2713,7 @@ select {
 .evidence-edge-label {
   position: absolute;
   z-index: 12;
-  pointer-events: all;
+  pointer-events: none;
 }
 
 .evidence-edge-label > button {
@@ -2661,27 +2721,30 @@ select {
   align-items: center;
   max-width: 170px;
   min-height: 18px;
-  padding: 0 4px;
+  padding: 0 2px;
   overflow: hidden;
   border: 0;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #3f3a34;
+  background: transparent;
+  color: #49443d;
   box-shadow: none;
   font-size: 11px;
   font-weight: 650;
   line-height: 1.2;
+  pointer-events: all;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.92), 1px 0 0 rgba(255, 255, 255, 0.82), -1px 0 0 rgba(255, 255, 255, 0.82);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .evidence-edge-label > button:hover {
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.78);
   color: var(--evidence-color);
 }
 
 .evidence-edge-label.editing {
   z-index: 40;
+  pointer-events: all;
 }
 
 .evidence-edge-editor {

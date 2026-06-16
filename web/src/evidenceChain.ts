@@ -1,4 +1,4 @@
-import type { Edge, Node } from "@xyflow/react";
+import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { EvidenceChainEdge, EvidenceChainNode, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType } from "./types";
 import { runTitle, text } from "./utils";
 
@@ -23,6 +23,7 @@ export interface EvidenceNodeData extends Record<string, unknown> {
 export interface EvidenceEdgeData extends Record<string, unknown> {
   type: EvidenceEdgeType;
   rationale: string;
+  autoHandles?: boolean;
   onSelectEdge?: (edgeId: string) => void;
   onUpdateEdge?: (edgeId: string, patch: { type?: EvidenceEdgeType; label?: string; rationale?: string }) => void;
   labels?: EvidenceBoardLabels;
@@ -198,9 +199,12 @@ export function apiEdgeToFlowEdge(edge: EvidenceChainEdge): EvidenceFlowEdge {
     id: edge.id,
     source: edge.source_node_id,
     target: edge.target_node_id,
+    sourceHandle: typeof data.sourceHandle === "string" ? data.sourceHandle : undefined,
+    targetHandle: typeof data.targetHandle === "string" ? data.targetHandle : undefined,
     label: edge.label ?? edgeTypeLabel(type),
     data: { type, rationale: edge.rationale || "", ...data },
     animated: type === "next_step",
+    markerEnd: evidenceMarkerEnd(type),
     style: edgeStyle(type)
   };
 }
@@ -234,9 +238,22 @@ export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: Evidenc
         type,
         label: edge.label == null ? edgeTypeLabel(type) : String(edge.label),
         rationale: edge.data?.rationale || "",
-        data_json: "{}"
+        data_json: JSON.stringify({
+          sourceHandle: edge.sourceHandle || "",
+          targetHandle: edge.targetHandle || "",
+          autoHandles: edge.data?.autoHandles === true
+        })
       };
     })
+  };
+}
+
+export function evidenceMarkerEnd(type: EvidenceEdgeType) {
+  return {
+    type: MarkerType.ArrowClosed,
+    width: 18,
+    height: 18,
+    color: String(edgeStyle(type).stroke)
   };
 }
 

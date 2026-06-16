@@ -63,8 +63,10 @@ describe("evidenceChain helpers", () => {
         id: "edge_1",
         source: "node_run",
         target: "node_hyp",
+        sourceHandle: "source-right",
+        targetHandle: "target-left",
         label: "supports the anchor hypothesis",
-        data: { type: "supports", rationale: "metric improved" }
+        data: { type: "supports", rationale: "metric improved", autoHandles: true }
       }
     ];
 
@@ -85,6 +87,11 @@ describe("evidenceChain helpers", () => {
       type: "supports",
       label: "supports the anchor hypothesis",
       rationale: "metric improved"
+    });
+    expect(JSON.parse(payload.edges[0].data_json || "{}")).toMatchObject({
+      sourceHandle: "source-right",
+      targetHandle: "target-left",
+      autoHandles: true
     });
   });
 
