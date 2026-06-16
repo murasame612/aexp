@@ -608,6 +608,35 @@ select {
   white-space: nowrap;
 }
 
+.run-card-meta .run-kind-chip {
+  font-weight: 700;
+}
+
+.run-card-meta .run-kind-ablation {
+  background: #efe4d4;
+  color: #83501b;
+}
+
+.run-card-meta .run-kind-formal {
+  background: #e6f0e9;
+  color: #2f6844;
+}
+
+.run-card-meta .run-kind-smoke,
+.run-card-meta .run-kind-pilot,
+.run-card-meta .run-kind-setup {
+  background: #f4ecd3;
+  color: #765719;
+}
+
+.run-card-meta .run-kind-tool,
+.run-card-meta .run-kind-tools,
+.run-card-meta .run-kind-exec,
+.run-card-meta .run-kind-execs {
+  background: #e5edf5;
+  color: #315d7d;
+}
+
 .run-command-line {
   display: -webkit-box;
   min-width: 0;
@@ -1163,12 +1192,15 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
+  min-width: 0;
   height: 22px;
+  padding: 2px 8px;
   border-radius: 999px;
   background: var(--accent);
   color: #fff;
   font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .pill {
@@ -1694,11 +1726,13 @@ select {
 
 .run-list-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 120px;
   grid-template-areas:
     "head actions"
     "project actions"
-    "facts actions";
+    "facts actions"
+    "markpreviews actions"
+    "human actions";
   align-items: start;
   gap: 8px 14px;
   min-width: 0;
@@ -1725,6 +1759,8 @@ select {
 
 .run-list-card-head {
   grid-area: head;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
 }
@@ -1733,16 +1769,22 @@ select {
   min-height: 0;
 }
 
-.run-project-context {
+.run-project-stack {
   grid-area: project;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.run-project-context {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.36fr) minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  border-left: 3px solid #d6e4dc;
+  border-left: 3px solid #b8d4c3;
   border-radius: 8px;
-  background: #f8faf7;
+  background: #f7faf8;
   padding: 6px 8px;
 }
 
@@ -1753,7 +1795,8 @@ select {
   overflow-wrap: anywhere;
 }
 
-.run-project-context > span:not(.pill) {
+.run-project-name {
+  display: block;
   color: var(--muted);
   font-size: 11px;
   text-overflow: ellipsis;
@@ -1769,15 +1812,63 @@ select {
   -webkit-line-clamp: 2;
 }
 
+.project-assignment-control {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.project-assignment-control.compact {
+  gap: 5px;
+}
+
+.project-assignment-control label {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.project-assignment-control label > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-assignment-control.compact label > span {
+  display: none;
+}
+
+.project-assignment-control select {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.project-assignment-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.project-assignment-create input {
+  min-width: 0;
+}
+
+.project-assignment-create button {
+  white-space: nowrap;
+}
+
 .run-list-facts {
   grid-area: facts;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(136px, 1.15fr) minmax(108px, 0.76fr) minmax(72px, 0.45fr) minmax(118px, 0.82fr) minmax(86px, 0.48fr);
   gap: 6px;
   min-width: 0;
 }
 
-.run-list-facts span,
+.run-list-facts .run-fact,
 .run-compare-toggle {
   min-height: 22px;
   display: inline-flex;
@@ -1789,6 +1880,214 @@ select {
   padding: 2px 8px;
   line-height: 1.25;
   font-size: 11px;
+}
+
+.run-list-facts .run-fact {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.run-fact-label {
+  flex: 0 0 auto;
+  color: #68737e;
+  font-weight: 650;
+}
+
+.run-fact-value {
+  min-width: 0;
+  overflow: hidden;
+  color: #22272e;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-fact-resource .run-fact-value {
+  color: #263b4f;
+}
+
+.run-fact-gpu {
+  background: #f2f5f7;
+}
+
+.run-fact-time {
+  background: #f7f3ea;
+}
+
+.run-fact-marks {
+  background: #eef4f0;
+}
+
+.run-fact-kind {
+  border: 1px solid transparent;
+}
+
+.run-fact-kind .run-fact-label {
+  color: currentColor;
+  opacity: .72;
+}
+
+.run-kind-ablation {
+  border-color: #d7a764;
+  background: #f4e4ca;
+  color: #7a4511;
+}
+
+.run-kind-formal {
+  border-color: #b9d8c4;
+  background: #eaf4ed;
+  color: #2d6842;
+}
+
+.run-kind-smoke,
+.run-kind-pilot,
+.run-kind-setup {
+  border-color: #dcc579;
+  background: #f7edc9;
+  color: #6e5010;
+}
+
+.run-kind-tool,
+.run-kind-tools,
+.run-kind-exec,
+.run-kind-execs {
+  border-color: #b8cddf;
+  background: #e7f0f7;
+  color: #2d5b7d;
+}
+
+.run-kind-other {
+  border-color: #cbd3dc;
+  background: #eef2f5;
+  color: #4f5d6b;
+}
+
+.run-mark-previews {
+  grid-area: markpreviews;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.run-mark-preview {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid #e1e7ec;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+}
+
+.run-mark-preview:hover:not(:disabled) {
+  background: #f8fafb;
+  border-color: #ccd6de;
+}
+
+.run-mark-preview-good {
+  border-color: #c9ddcf;
+  background: #f6faf7;
+}
+
+.run-mark-preview-bad {
+  border-color: #e5c3bc;
+  background: #fff8f6;
+}
+
+.run-mark-preview-accent {
+  border-color: #c6d4df;
+  background: #f5f8fb;
+}
+
+.run-mark-preview-meta,
+.run-mark-preview-copy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-mark-preview-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.run-mark-preview-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.run-mark-preview-copy strong,
+.run-mark-preview-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-mark-preview-copy strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.run-mark-preview-copy span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.run-human-mark {
+  grid-area: human;
+  min-width: 0;
+}
+
+.run-human-mark-button {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px dashed #ccd6de;
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: var(--muted);
+  text-align: left;
+}
+
+.run-human-mark.has-mark .run-human-mark-button {
+  border-style: solid;
+  border-color: #d7c89e;
+  background: #fffaf0;
+  color: #73561c;
+}
+
+.run-human-mark-button > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.run-human-mark-button strong,
+.run-human-mark-button em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-human-mark-button strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.run-human-mark-button em {
+  font-size: 11px;
+  font-style: normal;
 }
 
 .run-list-actions {
@@ -1805,6 +2104,12 @@ select {
 .run-list-actions .mark-badge {
   grid-column: 1 / -1;
   justify-self: end;
+}
+
+.run-list-actions .mark-badge {
+  width: auto;
+  min-width: 58px;
+  padding: 0 7px;
 }
 
 .project-empty {
@@ -2883,6 +3188,14 @@ select {
   color: #6f766f;
 }
 
+.progress-row-incomplete {
+  color: #71695f;
+}
+
+.progress-row-stopped {
+  color: #775e5a;
+}
+
 .progress-row:last-child {
   border-bottom: 0;
 }
@@ -2981,6 +3294,16 @@ select {
 .progress-row-done .progress-state {
   background: #ecf4ee;
   color: #50715a;
+}
+
+.progress-row-incomplete .progress-state {
+  background: #fff6df;
+  color: #8a641a;
+}
+
+.progress-row-stopped .progress-state {
+  background: #fff0ed;
+  color: #9a4b3f;
 }
 
 .progress-value {
@@ -3256,7 +3579,24 @@ select {
   white-space: nowrap;
 }
 
+.metric-card-sparkline-wrap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.metric-card-sparkline-wrap span {
+  color: #8a8379;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  text-align: right;
+}
+
 .metric-card-sparkline {
+  grid-row: span 2;
   width: 100%;
   height: 50px;
   min-width: 0;
@@ -3266,6 +3606,12 @@ select {
 
 .metric-sparkline-empty {
   background: #f6f8fa;
+}
+
+.metric-card-sparkline line {
+  stroke: #edf1f4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
 .metric-card-sparkline polyline {
@@ -3293,6 +3639,26 @@ select {
   gap: 8px;
   min-width: 0;
   padding: 0 12px 12px;
+}
+
+.metric-card-chart-head {
+  grid-column: 1 / -1;
+  display: flex !important;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px !important;
+}
+
+.metric-card-chart-head strong {
+  font-size: 10px !important;
+}
+
+.metric-card-detail .chart {
+  grid-column: 1 / -1;
+  display: block;
+  min-height: 0;
+  border-top: 1px solid #eee9e1;
+  padding-top: 8px;
 }
 
 .metric-card-detail > div {
@@ -3370,6 +3736,10 @@ select {
 .chart {
   height: 280px;
   min-width: 0;
+}
+
+.chart-compact {
+  height: 188px;
 }
 
 .modal-backdrop {
@@ -3796,13 +4166,18 @@ select {
       "head"
       "project"
       "facts"
-      "command"
+      "markpreviews"
+      "human"
       "actions";
   }
 
   .run-list-actions {
     justify-content: flex-start;
     max-width: none;
+  }
+
+  .run-list-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .run-project-group-head {
@@ -4072,7 +4447,8 @@ select {
       "head"
       "project"
       "facts"
-      "command"
+      "markpreviews"
+      "human"
       "actions";
     padding: 10px;
   }
@@ -4082,8 +4458,16 @@ select {
     align-items: start;
   }
 
-  .run-project-context > span:not(.pill) {
+  .run-project-name {
     white-space: normal;
+  }
+
+  .run-list-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .run-mark-previews {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dashboard-runs .run-card {

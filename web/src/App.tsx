@@ -28,7 +28,9 @@ import * as echarts from "echarts";
 import {
   ApiError,
   archiveRun,
+  assignRunManualProjectCategory,
   cancelRun,
+  createManualProjectCategory,
   createLocalResource,
   deleteBookmark,
   deleteResource,
@@ -38,6 +40,8 @@ import {
   getBookmarks,
   getExecEvents,
   getLogs,
+  getManualProjectCategories,
+  getManualRunProjectAssignments,
   getProjects,
   getResources,
   getRun,
@@ -52,6 +56,7 @@ import {
   saveResource,
   statusCheck,
   testResource,
+  unassignRunManualProjectCategory,
   wsURL
 } from "./api";
 import { makeT, type I18nKey } from "./i18n";
@@ -62,6 +67,7 @@ import type {
   ExecEvent,
   GPUInfo,
   LogsResponse,
+  ManualProjectCategory,
   MetricPoint,
   ParamPoint,
   ParsedEvents,
@@ -71,6 +77,7 @@ import type {
   Resource,
   Run,
   RunBookmark,
+  RunProjectAssignment,
   RunMark
 } from "./types";
 import {
@@ -102,6 +109,7 @@ interface RunProjectMeta {
   cardTitle: string;
   cardSummary?: string;
   evidenceLevel?: string;
+  source?: "manual" | "card";
 }
 
 const pageSize = 100;
@@ -136,12 +144,15 @@ export function App() {
   const [resourceForm, setResourceForm] = useState<Partial<Resource> | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [selectedRunListMark, setSelectedRunListMark] = useState<RunMark | null>(null);
 
   const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), refetchInterval: 5000 });
   const resources = useQuery({ queryKey: ["resources", token], queryFn: () => getResources(token), refetchInterval: 5000 });
   const marks = useQuery({ queryKey: ["marks", token], queryFn: () => getAllRunMarks(token), refetchInterval: 10000 });
   const bookmarks = useQuery({ queryKey: ["bookmarks", token], queryFn: () => getBookmarks(token), refetchInterval: 10000 });
   const projects = useQuery({ queryKey: ["projects", token], queryFn: () => getProjects(token), refetchInterval: 12000 });
+  const manualProjectCategories = useQuery({ queryKey: ["manual-project-categories", token], queryFn: () => getManualProjectCategories(token), refetchInterval: 12000 });
+  const manualRunProjectAssignments = useQuery({ queryKey: ["manual-run-project-assignments", token], queryFn: () => getManualRunProjectAssignments(token), refetchInterval: 12000 });
   const runs = useQuery({
     queryKey: ["runs", token, runPage, runStatus, runResource, runTrash],
     queryFn: () =>
@@ -165,13 +176,18 @@ export function App() {
   const bookmarkList = bookmarks.data || [];
   const markList = marks.data || [];
   const runMarks = useMemo(() => markCountByRun(markList), [markList]);
+  const runMarkPreviews = useMemo(() => marksByRun(markList), [markList]);
   const resourceById = useMemo(() => new Map(resourceList.map((r) => [r.id, r])), [resourceList]);
   const projectList = projects.data || [];
-  const runProjectById = useMemo(() => buildRunProjectIndex(projectList, t), [projectList, t]);
+  const manualCategoryList = manualProjectCategories.data || [];
+  const manualAssignmentList = manualRunProjectAssignments.data || [];
+  const manualCategoryById = useMemo(() => new Map(manualCategoryList.map((category) => [category.id, category])), [manualCategoryList]);
+  const manualAssignmentByRun = useMemo(() => new Map(manualAssignmentList.map((assignment) => [assignment.run_id, assignment])), [manualAssignmentList]);
+  const runProjectById = useMemo(() => buildRunProjectIndex(projectList, t, manualAssignmentByRun, manualCategoryById), [projectList, t, manualAssignmentByRun, manualCategoryById]);
   const visibleRuns = useMemo(() => {
     const filtered = filterRuns(runList, { query: runQuery, kind: runKind, bookmarks: bookmarkList });
     if (!runProject) return filtered;
-    return filtered.filter((run) => runProjectById.get(run.id)?.projectId === runProject);
+    return filtered.filter((run) => runProjectMatches(runProjectById.get(run.id), runProject));
   }, [runList, runQuery, runKind, bookmarkList, runProject, runProjectById]);
   const activeRuns = useMemo(() => runList.filter(isActiveRun), [runList]);
   const visibleExecs = useMemo(() => filterExecs(execs.data?.items || [], execQuery), [execs.data, execQuery]);
@@ -180,9 +196,10 @@ export function App() {
   const runProjectOptions = useMemo(
     () => [
       ["", t("allProjects")] as [string, string],
-      ...projectList.map((project) => [project.project_id, projectDisplayName(project, t)] as [string, string])
+      ...manualCategoryList.map((category) => [manualProjectFilterValue(category.id), category.name] as [string, string]),
+      ...projectList.map((project) => [projectCardFilterValue(project.project_id), projectDisplayName(project, t)] as [string, string])
     ],
-    [projectList, t]
+    [manualCategoryList, projectList, t]
   );
   const selectedRuns = useMemo(() => runList.filter((run) => selectedRunIds.has(run.id) && isCompareEligible(run)), [runList, selectedRunIds]);
 
@@ -214,8 +231,30 @@ export function App() {
       queryClient.invalidateQueries({ queryKey: ["marks"] }),
       queryClient.invalidateQueries({ queryKey: ["bookmarks"] }),
       queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      queryClient.invalidateQueries({ queryKey: ["manual-project-categories"] }),
+      queryClient.invalidateQueries({ queryKey: ["manual-run-project-assignments"] }),
       queryClient.invalidateQueries({ queryKey: ["stats"] })
     ]);
+  }
+
+  async function refreshManualProjectData() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["manual-project-categories"] }),
+      queryClient.invalidateQueries({ queryKey: ["manual-run-project-assignments"] }),
+      queryClient.invalidateQueries({ queryKey: ["projects"] })
+    ]);
+  }
+
+  async function assignManualProject(runID: string, categoryID: string) {
+    if (categoryID) await assignRunManualProjectCategory(token, runID, categoryID);
+    else await unassignRunManualProjectCategory(token, runID);
+    await refreshManualProjectData();
+  }
+
+  async function createAndAssignManualProject(runID: string, name: string) {
+    const category = await createManualProjectCategory(token, { name });
+    await assignRunManualProjectCategory(token, runID, category.id);
+    await refreshManualProjectData();
   }
 
   return (
@@ -353,6 +392,8 @@ export function App() {
                 }}
                 projectOptions={runProjectOptions}
                 runProjectById={runProjectById}
+                manualCategories={manualCategoryList}
+                manualAssignments={manualAssignmentByRun}
                 kind={runKind}
                 setKind={(value) => {
                   setRunKind(value);
@@ -370,8 +411,10 @@ export function App() {
                 }}
                 bookmarks={bookmarkList}
                 marks={runMarks}
+                markPreviews={runMarkPreviews}
                 resourceById={resourceById}
                 onOpenRun={setDetailRunId}
+                onOpenMark={setSelectedRunListMark}
                 onCompare={() => setCompareOpen(true)}
                 onArchive={(run) =>
                   askConfirm({
@@ -400,11 +443,13 @@ export function App() {
                     }
                   })
                 }
-                onToggleBookmark={async (run, bookmarked) => {
+                onToggleBookmark={async (run, bookmarked, note) => {
                   if (bookmarked) await deleteBookmark(token, run.id);
-                  else await saveBookmark(token, run.id);
+                  else await saveBookmark(token, run.id, note);
                   await invalidateOperationalData();
                 }}
+                onAssignManualProject={assignManualProject}
+                onCreateAndAssignManualProject={createAndAssignManualProject}
               />
             )}
             {tab === "favorites" && (
@@ -437,6 +482,8 @@ export function App() {
           token={token}
           runId={detailRunId}
           resourceById={resourceById}
+          manualCategories={manualCategoryList}
+          manualAssignment={manualAssignmentByRun.get(detailRunId)}
           onClose={() => {
             setDetailRunId(null);
             history.replaceState(null, "", pathForTab(tab));
@@ -456,6 +503,8 @@ export function App() {
             await statusCheck(token, run.id);
             await invalidateOperationalData();
           }}
+          onAssignManualProject={assignManualProject}
+          onCreateAndAssignManualProject={createAndAssignManualProject}
         />
       ) : null}
 
@@ -480,6 +529,7 @@ export function App() {
 
       {compareOpen ? <CompareModal t={t} token={token} runs={selectedRuns} onClose={() => setCompareOpen(false)} /> : null}
       {confirm ? <ConfirmModal t={t} state={confirm} onClose={() => setConfirm(null)} /> : null}
+      {selectedRunListMark ? <MarkDetailModal mark={selectedRunListMark} token={token} t={t} onClose={() => setSelectedRunListMark(null)} /> : null}
     </div>
   );
 }
@@ -634,6 +684,8 @@ function RunsTab(props: {
   setProject: (project: string) => void;
   projectOptions: [string, string][];
   runProjectById: Map<string, RunProjectMeta>;
+  manualCategories: ManualProjectCategory[];
+  manualAssignments: Map<string, RunProjectAssignment>;
   kind: string;
   setKind: (kind: string) => void;
   trash: boolean;
@@ -642,37 +694,51 @@ function RunsTab(props: {
   setQuery: (query: string) => void;
   bookmarks: RunBookmark[];
   marks: Map<string, number>;
+  markPreviews: Map<string, RunMark[]>;
   resourceById: Map<string, Resource>;
   onOpenRun: (id: string) => void;
+  onOpenMark: (mark: RunMark) => void;
   onCompare: () => void;
   onArchive: (run: Run) => void;
   onRestore: (run: Run) => Promise<void>;
   onDelete: (run: Run) => void;
-  onToggleBookmark: (run: Run, bookmarked: boolean) => Promise<void>;
+  onToggleBookmark: (run: Run, bookmarked: boolean, note?: string) => Promise<void>;
+  onAssignManualProject: (runID: string, categoryID: string) => Promise<void>;
+  onCreateAndAssignManualProject: (runID: string, name: string) => Promise<void>;
 }) {
   const selectedRunIds = useAppStore((s) => s.selectedRunIds);
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
-  const bookmarkIds = useMemo(() => new Set(props.bookmarks.map((b) => b.run_id)), [props.bookmarks]);
+  const bookmarkByRun = useMemo(() => new Map(props.bookmarks.map((bookmark) => [bookmark.run_id, bookmark])), [props.bookmarks]);
   const selectedCount = props.runs.filter((run) => selectedRunIds.has(run.id)).length;
-  const renderRun = (run: Run) => (
-    <RunListCard
-      key={run.id}
-      run={run}
-      resourceById={props.resourceById}
-      projectMeta={props.runProjectById.get(run.id)}
-      markCount={props.marks.get(run.id) || 0}
-      bookmarked={bookmarkIds.has(run.id)}
-      selected={selectedRunIds.has(run.id)}
-      trash={props.trash}
-      onOpen={() => props.onOpenRun(run.id)}
-      onSelect={(checked) => toggleSelectedRun(run, checked)}
-      onToggleBookmark={() => void props.onToggleBookmark(run, bookmarkIds.has(run.id))}
-      onArchive={() => props.onArchive(run)}
-      onRestore={() => void props.onRestore(run)}
-      onDelete={() => props.onDelete(run)}
-      t={props.t}
-    />
-  );
+  const renderRun = (run: Run) => {
+    const bookmark = bookmarkByRun.get(run.id);
+    return (
+      <RunListCard
+        key={run.id}
+        run={run}
+        resourceById={props.resourceById}
+        projectMeta={props.runProjectById.get(run.id)}
+        manualCategories={props.manualCategories}
+        manualAssignment={props.manualAssignments.get(run.id)}
+        markCount={props.marks.get(run.id) || 0}
+        markPreviews={props.markPreviews.get(run.id) || []}
+        bookmark={bookmark}
+        selected={selectedRunIds.has(run.id)}
+        trash={props.trash}
+        onOpen={() => props.onOpenRun(run.id)}
+        onOpenMark={props.onOpenMark}
+        onSelect={(checked) => toggleSelectedRun(run, checked)}
+        onToggleBookmark={() => void props.onToggleBookmark(run, !!bookmark)}
+        onSaveBookmarkNote={(note) => void props.onToggleBookmark(run, false, note)}
+        onArchive={() => props.onArchive(run)}
+        onRestore={() => void props.onRestore(run)}
+        onDelete={() => props.onDelete(run)}
+        onAssignManualProject={(categoryID) => props.onAssignManualProject(run.id, categoryID)}
+        onCreateAndAssignManualProject={(name) => props.onCreateAndAssignManualProject(run.id, name)}
+        t={props.t}
+      />
+    );
+  };
   return (
     <div className="stack">
       <div className="toolbar dense">
@@ -889,17 +955,25 @@ function RunDetail({
   token,
   runId,
   resourceById,
+  manualCategories,
+  manualAssignment,
   onClose,
   onCancel,
-  onStatusCheck
+  onStatusCheck,
+  onAssignManualProject,
+  onCreateAndAssignManualProject
 }: {
   t: T;
   token: string;
   runId: string;
   resourceById: Map<string, Resource>;
+  manualCategories: ManualProjectCategory[];
+  manualAssignment?: RunProjectAssignment;
   onClose: () => void;
   onCancel: (run: Run) => void;
   onStatusCheck: (run: Run) => Promise<void>;
+  onAssignManualProject: (runID: string, categoryID: string) => Promise<void>;
+  onCreateAndAssignManualProject: (runID: string, name: string) => Promise<void>;
 }) {
   const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 5000 });
   const marks = useQuery({ queryKey: ["run-marks", token, runId], queryFn: () => getRunMarks(token, runId) });
@@ -956,7 +1030,7 @@ function RunDetail({
                 </div>
                 <pre className="command-box">{run.data.command}</pre>
               </section>
-              {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} /> : null}
+              {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} run={run.data} /> : null}
               <Section title={t("agentFindings")} className="findings-section">
                 {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}</div> : <Empty t={t} />}
               </Section>
@@ -974,6 +1048,15 @@ function RunDetail({
               </section>
               <Section title={t("artifacts")} className="artifact-panel">
                 <ArtifactList artifacts={artifacts.data || []} t={t} />
+              </Section>
+              <Section title={t("manualProject")} className="manual-project-panel">
+                <ProjectAssignmentControl
+                  t={t}
+                  categories={manualCategories}
+                  assignment={manualAssignment}
+                  onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
+                  onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
+                />
               </Section>
             </aside>
           </div>
@@ -1002,7 +1085,7 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
   );
 }
 
-function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null }) {
+function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null; run: Run }) {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
@@ -1040,7 +1123,7 @@ function EventDashboard({ t, parsed, path, snapshotError }: { t: T; parsed: Pars
       ) : null}
       <div className="event-layout">
         <EventFoldout className="progress-panel" title={t("progress")} count={progress.length} defaultOpen>
-          {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
+          {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} run={run} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
         </EventFoldout>
         <EventFoldout className="param-panel" title={t("params")} count={params.length} defaultOpen>
           <div className="param-list">
@@ -1109,18 +1192,19 @@ function EventFoldout({ title, count, defaultOpen = false, className, children }
   );
 }
 
-function ProgressStatusRow({ row, t }: { row: ProgressSummary; t: T }) {
+function ProgressStatusRow({ row, run, t }: { row: ProgressSummary; run: Run; t: T }) {
   const latest = row.latest;
   const percent = progressPercent(latest);
+  const state = progressState(row, run, t);
   return (
-    <div className={row.done ? "progress-row progress-row-done" : "progress-row"}>
+    <div className={`progress-row progress-row-${state.tone}`}>
       <div className="progress-row-title">
         <div>
           <strong>{row.label || row.name}</strong>
           {row.label && row.label !== row.name ? <span>{row.name}</span> : null}
           {row.series ? <span>{row.series}</span> : null}
         </div>
-        <span className="progress-state">{row.done ? t("complete") : t("active")}</span>
+        <span className="progress-state">{state.label}</span>
       </div>
       <div className="progress-row-meter">
         {percent != null ? <ProgressMeter value={percent} /> : <span className="progress-value mono">{formatMetric(latest.current)}</span>}
@@ -1149,6 +1233,19 @@ function progressPercent(point: ProgressPoint): number | undefined {
   if (point.percent != null) return Math.max(0, Math.min(100, point.percent));
   if (point.total && point.total > 0) return Math.max(0, Math.min(100, (point.current / point.total) * 100));
   return undefined;
+}
+
+function progressState(row: ProgressSummary, run: Run, t: T): { label: string; tone: "active" | "done" | "incomplete" | "stopped" } {
+  if (row.done) return { label: t("complete"), tone: "done" };
+  if (isActiveRun(run)) return { label: t("active"), tone: "active" };
+  const status = (run.status || "").toLowerCase();
+  if (status === "succeeded" || status === "success" || status === "finished" || status === "complete" || status === "completed") {
+    return { label: t("incomplete"), tone: "incomplete" };
+  }
+  if (status === "failed" || status === "error" || status === "cancelled" || status === "canceled") {
+    return { label: t("stopped"), tone: "stopped" };
+  }
+  return { label: t("finished"), tone: "incomplete" };
 }
 
 function latestMetricContext(metric: MetricPoint, t: T) {
@@ -1194,6 +1291,7 @@ function metricFamilyKey(family: MetricFamily) {
 function MetricFamilyCard({ family, t, expanded, onToggle }: { family: MetricFamily; t: T; expanded: boolean; onToggle: () => void }) {
   const primary = family.series.length > 1 ? `${family.series.length} ${t("series").toLowerCase()}` : family.latest ? formatMetricValue(family.latest) : "-";
   const seriesPreview = family.series.slice(0, 2);
+  const axisLabel = formatMetricSpan(family.axisStart, family.axisEnd);
   return (
     <article className={expanded ? "metric-family-card expanded" : "metric-family-card"}>
       <button className="metric-card-button" type="button" onClick={onToggle} aria-expanded={expanded}>
@@ -1210,14 +1308,26 @@ function MetricFamilyCard({ family, t, expanded, onToggle }: { family: MetricFam
           ))}
         </div>
         {family.trend.length ? (
-          <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none" aria-hidden="true">
-            <polyline points={metricSparklinePoints(family.trend, 42)} />
-          </svg>
+          <div className="metric-card-sparkline-wrap" aria-hidden="true">
+            <span>{formatMetric(family.max)}</span>
+            <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none">
+              <line x1="0" y1="5" x2="120" y2="5" />
+              <line x1="0" y1="21" x2="120" y2="21" />
+              <line x1="0" y1="37" x2="120" y2="37" />
+              <polyline points={metricSparklinePoints(family.trend, 42)} />
+            </svg>
+            <span>{formatMetric(family.min)}</span>
+          </div>
         ) : <div className="metric-card-sparkline metric-sparkline-empty" aria-hidden="true" />}
-        <span className="metric-card-foot">{formatMetricSpan(family.axisStart, family.axisEnd)} · {family.count} {t("points")}</span>
+        <span className="metric-card-foot">{axisLabel} · {family.count} {t("points")}</span>
       </button>
       {expanded ? (
         <div className="metric-card-detail">
+          <div className="metric-card-chart-head">
+            <span>{t("range")}: {axisLabel}</span>
+            <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
+          </div>
+          <MetricChart points={family.points} compact />
           <div>
             <span>{t("low")}</span>
             <strong>{formatMetric(family.min)}</strong>
@@ -1278,7 +1388,7 @@ function CompareModal({ t, token, runs, onClose }: { t: T; token: string; runs: 
   );
 }
 
-function MetricChart({ points }: { points: MetricPoint[] }) {
+function MetricChart({ points, compact = false }: { points: MetricPoint[]; compact?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -1290,13 +1400,29 @@ function MetricChart({ points }: { points: MetricPoint[] }) {
     }
     chart.setOption({
       animationDuration: 180,
-      grid: { left: 40, right: 16, top: 18, bottom: 28 },
-      tooltip: { trigger: "axis" },
-      xAxis: { type: "value" },
-      yAxis: { type: "value", scale: true },
+      color: ["#4d6f91", "#b3522f", "#648a5a", "#9a6a24", "#6e6a9a", "#3f7e82"],
+      grid: compact ? { left: 46, right: 12, top: 12, bottom: 28 } : { left: 46, right: 16, top: 18, bottom: 30 },
+      tooltip: { trigger: "axis", valueFormatter: (value: unknown) => formatMetric(Number(value)) },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: "#7d858c", fontSize: 10 },
+        axisLine: { lineStyle: { color: "#d7dde2" } },
+        axisTick: { lineStyle: { color: "#d7dde2" } },
+        splitLine: { lineStyle: { color: "#edf1f4" } }
+      },
+      yAxis: {
+        type: "value",
+        scale: true,
+        axisLabel: { color: "#7d858c", fontSize: 10, formatter: (value: number) => formatMetric(value) },
+        axisLine: { show: true, lineStyle: { color: "#d7dde2" } },
+        axisTick: { show: true, lineStyle: { color: "#d7dde2" } },
+        splitLine: { lineStyle: { color: "#edf1f4" } }
+      },
       series: Array.from(grouped.entries()).slice(0, 12).map(([name, rows]) => ({
         name,
         type: "line",
+        smooth: false,
+        lineStyle: { width: compact ? 1.7 : 2 },
         showSymbol: false,
         data: rows.map((row, idx) => [row.step ?? row.epoch ?? idx, row.value])
       }))
@@ -1307,8 +1433,8 @@ function MetricChart({ points }: { points: MetricPoint[] }) {
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
-  }, [points]);
-  return <div className="chart" ref={ref} />;
+  }, [points, compact]);
+  return <div className={compact ? "chart chart-compact" : "chart"} ref={ref} />;
 }
 
 function ResourceModal({ t, token: _token, resource, onClose, onSave, onCreateLocal }: { t: T; token: string; resource: Partial<Resource>; onClose: () => void; onSave: (resource: Partial<Resource>) => Promise<void>; onCreateLocal: (name: string, rootDir: string) => Promise<void> }) {
@@ -1551,6 +1677,7 @@ function gpuMeters(gpu: GPUInfo, index: number) {
 }
 
 function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<string, Resource>; onOpen: () => void }) {
+  const kind = run.kind || "formal";
   return (
     <button className="run-card" onClick={onOpen} title={runTitle(run)}>
       <div className="card-head">
@@ -1558,9 +1685,9 @@ function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<st
         <Pill tone={statusTone(run.status)}>{run.status}</Pill>
       </div>
       <div className="run-card-meta">
-        <span>{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
-        <span>{run.kind || "formal"}</span>
-        <span>GPU {runGPU(run.gpu_index)}</span>
+        <span className="run-resource-chip">{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
+        <span className={`run-kind-chip ${runKindClass(kind)}`}>{kind}</span>
+        <span className="run-gpu-chip">GPU {runGPU(run.gpu_index)}</span>
       </div>
       <span className="mono muted">{fmtShortTime(run.created_at)}</span>
       <span className="run-command-line">{run.command}</span>
@@ -1572,56 +1699,141 @@ function RunListCard({
   run,
   resourceById,
   projectMeta,
+  manualCategories,
+  manualAssignment,
   markCount,
-  bookmarked,
+  markPreviews,
+  bookmark,
   selected,
   trash,
   onOpen,
+  onOpenMark,
   onSelect,
   onToggleBookmark,
+  onSaveBookmarkNote,
   onArchive,
   onRestore,
   onDelete,
+  onAssignManualProject,
+  onCreateAndAssignManualProject,
   t
 }: {
   run: Run;
   resourceById: Map<string, Resource>;
   projectMeta?: RunProjectMeta;
+  manualCategories: ManualProjectCategory[];
+  manualAssignment?: RunProjectAssignment;
   markCount: number;
-  bookmarked: boolean;
+  markPreviews: RunMark[];
+  bookmark?: RunBookmark;
   selected: boolean;
   trash: boolean;
   onOpen: () => void;
+  onOpenMark: (mark: RunMark) => void;
   onSelect: (checked: boolean) => void;
   onToggleBookmark: () => void;
+  onSaveBookmarkNote: (note: string) => void;
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
+  onAssignManualProject: (categoryID: string) => Promise<void>;
+  onCreateAndAssignManualProject: (name: string) => Promise<void>;
   t: T;
 }) {
   const compareEligible = isCompareEligible(run) && !trash;
+  const kind = run.kind || "formal";
+  const resourceName = resourceById.get(run.resource_id)?.name || run.resource_id;
+  const gpu = runGPU(run.gpu_index);
+  const createdAt = fmtShortTime(run.created_at);
+  const bookmarkNote = bookmark?.note?.trim() || "";
+  const assignmentControl = (
+    <ProjectAssignmentControl
+      t={t}
+      categories={manualCategories}
+      assignment={manualAssignment}
+      onAssign={onAssignManualProject}
+      onCreateAndAssign={onCreateAndAssignManualProject}
+      compact
+    />
+  );
+  const promptBookmarkNote = () => {
+    const next = window.prompt(t("bookmarkNotePrompt"), bookmarkNote);
+    if (next == null) return;
+    onSaveBookmarkNote(next.trim());
+  };
   return (
     <article className="run-list-card">
       <div className="run-list-card-head">
-        <button className="run-title-cell" onClick={onOpen}>
+        <button className="run-title-cell" type="button" onClick={onOpen}>
           <strong>{runTitle(run)}</strong>
           <span className="mono muted">{run.id}</span>
         </button>
         <Pill tone={statusTone(run.status)}>{run.status}</Pill>
       </div>
-      {projectMeta ? (
-        <div className="run-project-context">
-          <strong>{projectMeta.cardTitle}</strong>
-          {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
+      <div className="run-project-stack">
+        {projectMeta ? (
+          <div className={projectMeta.source === "manual" ? "run-project-context manual" : "run-project-context"}>
+            <span className="run-project-name">{projectMeta.projectName}</span>
+            <strong>{projectMeta.cardTitle}</strong>
+            {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
+          </div>
+        ) : null}
+        {assignmentControl}
+      </div>
+      <div className="run-list-facts">
+        <span className="run-fact run-fact-resource" title={resourceName} aria-label={`${t("resource")}: ${resourceName}`}>
+          <span className="run-fact-label">{t("resource")}</span>
+          <span className="run-fact-value">{resourceName}</span>
+        </span>
+        <span className={`run-fact run-fact-kind run-kind-chip ${runKindClass(kind)}`} title={kind} aria-label={`${t("kind")}: ${kind}`}>
+          <span className="run-fact-label">{t("kind")}</span>
+          <span className="run-fact-value">{kind}</span>
+        </span>
+        <span className="run-fact run-fact-gpu" aria-label={`${t("gpu")}: ${gpu}`}>
+          <span className="run-fact-label">{t("gpu")}</span>
+          <span className="run-fact-value">{gpu}</span>
+        </span>
+        <span className="run-fact run-fact-time" title={createdAt} aria-label={`${t("time")}: ${createdAt}`}>
+          <span className="run-fact-label">{t("time")}</span>
+          <span className="run-fact-value">{createdAt}</span>
+        </span>
+        {markCount ? (
+          <span className="run-fact run-fact-marks" aria-label={`${t("marks")}: ${markCount}`}>
+            <span className="run-fact-label">{t("marks")}</span>
+            <span className="run-fact-value">{markCount}</span>
+          </span>
+        ) : null}
+      </div>
+      {markPreviews.length ? (
+        <div className="run-mark-previews" aria-label={t("agentFindings")}>
+          {markPreviews.slice(0, 2).map((mark) => {
+            const statement = markStatement(mark);
+            return (
+              <button key={mark.id} className={`run-mark-preview run-mark-preview-${markTone(mark.kind)}`} type="button" onClick={() => onOpenMark(mark)}>
+                <span className="run-mark-preview-meta">
+                  <Pill tone={markTone(mark.kind)}>{mark.kind || "mark"}</Pill>
+                  <span>{mark.actor || "agent"}</span>
+                </span>
+                <span className="run-mark-preview-copy">
+                  <strong>{mark.title || statement || mark.kind || t("notes")}</strong>
+                  {statement && statement !== mark.title ? <span>{statement}</span> : null}
+                </span>
+              </button>
+            );
+          })}
         </div>
       ) : null}
-      <div className="run-list-facts">
-        <span>{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
-        <span>{run.kind || "formal"}</span>
-        <span>GPU {runGPU(run.gpu_index)}</span>
-        {markCount ? <span>{markCount} {t("marks")}</span> : null}
-        <span>{fmtShortTime(run.created_at)}</span>
-      </div>
+      {!trash ? (
+        <div className={bookmark ? "run-human-mark has-mark" : "run-human-mark"}>
+          <button className="run-human-mark-button" type="button" onClick={promptBookmarkNote}>
+            <Heart size={15} fill={bookmark ? "currentColor" : "none"} />
+            <span>
+              <strong>{bookmark ? t("humanMark") : t("addHumanMark")}</strong>
+              <em>{bookmarkNote || t("bookmarkNoteEmpty")}</em>
+            </span>
+          </button>
+        </div>
+      ) : null}
       <div className="run-list-actions">
         {compareEligible ? (
           <label className="run-compare-toggle">
@@ -1629,32 +1841,56 @@ function RunListCard({
             {t("compare")}
           </label>
         ) : null}
-        <button className="icon-action primary-action" title={t("open")} onClick={onOpen}>
+        <button className="icon-action primary-action" type="button" title={t("open")} onClick={onOpen}>
           <ExternalLink size={14} />
         </button>
         {!trash ? (
           <>
-            <button className="icon-action" title={t("favorites")} onClick={onToggleBookmark}>
-              <Heart size={15} fill={bookmarked ? "currentColor" : "none"} />
+            <button className="icon-action" type="button" title={t("favorites")} onClick={onToggleBookmark}>
+              <Heart size={15} fill={bookmark ? "currentColor" : "none"} />
             </button>
-            <button className="icon-action" title={t("archive")} disabled={isActiveRun(run)} onClick={onArchive}>
+            <button className="icon-action" type="button" title={t("archive")} disabled={isActiveRun(run)} onClick={onArchive}>
               <Archive size={15} />
             </button>
           </>
         ) : (
           <>
-            <button className="icon-action" title={t("restore")} onClick={onRestore}>
+            <button className="icon-action" type="button" title={t("restore")} onClick={onRestore}>
               <RefreshCcw size={15} />
             </button>
-            <button className="icon-action danger-inline" title={t("delete")} onClick={onDelete}>
+            <button className="icon-action danger-inline" type="button" title={t("delete")} onClick={onDelete}>
               <Trash2 size={15} />
             </button>
           </>
         )}
-        {markCount ? <span className="mark-badge">{markCount}</span> : null}
+        {markCount ? <span className="mark-badge">{markCount} {t("marks")}</span> : null}
       </div>
     </article>
   );
+}
+
+function runKindClass(kind?: string) {
+  const normalized = (kind || "formal").toLowerCase();
+  if (["formal", "ablation", "smoke", "pilot", "setup", "tool", "tools", "exec", "execs"].includes(normalized)) return `run-kind-${normalized}`;
+  return "run-kind-other";
+}
+
+function marksByRun(marks: RunMark[]) {
+  const out = new Map<string, RunMark[]>();
+  for (const mark of marks) {
+    const row = out.get(mark.run_id) || [];
+    row.push(mark);
+    out.set(mark.run_id, row);
+  }
+  for (const row of out.values()) {
+    row.sort((a, b) => markCreatedMs(b) - markCreatedMs(a));
+  }
+  return out;
+}
+
+function markCreatedMs(mark: RunMark) {
+  const value = mark.created_at ? Date.parse(mark.created_at) : 0;
+  return Number.isFinite(value) ? value : 0;
 }
 
 function markTone(kind?: string) {
@@ -1939,6 +2175,68 @@ function Segmented({ value, options, onChange }: { value: string; options: { val
   );
 }
 
+function ProjectAssignmentControl({
+  t,
+  categories,
+  assignment,
+  onAssign,
+  onCreateAndAssign,
+  compact = false
+}: {
+  t: T;
+  categories: ManualProjectCategory[];
+  assignment?: RunProjectAssignment;
+  onAssign: (categoryID: string) => Promise<void>;
+  onCreateAndAssign: (name: string) => Promise<void>;
+  compact?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const current = assignment?.category_id || "";
+  const options: [string, string][] = [
+    ["", t("unassignedRuns")],
+    ...categories.map((category) => [category.id, category.run_count ? `${category.name} (${category.run_count})` : category.name] as [string, string])
+  ];
+  if (current && !categories.some((category) => category.id === current)) {
+    options.splice(1, 0, [current, assignment?.category_name || current]);
+  }
+  const create = async () => {
+    const name = compact ? window.prompt(t("newManualProject"), draft)?.trim() : draft.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      await onCreateAndAssign(name);
+      setDraft("");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className={compact ? "project-assignment-control compact" : "project-assignment-control"}>
+      <Select
+        value={current}
+        onChange={(value: string) => {
+          setSaving(true);
+          void onAssign(value).finally(() => setSaving(false));
+        }}
+        options={options}
+      />
+      {compact ? (
+        <button className="icon-action" type="button" title={t("newManualProject")} disabled={saving} onClick={() => void create()}>
+          <Star size={14} />
+        </button>
+      ) : (
+        <div className="project-assignment-create">
+          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
+          <button type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
+            {t("newManualProject")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Pager({ t, total, page, setPage }: { t: T; total: number; page: number; setPage: (page: number) => void }) {
   const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
   return (
@@ -2031,8 +2329,33 @@ function projectDisplayName(project: ProjectView, t: T) {
   return project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
 }
 
-function buildRunProjectIndex(projects: ProjectView[], t: T) {
+function manualProjectFilterValue(id: string) {
+  return `manual:${id}`;
+}
+
+function projectCardFilterValue(id: string) {
+  return `card:${id}`;
+}
+
+function runProjectMatches(meta: RunProjectMeta | undefined, filterValue: string) {
+  if (!meta) return false;
+  if (filterValue.startsWith("manual:")) return meta.source === "manual" && meta.projectId === filterValue.slice("manual:".length);
+  if (filterValue.startsWith("card:")) return meta.source !== "manual" && meta.projectId === filterValue.slice("card:".length);
+  return meta.projectId === filterValue;
+}
+
+function buildRunProjectIndex(projects: ProjectView[], t: T, manualAssignments?: Map<string, RunProjectAssignment>, manualCategories?: Map<string, ManualProjectCategory>) {
   const out = new Map<string, RunProjectMeta>();
+  for (const assignment of manualAssignments?.values() || []) {
+    const category = manualCategories?.get(assignment.category_id);
+    const categoryName = assignment.category_name || category?.name || assignment.category_id;
+    out.set(assignment.run_id, {
+      projectId: assignment.category_id,
+      projectName: t("manualProject"),
+      cardTitle: categoryName,
+      source: "manual"
+    });
+  }
   for (const project of projects) {
     const projectName = projectDisplayName(project, t);
     for (const card of project.cards || []) {
@@ -2042,10 +2365,11 @@ function buildRunProjectIndex(projects: ProjectView[], t: T) {
         projectName,
         cardTitle: card.verdict || card.question || card.run?.name || card.run_id,
         cardSummary: card.key_metrics || card.supports_claim || card.weakens_claim || card.next_action || card.proposal_reason || "",
-        evidenceLevel: card.evidence_level
+        evidenceLevel: card.evidence_level,
+        source: "card"
       };
       const current = out.get(card.run_id);
-      if (!current || card.should_promote || card.important) out.set(card.run_id, meta);
+      if (!current || (current.source !== "manual" && (card.should_promote || card.important))) out.set(card.run_id, meta);
     }
   }
   return out;

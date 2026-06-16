@@ -128,6 +128,12 @@ describe("event parsing", () => {
       { axis: 3, value: 7 },
       { axis: 4, value: 6 }
     ]);
+    expect(loss?.points.map((point) => [point.series, point.value])).toEqual([
+      ["raw", 10],
+      ["raw", 8],
+      ["saits", 7],
+      ["saits", 6]
+    ]);
     expect(loss?.latest?.value).toBe(6);
     expect(loss?.series.map((point) => [point.series, point.value])).toEqual([
       ["raw", 8],

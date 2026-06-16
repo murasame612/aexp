@@ -185,6 +185,23 @@ export interface ProjectView {
   cards: ProjectRunCard[];
 }
 
+export interface ManualProjectCategory {
+  id: string;
+  name: string;
+  description?: string;
+  run_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RunProjectAssignment {
+  run_id: string;
+  category_id: string;
+  category_name?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export type EvidenceNodeType = "run" | "hypothesis" | "experiment" | "plan" | "conclusion" | "note";
 export type EvidenceEdgeType = "supports" | "does_not_prove" | "next_step" | "custom";
 

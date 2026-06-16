@@ -7,11 +7,13 @@ import type {
   Artifact,
   ExecEvent,
   LogsResponse,
+  ManualProjectCategory,
   Paginated,
   ProjectView,
   Resource,
   Run,
   RunBookmark,
+  RunProjectAssignment,
   RunMark,
   Snapshot
 } from "./types";
@@ -186,8 +188,8 @@ export function getBookmarks(token: string) {
   return apiFetch<RunBookmark[]>("/run-bookmarks?limit=500", { token });
 }
 
-export function saveBookmark(token: string, runId: string) {
-  return apiFetch<RunBookmark>(`/runs/${encodeURIComponent(runId)}/bookmark`, { method: "POST", token, body: JSON.stringify({}) });
+export function saveBookmark(token: string, runId: string, note = "") {
+  return apiFetch<RunBookmark>(`/runs/${encodeURIComponent(runId)}/bookmark`, { method: "POST", token, body: JSON.stringify({ note }) });
 }
 
 export function deleteBookmark(token: string, runId: string) {
@@ -196,6 +198,34 @@ export function deleteBookmark(token: string, runId: string) {
 
 export function getProjects(token: string) {
   return apiFetch<ProjectView[]>("/projects?limit=500", { token });
+}
+
+export function getManualProjectCategories(token: string) {
+  return apiFetch<ManualProjectCategory[]>("/manual-project-categories", { token });
+}
+
+export function createManualProjectCategory(token: string, payload: Pick<ManualProjectCategory, "name" | "description">) {
+  return apiFetch<ManualProjectCategory>("/manual-project-categories", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getManualRunProjectAssignments(token: string) {
+  return apiFetch<RunProjectAssignment[]>("/manual-run-project-assignments", { token });
+}
+
+export function assignRunManualProjectCategory(token: string, runId: string, categoryId: string) {
+  return apiFetch<RunProjectAssignment>(`/runs/${encodeURIComponent(runId)}/manual-project-category`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify({ category_id: categoryId })
+  });
+}
+
+export function unassignRunManualProjectCategory(token: string, runId: string) {
+  return apiFetch<void>(`/runs/${encodeURIComponent(runId)}/manual-project-category`, { method: "DELETE", token });
 }
 
 export function getEvidenceChains(token: string, query = "") {

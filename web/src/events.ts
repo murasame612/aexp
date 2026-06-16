@@ -16,6 +16,7 @@ export interface MetricFamilySummary {
   axisStart?: number;
   axisEnd?: number;
   trend: Array<{ axis: number; value: number }>;
+  points: MetricPoint[];
   series: MetricPoint[];
 }
 
@@ -243,6 +244,7 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
       axisStart: first ? metricAxis(first, firstIndex) : undefined,
       axisEnd: latest ? metricAxis(latest, latestIndex) : undefined,
       trend: sampleTrend(rows),
+      points: finiteRows,
       series: Array.from(latestBySeries.values()).slice(0, 5)
     };
   });
