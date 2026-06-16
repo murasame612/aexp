@@ -1142,7 +1142,7 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
   const params = parsed.params.slice(0, 24);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
-  const metricRows = chunkMetricFamilies(metricFamilies, metricGridColumns);
+  const metricRows = expandedMetric ? chunkMetricFamilies(metricFamilies, metricGridColumns) : [];
   const summary = [
     { label: t("events"), value: parsed.events.length },
     { label: t("progress"), value: parsed.progress.length },
@@ -1151,23 +1151,13 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
     { label: parsed.errors.length ? t("errors") : t("notes"), value: parsed.errors.length || parsed.notes.length }
   ];
 
-  useEffect(() => {
-    const node = metricGridRef.current;
-    if (!node) return;
-    const updateColumns = () => {
-      const width = node.getBoundingClientRect().width;
-      const columns = width >= 1120 ? 4 : width >= 820 ? 3 : width >= 560 ? 2 : 1;
-      setMetricGridColumns(columns);
-    };
-    updateColumns();
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateColumns) : null;
-    observer?.observe(node);
-    window.addEventListener("resize", updateColumns);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", updateColumns);
-    };
-  }, [metricFamilies.length]);
+  const toggleMetric = (key: string) => {
+    setExpandedMetric((current) => {
+      if (current === key) return null;
+      if (!current) setMetricGridColumns(measureMetricGridColumns(metricGridRef.current));
+      return key;
+    });
+  };
 
   return (
     <section className="event-dashboard">
@@ -1230,6 +1220,19 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
       </div>
       <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length} defaultOpen>
         <section ref={metricGridRef} className={`metric-card-grid ${expandedMetric ? "has-expanded" : ""}`} aria-label={t("metrics")}>
+          {metricFamilies.length && !expandedMetric ? metricFamilies.map((family) => {
+            const key = metricFamilyKey(family);
+            return (
+              <MetricFamilyCard
+                key={key}
+                family={family}
+                t={t}
+                compressed={false}
+                expanded={false}
+                onToggle={() => toggleMetric(key)}
+              />
+            );
+          }) : null}
           {metricRows.length ? metricRows.map((row, rowIndex) => {
             const activeRow = row.some((family) => metricFamilyKey(family) === expandedMetric);
             return (
@@ -1244,13 +1247,14 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
                       t={t}
                       compressed={!!expandedMetric && activeRow && !expanded}
                       expanded={expanded}
-                      onToggle={() => setExpandedMetric((current) => (current === key ? null : key))}
+                      onToggle={() => toggleMetric(key)}
                     />
                   );
                 })}
               </div>
             );
-          }) : <span className="muted">{t("noMetricFamiliesYet")}</span>}
+          }) : null}
+          {!metricFamilies.length ? <span className="muted">{t("noMetricFamiliesYet")}</span> : null}
         </section>
       </EventFoldout>
     </section>
@@ -1365,6 +1369,14 @@ type MetricFamily = ReturnType<typeof summarizeMetricFamilies>[number];
 
 function metricFamilyKey(family: MetricFamily) {
   return `${family.name}\u0000${family.scaleKey}`;
+}
+
+function measureMetricGridColumns(node: HTMLElement | null) {
+  if (!node) return 1;
+  const cards = Array.from(node.querySelectorAll<HTMLElement>(".metric-family-card"));
+  if (!cards.length) return 1;
+  const firstTop = cards[0].getBoundingClientRect().top;
+  return Math.max(1, cards.filter((card) => Math.abs(card.getBoundingClientRect().top - firstTop) < 4).length);
 }
 
 function chunkMetricFamilies(families: MetricFamily[], columns: number) {
