@@ -104,15 +104,6 @@ interface RunProjectMeta {
   evidenceLevel?: string;
 }
 
-interface RunDisplayGroup {
-  id: string;
-  name: string;
-  runs: Run[];
-  evidenceCount: number;
-  signal?: string;
-  evidenceLevels: string[];
-}
-
 const pageSize = 100;
 
 export function App() {
@@ -346,22 +337,37 @@ export function App() {
                 page={runPage}
                 setPage={setRunPage}
                 status={runStatus}
-                setStatus={setRunStatus}
+                setStatus={(value) => {
+                  setRunStatus(value);
+                  setRunPage(0);
+                }}
                 resource={runResource}
-                setResource={setRunResource}
+                setResource={(value) => {
+                  setRunResource(value);
+                  setRunPage(0);
+                }}
                 project={runProject}
-                setProject={setRunProject}
+                setProject={(value) => {
+                  setRunProject(value);
+                  setRunPage(0);
+                }}
                 projectOptions={runProjectOptions}
                 runProjectById={runProjectById}
                 kind={runKind}
-                setKind={setRunKind}
+                setKind={(value) => {
+                  setRunKind(value);
+                  setRunPage(0);
+                }}
                 trash={runTrash}
                 setTrash={(value) => {
                   setRunTrash(value);
                   setRunPage(0);
                 }}
                 query={runQuery}
-                setQuery={setRunQuery}
+                setQuery={(value) => {
+                  setRunQuery(value);
+                  setRunPage(0);
+                }}
                 bookmarks={bookmarkList}
                 marks={runMarks}
                 resourceById={resourceById}
@@ -648,8 +654,6 @@ function RunsTab(props: {
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
   const bookmarkIds = useMemo(() => new Set(props.bookmarks.map((b) => b.run_id)), [props.bookmarks]);
   const selectedCount = props.runs.filter((run) => selectedRunIds.has(run.id)).length;
-  const runGroups = useMemo(() => groupRunsByProject(props.runs, props.runProjectById, props.t), [props.runs, props.runProjectById, props.t]);
-  const showProjectGroups = !props.project && runGroups.length > 1;
   const renderRun = (run: Run) => (
     <RunListCard
       key={run.id}
@@ -691,29 +695,7 @@ function RunsTab(props: {
         </button>
       </div>
       {props.runs.length ? (
-        showProjectGroups ? (
-          <div className="run-group-list">
-            {runGroups.map((group) => (
-              <section className="run-project-group" key={group.id}>
-                <div className="run-project-group-head">
-                  <div>
-                    <span className="panel-kicker">{group.id === "__without_project_cards__" ? props.t("runsWithoutProjectCards") : props.t("projectCards")}</span>
-                    <strong>{group.name}</strong>
-                    {group.signal ? <p className="run-project-group-signal">{group.signal}</p> : null}
-                  </div>
-                  <div className="run-project-group-stats">
-                    <span>{group.runs.length} {props.t("shownRuns")}</span>
-                    {group.evidenceCount ? <span>{group.evidenceCount} {props.t("evidenceLinked")}</span> : null}
-                    {group.evidenceLevels.map((level) => <span className="run-project-level" key={level}>L{level}</span>)}
-                  </div>
-                </div>
-                <div className="run-list">{group.runs.map(renderRun)}</div>
-              </section>
-            ))}
-          </div>
-        ) : (
-          <div className="run-list">{props.runs.map(renderRun)}</div>
-        )
+        <div className="run-list">{props.runs.map(renderRun)}</div>
       ) : (
         <div className="run-list">
           <Empty t={props.t} />
@@ -748,7 +730,6 @@ function ProjectsTab({
         {projects.length ? (
           projects.map((project) => {
             const cards = project.cards || [];
-            const shownCards = cards.slice(0, 8);
             return (
               <section className="project-row" key={project.project_id}>
                 <ProjectSummary project={project} t={t} />
@@ -757,13 +738,7 @@ function ProjectsTab({
                     <span className="panel-kicker">{t("evidenceRecords")}</span>
                     <span className="muted">{cards.length}</span>
                   </div>
-                  {shownCards.map((card) => <ProjectEvidenceCard key={card.id} card={card} resourceById={resourceById} onOpenRun={onOpenRun} t={t} />)}
-                  {cards.length > shownCards.length ? (
-                    <div className="project-more">
-                      <strong>+{cards.length - shownCards.length}</strong>
-                      <span>{t("projectMore")}</span>
-                    </div>
-                  ) : null}
+                  {cards.map((card) => <ProjectEvidenceCard key={card.id} card={card} resourceById={resourceById} onOpenRun={onOpenRun} t={t} />)}
                   {!cards.length ? <div className="project-empty muted">{t("noPromotedCards")}</div> : null}
                 </div>
               </section>
@@ -2074,31 +2049,6 @@ function buildRunProjectIndex(projects: ProjectView[], t: T) {
     }
   }
   return out;
-}
-
-function groupRunsByProject(runs: Run[], runProjectById: Map<string, RunProjectMeta>, t: T) {
-  const groups = new Map<string, RunDisplayGroup>();
-  for (const run of runs) {
-    const meta = runProjectById.get(run.id);
-    const id = meta?.projectId || "__without_project_cards__";
-    const existing = groups.get(id);
-    if (existing) {
-      existing.runs.push(run);
-      if (meta) existing.evidenceCount += 1;
-      if (meta?.cardTitle && !existing.signal) existing.signal = meta.cardSummary ? `${meta.cardTitle} · ${meta.cardSummary}` : meta.cardTitle;
-      if (meta?.evidenceLevel && !existing.evidenceLevels.includes(meta.evidenceLevel)) existing.evidenceLevels.push(meta.evidenceLevel);
-      continue;
-    }
-    groups.set(id, {
-      id,
-      name: meta?.projectName || t("runsWithoutProjectCards"),
-      runs: [run],
-      evidenceCount: meta ? 1 : 0,
-      signal: meta?.cardTitle ? (meta.cardSummary ? `${meta.cardTitle} · ${meta.cardSummary}` : meta.cardTitle) : "",
-      evidenceLevels: meta?.evidenceLevel ? [meta.evidenceLevel] : []
-    });
-  }
-  return Array.from(groups.values());
 }
 
 function readDeepLinkRun() {
