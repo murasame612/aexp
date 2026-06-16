@@ -261,6 +261,11 @@ for trial_id, cfg in enumerate(search_space):
 
 ![metrics](doc/imgs/mertics_card.png)
 
+`aexp run snapshot`、`aexp run events`、MCP 事件工具和 Web UI 只要成功读到
+run 的 UI event 文件，就会把这份 JSONL 镜像到本机
+`~/.aexp/event_cache/<run_id>.jsonl`。如果远端资源后来离线，或者临时容器消失，
+事件读取会回退到本机缓存，同时把原始远端读取错误一起返回。
+
 多个 run 只要写了同名指标，就可以放到同一张图里比较：
 
 ![指标对比](doc/imgs/metic_compare.png)

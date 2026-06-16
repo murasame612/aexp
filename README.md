@@ -273,6 +273,13 @@ for trial_id, cfg in enumerate(search_space):
 Do not encode full model, dataset, or trial config in the metric name. The
 dashboard groups repeated progress updates by context and renders metrics with
 the same name as comparable series on one chart.
+
+When `aexp run snapshot`, `aexp run events`, the MCP event tools, or the web UI
+successfully read a run's UI event file, `aexp` mirrors that JSONL stream under
+`~/.aexp/event_cache/<run_id>.jsonl`. If a remote resource later goes offline or
+a temporary container disappears, event readers fall back to the local cache and
+report the original remote read error alongside the cached lines.
+
 Agents can read the same low-noise event stream without scraping raw logs:
 
 ```bash

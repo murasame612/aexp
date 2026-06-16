@@ -989,13 +989,14 @@ func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
 			"Keep metric/progress names short and stable, e.g. train/loss, val/loss, val/mse, epoch, trial.",
 			"Put model, dataset, split, stage, seed, fold, and hyperparameter-trial context in series/run/variant/split/stage/trial fields.",
 			"Do not embed a full experiment config or trial id in the metric name; the UI uses context fields to draw one chart with multiple series.",
+			"Snapshot/events readers cache successful UI event reads locally, so later offline resource or temporary-container loss can still show the last known event stream.",
 		},
 		"monitor": []string{
 			"aexp_get_run_snapshot(run_id=\"" + runID + "\")",
 			"aexp_tail_run_events(run_id=\"" + runID + "\", last=50)",
 			"aexp_get_run_metrics(run_id=\"" + runID + "\")",
 		},
-		"polling": "Prefer snapshot/events/metrics. Poll every 30-60s, then back off toward 120s when progress has not changed. Use raw logs only for failures or missing events.",
+		"polling": "Prefer snapshot/events/metrics. Poll every 30-60s, then back off toward 120s when progress has not changed. Successful event reads refresh the local event cache; use raw logs only for failures or missing events.",
 	}
 }
 

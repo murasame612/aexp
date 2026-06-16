@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ziwu/aexp/internal/api"
+	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/explore"
 	"github.com/ziwu/aexp/internal/mcp"
@@ -4962,10 +4963,14 @@ an explicit remote status check.`,
 			out := map[string]interface{}{
 				"run": shortRunStatus(db, cmd.Context(), run),
 				"events": map[string]interface{}{
-					"path":        run.UIEventsPath,
-					"total_lines": eventSnapshot.TotalLines,
-					"tail_count":  len(eventSnapshot.Events),
-					"error":       errorString(eventErr),
+					"path":         run.UIEventsPath,
+					"source":       eventSnapshot.Source,
+					"cache_path":   eventSnapshot.CachePath,
+					"total_lines":  eventSnapshot.TotalLines,
+					"tail_count":   len(eventSnapshot.Events),
+					"error":        errorString(eventErr),
+					"remote_error": eventSnapshot.RemoteError,
+					"cache_error":  eventSnapshot.CacheError,
 				},
 				"monitoring": map[string]interface{}{
 					"preferred_tool":                  "aexp_get_run_snapshot",
@@ -5030,11 +5035,15 @@ an explicit remote status check.`,
 }
 
 type RunEventSnapshot struct {
-	RunID      string                   `json:"run_id"`
-	Path       string                   `json:"path"`
-	TotalLines int                      `json:"total_lines"`
-	Lines      []executor.LogLine       `json:"lines,omitempty"`
-	Events     []map[string]interface{} `json:"events"`
+	RunID       string                   `json:"run_id"`
+	Path        string                   `json:"path"`
+	Source      string                   `json:"source,omitempty"`
+	CachePath   string                   `json:"cache_path,omitempty"`
+	CacheError  string                   `json:"cache_error,omitempty"`
+	RemoteError string                   `json:"remote_error,omitempty"`
+	TotalLines  int                      `json:"total_lines"`
+	Lines       []executor.LogLine       `json:"lines,omitempty"`
+	Events      []map[string]interface{} `json:"events"`
 }
 
 type RunEventSummary struct {
@@ -5079,23 +5088,72 @@ func getRunEventSnapshot(ctx context.Context, runID string, tailN int, includeLi
 	exec := executor.NewExecutor(sshPool, db)
 	lines, err := exec.GetLogFileSnapshot(ctx, run.ID, run.UIEventsPath, tailN)
 	if err != nil {
-		return RunEventSnapshot{RunID: run.ID, Path: run.UIEventsPath}, err
+		cacheLines, cachePath, cacheErr := eventcache.Read(run.ID, tailN)
+		if cacheErr == nil && len(cacheLines) > 0 {
+			lines = executorLinesFromEventCache(run.ID, run.UIEventsPath, cacheLines)
+			snapshot := eventSnapshotFromLines(run.ID, run.UIEventsPath, "cache", lines, includeLines)
+			snapshot.CachePath = cachePath
+			snapshot.RemoteError = err.Error()
+			return snapshot, nil
+		}
+		snapshot := RunEventSnapshot{
+			RunID:       run.ID,
+			Path:        run.UIEventsPath,
+			Source:      "remote",
+			RemoteError: err.Error(),
+		}
+		if cacheErr != nil {
+			snapshot.CacheError = cacheErr.Error()
+		}
+		return snapshot, err
 	}
+	snapshot := eventSnapshotFromLines(run.ID, run.UIEventsPath, "remote", lines, includeLines)
+	cachePath, cacheErr := eventcache.Write(run.ID, eventCacheLinesFromExecutor(lines))
+	snapshot.CachePath = cachePath
+	if cacheErr != nil {
+		snapshot.CacheError = cacheErr.Error()
+	}
+	return snapshot, nil
+}
+
+func eventSnapshotFromLines(runID, path, source string, lines []executor.LogLine, includeLines bool) RunEventSnapshot {
 	events := parseRunEventLines(lines)
 	total := 0
 	if len(lines) > 0 {
 		total = lines[len(lines)-1].LineNo
 	}
 	snapshot := RunEventSnapshot{
-		RunID:      run.ID,
-		Path:       run.UIEventsPath,
+		RunID:      runID,
+		Path:       path,
+		Source:     source,
 		TotalLines: total,
 		Events:     events,
 	}
 	if includeLines {
 		snapshot.Lines = lines
 	}
-	return snapshot, nil
+	return snapshot
+}
+
+func eventCacheLinesFromExecutor(lines []executor.LogLine) []eventcache.Line {
+	out := make([]eventcache.Line, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, eventcache.Line{LineNo: line.LineNo, Content: line.Content})
+	}
+	return out
+}
+
+func executorLinesFromEventCache(runID, source string, lines []eventcache.Line) []executor.LogLine {
+	out := make([]executor.LogLine, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, executor.LogLine{
+			RunID:   runID,
+			Source:  source,
+			LineNo:  line.LineNo,
+			Content: line.Content,
+		})
+	}
+	return out
 }
 
 func parseRunEventLines(lines []executor.LogLine) []map[string]interface{} {

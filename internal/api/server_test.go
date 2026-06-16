@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/store"
 )
 
@@ -32,6 +33,67 @@ func TestLogReadErrorKind(t *testing.T) {
 				t.Fatalf("logReadErrorKind(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetUIEventLogsFallsBackToLocalCacheWhenResourceOffline(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("AEXP_EVENT_CACHE_DIR", t.TempDir())
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_event_cache",
+		Name:    "offline-resource",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusUnreachable,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:           "run_event_cache",
+		ResourceID:   "rsrc_event_cache",
+		Name:         "cached-events",
+		Status:       store.RunStatusLost,
+		Command:      "python train.py",
+		UIEventsPath: ".aexp/events/run_event_cache.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eventcache.Write("run_event_cache", []eventcache.Line{
+		{LineNo: 1, Content: `{"type":"progress","name":"epoch","current":3,"total":10}`},
+	}); err != nil {
+		t.Fatalf("cache event: %v", err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run_event_cache/logs?path=.aexp/events/run_event_cache.jsonl&limit=50&tail=true", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Remote    bool            `json:"remote"`
+		ErrorKind string          `json:"error_kind"`
+		Lines     []store.LogLine `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if body.Remote {
+		t.Fatalf("remote = true, want false for cache fallback")
+	}
+	if body.ErrorKind != "resource_unreachable" {
+		t.Fatalf("error_kind = %q, want resource_unreachable", body.ErrorKind)
+	}
+	if len(body.Lines) != 1 || body.Lines[0].Content == "" {
+		t.Fatalf("cached lines missing: %#v", body.Lines)
 	}
 }
 

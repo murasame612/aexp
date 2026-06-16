@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 
+	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/monitor"
 	"github.com/ziwu/aexp/internal/store"
@@ -920,14 +921,35 @@ func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath s
 		}
 		return nil, 0, false, fmt.Errorf("resource not found")
 	}
+	isEventLog := isRunUIEventLog(run, logPath)
 	if resource.Status == store.ResourceStatusUnreachable {
-		return nil, 0, false, fmt.Errorf("resource %s is unreachable; cannot read remote log file %s", resource.Name, logPath)
+		err := fmt.Errorf("resource %s is unreachable; cannot read remote log file %s", resource.Name, logPath)
+		if isEventLog {
+			if cached, total, ok := cachedEventLogLines(runID, logPath, limit); ok {
+				return cached, total, false, err
+			}
+		}
+		return nil, 0, false, err
+	}
+	if s.executor == nil {
+		err := fmt.Errorf("remote executor unavailable; cannot read remote log file %s", logPath)
+		if isEventLog {
+			if cached, total, ok := cachedEventLogLines(runID, logPath, limit); ok {
+				return cached, total, false, err
+			}
+		}
+		return nil, 0, false, err
 	}
 
 	remoteCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	remoteLines, err := s.executor.GetLogFileSnapshot(remoteCtx, runID, logPath, limit)
 	if err != nil {
+		if isEventLog {
+			if cached, total, ok := cachedEventLogLines(runID, logPath, limit); ok {
+				return cached, total, false, err
+			}
+		}
 		return nil, 0, false, err
 	}
 	lines := make([]store.LogLine, 0, len(remoteLines))
@@ -939,11 +961,46 @@ func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath s
 			Content: line.Content,
 		})
 	}
+	if isEventLog {
+		if _, err := eventcache.Write(runID, eventCacheLinesFromExecutor(remoteLines)); err != nil && s.logger != nil {
+			s.logger.Warn("cache UI event log", "run_id", runID, "error", err)
+		}
+	}
 	total := 0
 	if len(lines) > 0 {
 		total = lines[len(lines)-1].LineNo
 	}
 	return lines, total, true, nil
+}
+
+func isRunUIEventLog(run *store.Run, logPath string) bool {
+	return run != nil && strings.TrimSpace(run.UIEventsPath) != "" && strings.TrimSpace(run.UIEventsPath) == strings.TrimSpace(logPath)
+}
+
+func cachedEventLogLines(runID, source string, limit int) ([]store.LogLine, int, bool) {
+	cacheLines, _, err := eventcache.Read(runID, limit)
+	if err != nil || len(cacheLines) == 0 {
+		return nil, 0, false
+	}
+	lines := make([]store.LogLine, 0, len(cacheLines))
+	for _, line := range cacheLines {
+		lines = append(lines, store.LogLine{
+			RunID:   runID,
+			Source:  source,
+			LineNo:  line.LineNo,
+			Content: line.Content,
+		})
+	}
+	total := lines[len(lines)-1].LineNo
+	return lines, total, true
+}
+
+func eventCacheLinesFromExecutor(lines []executor.LogLine) []eventcache.Line {
+	out := make([]eventcache.Line, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, eventcache.Line{LineNo: line.LineNo, Content: line.Content})
+	}
+	return out
 }
 
 func logReadErrorKind(err error) string {
