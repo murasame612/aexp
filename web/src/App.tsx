@@ -255,7 +255,9 @@ export function App() {
   }
 
   async function createAndAssignManualProject(runID: string, name: string) {
-    const category = await createManualProjectCategory(token, { name });
+    const normalized = name.trim().toLowerCase();
+    const existing = manualCategoryList.find((category) => category.name.trim().toLowerCase() === normalized);
+    const category = existing || (await createManualProjectCategory(token, { name }));
     await assignRunManualProjectCategory(token, runID, category.id);
     await refreshManualProjectData();
   }
@@ -548,6 +550,7 @@ export function App() {
           t={t}
           run={projectEditorRun}
           categories={manualCategoryList}
+          projects={projectList}
           assignment={manualAssignmentByRun.get(projectEditorRun.id)}
           onClose={() => setProjectEditorRun(null)}
           onAssign={async (categoryID) => {
@@ -1029,14 +1032,30 @@ function RunDetail({
                 <span className="panel-kicker">{t("runSummary")}</span>
                 <Pill tone={statusTone(run.data.status)}>{run.data.status}</Pill>
               </div>
-              <strong>{resourceById.get(run.data.resource_id)?.name || run.data.resource_id}</strong>
+              <strong>{runTitle(run.data)}</strong>
               <span className="mono muted">{run.data.id}</span>
             </div>
             <div className="detail-facts">
-              <span>{run.data.kind || "formal"}</span>
-              <span>GPU {runGPU(run.data.gpu_index)}</span>
-              <span>{fmtTime(run.data.created_at)}</span>
-              <span>{run.data.resolved_env || run.data.conda_env || "-"}</span>
+              <span>
+                <em>{t("resource")}</em>
+                <strong>{resourceById.get(run.data.resource_id)?.name || run.data.resource_id}</strong>
+              </span>
+              <span>
+                <em>{t("kind")}</em>
+                <strong>{run.data.kind || "formal"}</strong>
+              </span>
+              <span>
+                <em>{t("gpu")}</em>
+                <strong>{runGPU(run.data.gpu_index)}</strong>
+              </span>
+              <span>
+                <em>{t("time")}</em>
+                <strong>{fmtTime(run.data.created_at)}</strong>
+              </span>
+              <span>
+                <em>{t("condaEnv")}</em>
+                <strong>{run.data.resolved_env || run.data.conda_env || "-"}</strong>
+              </span>
             </div>
             <div className="detail-side-actions">
               <button onClick={() => void onStatusCheck(run.data!)}>
@@ -1577,6 +1596,7 @@ function ManualProjectModal({
   t,
   run,
   categories,
+  projects,
   assignment,
   onClose,
   onAssign,
@@ -1585,6 +1605,7 @@ function ManualProjectModal({
   t: T;
   run: Run;
   categories: ManualProjectCategory[];
+  projects: ProjectView[];
   assignment?: RunProjectAssignment;
   onClose: () => void;
   onAssign: (categoryID: string) => Promise<void>;
@@ -1593,6 +1614,10 @@ function ManualProjectModal({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const current = assignment?.category_id || "";
+  const categoryNames = new Set(categories.map((category) => category.name.trim().toLowerCase()));
+  const projectChoices = projects
+    .map((project) => ({ id: project.project_id, name: projectDisplayName(project, t), count: project.total_cards }))
+    .filter((project) => project.id !== "__unassigned__" && project.name.trim() && !categoryNames.has(project.name.trim().toLowerCase()));
   const choose = async (categoryID: string) => {
     setSaving(true);
     try {
@@ -1604,6 +1629,14 @@ function ManualProjectModal({
   const create = async () => {
     const name = draft.trim();
     if (!name) return;
+    setSaving(true);
+    try {
+      await onCreateAndAssign(name);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const createFromExistingProject = async (name: string) => {
     setSaving(true);
     try {
       await onCreateAndAssign(name);
@@ -1624,6 +1657,13 @@ function ManualProjectModal({
             <button key={category.id} className={current === category.id ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose(category.id)}>
               <span>{category.name}</span>
               {category.run_count ? <em>{category.run_count}</em> : null}
+            </button>
+          ))}
+          {projectChoices.length ? <span className="manual-project-choice-heading">{t("projects")}</span> : null}
+          {projectChoices.map((project) => (
+            <button key={project.id} className="manual-project-choice project-source" type="button" disabled={saving} onClick={() => void createFromExistingProject(project.name)}>
+              <span>{project.name}</span>
+              {project.count ? <em>{project.count}</em> : null}
             </button>
           ))}
         </div>
