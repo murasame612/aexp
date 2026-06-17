@@ -89,8 +89,8 @@ func TestGetUIEventLogsFallsBackToLocalCacheWhenResourceOffline(t *testing.T) {
 	if body.Remote {
 		t.Fatalf("remote = true, want false for cache fallback")
 	}
-	if body.ErrorKind != "resource_unreachable" {
-		t.Fatalf("error_kind = %q, want resource_unreachable", body.ErrorKind)
+	if body.ErrorKind != "" {
+		t.Fatalf("error_kind = %q, want empty when cache lines are usable", body.ErrorKind)
 	}
 	if len(body.Lines) != 1 || body.Lines[0].Content == "" {
 		t.Fatalf("cached lines missing: %#v", body.Lines)

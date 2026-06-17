@@ -41,6 +41,7 @@ checksums.txt
      sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
    "$tmp/bin/aexp" --version
    "$tmp/bin/aexp" mcp install --target codex --dry-run
+   "$tmp/bin/aexp" mcp install --target hermes --dry-run
    ```
 
 ## Installer Overrides

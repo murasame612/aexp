@@ -6,12 +6,13 @@ describe("event parsing", () => {
     const parsed = parseEventLines([
       JSON.stringify({ type: "metric", name: "val/loss", value: "0.123", step: 10, unit: "mse" }),
       JSON.stringify({ type: "progress", name: "epoch", current: 2, total: 5 }),
-      JSON.stringify({ type: "note", text: "halfway" })
+      JSON.stringify({ type: "note", text: "halfway" }),
+      JSON.stringify({ type: "warning", kind: "event_quality", message: "event semantics look suspicious" })
     ]);
     expect(parsed.metrics).toHaveLength(1);
     expect(parsed.metrics[0]).toMatchObject({ name: "val/loss", value: 0.123, step: 10, unit: "mse" });
     expect(parsed.progress[0].percent).toBe(40);
-    expect(parsed.notes).toHaveLength(1);
+    expect(parsed.notes).toHaveLength(2);
   });
 
   it("keeps malformed lines as parse errors", () => {
@@ -44,6 +45,31 @@ describe("event parsing", () => {
     expect(family?.series.map((point) => [point.series, point.value])).toEqual([
       ["trial:1", 0.9],
       ["trial:2", 0.6]
+    ]);
+  });
+
+  it("normalizes legacy metric names that embed long series context", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48/train_loss", value: 0.08, epoch: 1 }),
+      JSON.stringify({ type: "metric", name: "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48/val_observed_mse", value: 0.12, epoch: 1 })
+    ]);
+
+    expect(parsed.metrics.map((metric) => [metric.name, metric.series, metric.value])).toEqual([
+      ["train/loss", "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48", 0.08],
+      ["val/observed_mse", "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48", 0.12]
+    ]);
+  });
+
+  it("keeps split metric names as leaf metrics and moves experiment prefixes into series", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "test/observed_mae", value: 0.18, epoch: 1 }),
+      JSON.stringify({ type: "metric", name: "itransformer_downstream/dam_2h_saits_clean_mask_inputs/test/final", value: 0.17 }),
+      JSON.stringify({ type: "metric", name: "trial/saits_clean/test_observed_mae", value: 0.176 })
+    ]);
+    expect(parsed.metrics.map((metric) => [metric.name, metric.series, metric.value])).toEqual([
+      ["test/observed_mae", undefined, 0.18],
+      ["test/final", "itransformer_downstream/dam_2h_saits_clean_mask_inputs", 0.17],
+      ["test/observed_mae", "trial/saits_clean", 0.176]
     ]);
   });
 
@@ -128,6 +154,7 @@ describe("event parsing", () => {
     const loss = families.find((family) => family.name === "loss" && family.unit === "mse");
     expect(loss).toMatchObject({
       unit: "mse",
+      axisKind: "step",
       scaleKey: "mse",
       count: 4,
       min: 6,
@@ -135,13 +162,13 @@ describe("event parsing", () => {
       delta: -4,
       deltaPct: -40,
       axisStart: 1,
-      axisEnd: 4
+      axisEnd: 3
     });
     expect(loss?.trend).toEqual([
       { axis: 1, value: 10 },
       { axis: 2, value: 8 },
-      { axis: 3, value: 7 },
-      { axis: 4, value: 6 }
+      { axis: 2, value: 7 },
+      { axis: 3, value: 6 }
     ]);
     expect(loss?.points.map((point) => [point.series, point.value])).toEqual([
       ["raw", 10],
@@ -159,10 +186,27 @@ describe("event parsing", () => {
     expect(percentLoss).toMatchObject({ count: 2, min: 92, max: 95, delta: 3, scaleKey: "%" });
 
     const latency = families.find((family) => family.name === "latency_ms");
-    expect(latency).toMatchObject({ scaleKey: "value:1e3", scaleLabel: "value 1e3", min: 900, max: 1200, delta: -300, axisStart: 0, axisEnd: 1 });
+    expect(latency).toMatchObject({ axisKind: "sample", scaleKey: "value:1e3", scaleLabel: "value 1e3", min: 900, max: 1200, delta: -300, axisStart: undefined, axisEnd: undefined });
+    expect(latency?.trend).toEqual([]);
 
     const trainLoss = families.find((family) => family.name === "train/loss");
     expect(trainLoss).toMatchObject({ scaleKey: "value:1e-2", scaleLabel: "value 1e-2", min: 0.008, max: 0.012 });
+  });
+
+  it("does not draw a curve for repeated final metrics without a varying axis", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "trial/raw/test_observed_mae", value: 0.18, epoch: 1 }),
+      JSON.stringify({ type: "metric", name: "trial/raw/test_observed_mae", value: 0.17, epoch: 1 }),
+      JSON.stringify({ type: "metric", name: "trial/saits/test_observed_mae", value: 0.16, epoch: 1 })
+    ]);
+    const family = summarizeMetricFamilies(parsed.metrics).find((row) => row.name === "test/observed_mae");
+    expect(family).toMatchObject({
+      axisKind: "sample",
+      count: 3,
+      axisStart: undefined,
+      axisEnd: undefined
+    });
+    expect(family?.trend).toEqual([]);
   });
 
   it("caps metric trend samples for dense event streams", () => {

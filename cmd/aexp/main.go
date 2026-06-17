@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
@@ -49,6 +50,8 @@ It does not need to be installed on the remote host.
 
 Agent workflow:
   - Use "aexp run submit" for experiments.
+  - Instrument the training script before launch with "from aexp_events import metric, progress, param, note".
+    Training telemetry must be emitted while the run is executing; do not reconstruct loss/metric events by hand after the run.
   - Use "aexp run logs/status" to inspect results.
   - After interpreting a run, attach a lightweight Markdown finding with
     "aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption".
@@ -135,10 +138,10 @@ func mcpInstallCmd(uninstall bool) *cobra.Command {
 		ClaudeScope: "user",
 	}
 	use := "install"
-	short := "Install aexp MCP config into Codex/Claude Code"
+	short := "Install aexp MCP config into Codex/Claude Code/Hermes"
 	if uninstall {
 		use = "uninstall"
-		short = "Remove aexp MCP config from Codex/Claude Code"
+		short = "Remove aexp MCP config from Codex/Claude Code/Hermes"
 	}
 	cmd := &cobra.Command{
 		Use:     use,
@@ -176,7 +179,7 @@ func mcpInstallCmd(uninstall bool) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.Target, "target", opts.Target, "MCP client target: codex, claude, or all")
+	cmd.Flags().StringVar(&opts.Target, "target", opts.Target, "MCP client target: codex, claude, hermes, or all")
 	cmd.Flags().StringVar(&opts.Name, "name", opts.Name, "MCP server name")
 	cmd.Flags().StringVar(&opts.Binary, "binary", opts.Binary, "aexp binary path (install only; defaults to current executable)")
 	cmd.Flags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "AEXP_API_URL for the MCP server")
@@ -242,6 +245,16 @@ func buildMCPInstallPlan(opts mcpInstallOptions, uninstall bool) ([]mcpHostComma
 				mcpHostCommand{Target: "claude", Description: "removed old MCP server " + opts.Name, Program: "claude", Args: []string{"mcp", "remove", opts.Name}, Optional: true},
 				mcpHostCommand{Target: "claude", Description: "installed MCP server " + opts.Name, Program: "claude", Args: []string{"mcp", "add", "--scope", opts.ClaudeScope, opts.Name, "-e", "AEXP_API_URL=" + opts.APIURL, "--", opts.Binary, "mcp"}},
 			)
+		case "hermes":
+			optional := isImplicitAllMCPTarget(opts.Target)
+			if uninstall {
+				plan = append(plan, mcpHostCommand{Target: "hermes", Description: "removed MCP server " + opts.Name, Program: "hermes", Args: []string{"mcp", "remove", opts.Name}, Optional: true})
+				continue
+			}
+			plan = append(plan,
+				mcpHostCommand{Target: "hermes", Description: "removed old MCP server " + opts.Name, Program: "hermes", Args: []string{"mcp", "remove", opts.Name}, Optional: true},
+				mcpHostCommand{Target: "hermes", Description: "installed MCP server " + opts.Name, Program: "hermes", Args: []string{"mcp", "add", opts.Name, "--command", "/usr/bin/env", "--args", "AEXP_API_URL=" + opts.APIURL, opts.Binary, "mcp"}, Optional: optional},
+			)
 		}
 	}
 	return plan, nil
@@ -250,14 +263,21 @@ func buildMCPInstallPlan(opts mcpInstallOptions, uninstall bool) ([]mcpHostComma
 func parseMCPTargets(target string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(target)) {
 	case "", "all":
-		return []string{"codex", "claude"}, nil
+		return []string{"codex", "claude", "hermes"}, nil
 	case "codex":
 		return []string{"codex"}, nil
 	case "claude", "claude-code", "cc":
 		return []string{"claude"}, nil
+	case "hermes", "hermes-agent":
+		return []string{"hermes"}, nil
 	default:
-		return nil, fmt.Errorf("--target must be codex, claude, or all")
+		return nil, fmt.Errorf("--target must be codex, claude, hermes, or all")
 	}
+}
+
+func isImplicitAllMCPTarget(target string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(target))
+	return normalized == "" || normalized == "all"
 }
 
 func runMCPHostCommand(ctx context.Context, step mcpHostCommand) error {
@@ -384,12 +404,19 @@ func startServeDaemon(logPath string, host string, port int) error {
 		return fmt.Errorf("open daemon log: %w", err)
 	}
 	defer logFile.Close()
+	nullFile, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open daemon stdin: %w", err)
+	}
+	defer nullFile.Close()
 
 	childArgs := stripFlag(os.Args[1:], "--daemon")
 	cmd := osexec.Command(os.Args[0], childArgs...)
 	cmd.Env = append(os.Environ(), "AEXP_DAEMON_CHILD=1")
+	cmd.Stdin = nullFile
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
@@ -447,6 +474,7 @@ func agentCmd() *cobra.Command {
 	steps := []string{
 		"Check resources: aexp resource list --verbose",
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
+		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
 		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
 		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
@@ -460,6 +488,8 @@ func agentCmd() *cobra.Command {
 		"Use run submit for experiments; use exec only for inspection/ops.",
 		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
 		"Use --kind formal for paper evidence; never treat setup/smoke runs as real results.",
+		"Training metrics/progress/params belong in aexp_events.py calls inside the training/eval script. Do not emit manual post-hoc event metrics.",
+		"Use short metric names such as train/loss and val/loss; put trial, variant, split, stage, seed, and fold in fields. In sweeps, epoch is trial-local.",
 		"For active training, monitor structured UI events first with run snapshot/events/metrics; avoid tight status/log polling. Poll every 30-60s, then back off up to 120s when nothing changes.",
 		"Always provide --metric-paths and --log-paths for formal runs.",
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
@@ -1474,11 +1504,12 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 	fmt.Fprintf(&b, "  command: ls -lah runs results 2>/dev/null || true\n")
 	fmt.Fprintf(&b, "  kind: smoke\n")
 	fmt.Fprintf(&b, "  no_gpu: true\n\n")
-	fmt.Fprintf(&b, "# Optional structured UI events inside scripts:\n")
-	fmt.Fprintf(&b, "#   aexp event metric train/loss 0.23 --epoch 1\n")
-	fmt.Fprintf(&b, "#   aexp event progress epoch 1 --total 100 --series model/dataset --stage train\n")
-	fmt.Fprintf(&b, "#   aexp-event note \"finished validation\"\n")
-	fmt.Fprintf(&b, "# Python scripts can also import: from aexp_events import metric, progress, param, note\n")
+	fmt.Fprintf(&b, "# Structured UI events belong in training/eval code, not post-hoc CLI calls:\n")
+	fmt.Fprintf(&b, "#   from aexp_events import metric, progress, param, note\n")
+	fmt.Fprintf(&b, "#   param(\"model\", \"iTransformer\", trial=trial_id)\n")
+	fmt.Fprintf(&b, "#   progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, variant=\"sl192_pl96\", stage=\"train\")\n")
+	fmt.Fprintf(&b, "#   metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=\"sl192_pl96\")\n")
+	fmt.Fprintf(&b, "#   metric(\"val/observed_mse\", mse, epoch=epoch, trial=trial_id, variant=\"sl192_pl96\", split=\"val\")\n")
 	appendProjectTrainConfig(&b, cfg)
 	return b.String()
 }
@@ -2521,7 +2552,11 @@ func printRunEventGuidance(run *store.Run) {
 	}
 	fmt.Println("Structured events:")
 	fmt.Printf("  AEXP_UI_EVENTS=%s\n", run.UIEventsPath)
-	fmt.Println("  Python helper: from aexp_events import metric, progress, param, note")
+	fmt.Println("  Instrument training/eval code before launch:")
+	fmt.Println("    from aexp_events import metric, progress, param, note")
+	fmt.Println("    metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=variant)")
+	fmt.Println("    progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, variant=variant, stage=\"train\")")
+	fmt.Println("  Do not reconstruct loss/metric/progress events after the run; use run marks for interpretation notes.")
 	fmt.Printf("  Monitor: aexp run snapshot %s --json\n", run.ID)
 	fmt.Printf("  Events:  aexp run events %s --tail 50 --json\n", run.ID)
 	fmt.Printf("  Metrics: aexp run metrics %s --latest --json\n", run.ID)
@@ -3595,10 +3630,19 @@ func eventCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "event",
 		Aliases: []string{"events"},
-		Short:   "Emit structured UI events for an aexp run",
-		Long: `Emit structured JSONL events to $AEXP_UI_EVENTS.
+		Short:   "Advanced/debug: append structured UI events for an aexp run",
+		Hidden:  true,
+		Long: `Advanced/debug compatibility command for appending structured JSONL events to $AEXP_UI_EVENTS.
 
-This is intended for training/setup scripts running inside an aexp run:
+This is not the normal agent workflow. Do not use this command after a run to
+reconstruct training metrics, progress, or parameters. Loss curves, validation
+metrics, progress, params, trial ids, and variant context should be emitted by
+the training script while the experiment is executing via:
+
+  from aexp_events import metric, progress, param, note
+
+The command remains available for shell wrappers and legacy scripts running
+inside an aexp run:
 
   aexp event metric train/loss 0.23 --epoch 3
   aexp event progress epoch 30 --total 100 --series iTransformer/raw --stage train
@@ -3610,6 +3654,9 @@ Put model, dataset, split, stage, and hyperparameter-trial context in fields
 like --series, --variant, --split, --stage, and --trial. Do not encode a full
 experiment config in the metric name; the UI uses these context fields to draw
 multiple trials or variants in one chart.
+
+For sweeps, --epoch is the trial-local training epoch. Use --trial/--variant for
+global sweep identity instead of shifting the epoch axis.
 
 The same command also works as aexp-event when the binary is symlinked with
 that name.`,
@@ -3658,8 +3705,8 @@ func eventMetricCmd() *cobra.Command {
 		},
 	}
 	addEventFlags(cmd, &opts)
-	cmd.Flags().StringVar(&epoch, "epoch", "", "Epoch value")
-	cmd.Flags().StringVar(&step, "step", "", "Step value")
+	cmd.Flags().StringVar(&epoch, "epoch", "", "Trial-local epoch value")
+	cmd.Flags().StringVar(&step, "step", "", "Optional local/global step value")
 	return cmd
 }
 
@@ -3783,6 +3830,9 @@ func setEventStringField(event map[string]interface{}, key, value string) {
 }
 
 func emitStructuredEvent(opts eventOptions, event map[string]interface{}) error {
+	warnings := structuredEventWarnings(event)
+	normalizeStructuredEvent(event)
+	warnings = append(warnings, structuredEventWarnings(event)...)
 	if _, ok := event["time"]; !ok {
 		event["time"] = float64(time.Now().UnixNano()) / 1e9
 	}
@@ -3799,7 +3849,10 @@ func emitStructuredEvent(opts eventOptions, event map[string]interface{}) error 
 	}
 	if path == "-" {
 		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(event)
+		if err := enc.Encode(event); err != nil {
+			return err
+		}
+		return encodeStructuredEventWarnings(enc, event, warnings)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("create event directory: %w", err)
@@ -3810,7 +3863,132 @@ func emitStructuredEvent(opts eventOptions, event map[string]interface{}) error 
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
-	return enc.Encode(event)
+	if err := enc.Encode(event); err != nil {
+		return err
+	}
+	return encodeStructuredEventWarnings(enc, event, warnings)
+}
+
+func normalizeStructuredEvent(event map[string]interface{}) {
+	typ := strings.ToLower(asEventString(event["type"]))
+	if typ != "metric" && typ != "metrics" && typ != "eval" && typ != "scalar" && typ != "progress" {
+		return
+	}
+	if asEventString(event["series"]) != "" {
+		if typ == "metric" || typ == "metrics" || typ == "eval" || typ == "scalar" {
+			if name := asEventString(event["name"]); name != "" {
+				event["name"] = normalizeMetricLeaf(name)
+			}
+		}
+		return
+	}
+	name := asEventString(event["name"])
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 {
+		return
+	}
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) < 2 {
+		return
+	}
+	leaf := clean[len(clean)-1]
+	context := strings.Join(clean[:len(clean)-1], "/")
+	if len(context) <= 20 && !strings.Contains(leaf, "_") {
+		return
+	}
+	event["series"] = context
+	if typ == "metric" || typ == "metrics" || typ == "eval" || typ == "scalar" {
+		event["name"] = normalizeMetricLeaf(leaf)
+	} else {
+		event["name"] = leaf
+	}
+}
+
+func normalizeMetricLeaf(name string) string {
+	for _, split := range []string{"train", "val", "valid", "validation", "test", "eval"} {
+		prefix := split + "_"
+		if strings.HasPrefix(strings.ToLower(name), prefix) {
+			outSplit := split
+			if outSplit == "valid" || outSplit == "validation" {
+				outSplit = "val"
+			}
+			return outSplit + "/" + name[len(prefix):]
+		}
+	}
+	return name
+}
+
+func encodeStructuredEventWarnings(enc *json.Encoder, event map[string]interface{}, warnings []EventQualityIssue) error {
+	if strings.EqualFold(asEventString(event["type"]), "warning") {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, warning := range warnings {
+		key := warning.Kind + "\x00" + warning.Name + "\x00" + warning.Series
+		if warning.Kind == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		ev := map[string]interface{}{
+			"type":     "warning",
+			"kind":     "event_quality",
+			"issue":    warning.Kind,
+			"severity": warning.Severity,
+			"message":  warning.Message,
+			"name":     warning.Name,
+			"series":   warning.Series,
+			"time":     event["time"],
+		}
+		if warning.Detail != nil {
+			ev["detail"] = warning.Detail
+		}
+		if err := enc.Encode(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func structuredEventWarnings(event map[string]interface{}) []EventQualityIssue {
+	typ := strings.ToLower(asEventString(event["type"]))
+	if typ == "warning" || typ == "note" || typ == "log" || typ == "message" {
+		return nil
+	}
+	name := eventName(event)
+	if name == "" {
+		return nil
+	}
+	series := eventSeries(event)
+	out := make([]EventQualityIssue, 0, 2)
+	if isLongMetricIdentity(name, series) {
+		out = append(out, EventQualityIssue{
+			Severity: "warning",
+			Kind:     "long_metric_name",
+			Message:  "metric/progress identity looks too long; keep name semantic and put experiment identity in series/trial/variant fields",
+			Name:     name,
+			Series:   series,
+			Detail: map[string]interface{}{
+				"name_len":   len(name),
+				"series_len": len(series),
+			},
+		})
+	}
+	if isMetricEvent(typ, event) && looksLikeParamName(name) {
+		out = append(out, EventQualityIssue{
+			Severity: "warning",
+			Kind:     "constant_as_metric",
+			Message:  "this looks like a parameter/config value emitted as a metric; use param(name, value) instead",
+			Name:     name,
+			Series:   series,
+		})
+	}
+	return out
 }
 
 func parseEventNumber(value string) (float64, error) {
@@ -4323,6 +4501,7 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 	cmd.AddCommand(runLogsCmd())
 	cmd.AddCommand(runEventsCmd())
 	cmd.AddCommand(runMetricsCmd())
+	cmd.AddCommand(runEventQualityCmd())
 	cmd.AddCommand(runSnapshotCmd())
 	cmd.AddCommand(runCancelCmd())
 	cmd.AddCommand(runArchiveCmd())
@@ -4926,6 +5105,423 @@ func runMetricsCmd() *cobra.Command {
 	return cmd
 }
 
+func runEventQualityCmd() *cobra.Command {
+	var tailN, maxIssues int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:     "event-quality [run_id]",
+		Aliases: []string{"events-quality", "quality"},
+		Short:   "Scan structured UI events for semantic quality problems",
+		Long: `Scan a run's structured UI events for problems that make charts misleading:
+long metric names, constants emitted as metrics, missing trial context, epoch
+gaps, oversized series labels, and shifted loss axes across trials/variants.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapshot, err := getRunEventSnapshot(cmd.Context(), args[0], tailN, false)
+			if err != nil {
+				return err
+			}
+			report := analyzeEventQuality(snapshot)
+			limitEventQualityReport(&report, maxIssues)
+			if asJSON {
+				return printJSON(report)
+			}
+			fmt.Printf("Event quality for %s", report.RunID)
+			if report.Source != "" {
+				fmt.Printf(" (%s)", report.Source)
+			}
+			fmt.Println()
+			fmt.Printf("events: %d  lines: %d  issues: %d\n", report.TotalEvents, report.TotalLines, report.IssueCount)
+			if len(report.Issues) == 0 {
+				fmt.Println("No obvious event semantic problems found.")
+				return nil
+			}
+			for _, issue := range report.Issues {
+				line := ""
+				if issue.Line > 0 {
+					line = fmt.Sprintf(" line=%d", issue.Line)
+				}
+				name := ""
+				if issue.Name != "" {
+					name = fmt.Sprintf(" name=%q", truncStr(issue.Name, 72))
+				}
+				series := ""
+				if issue.Series != "" {
+					series = fmt.Sprintf(" series=%q", truncStr(issue.Series, 72))
+				}
+				fmt.Printf("[%s] %s%s%s%s: %s\n", issue.Severity, issue.Kind, line, name, series, issue.Message)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&tailN, "tail", 100000, "Number of latest event lines to inspect")
+	cmd.Flags().IntVar(&tailN, "last", 100000, "Alias for --tail")
+	cmd.Flags().IntVar(&maxIssues, "max-issues", 200, "Maximum issue details to include; summary keeps total counts")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output quality report as JSON")
+	return cmd
+}
+
+type EventQualityReport struct {
+	RunID       string              `json:"run_id"`
+	Path        string              `json:"path,omitempty"`
+	Source      string              `json:"source,omitempty"`
+	CachePath   string              `json:"cache_path,omitempty"`
+	TotalLines  int                 `json:"total_lines"`
+	TotalEvents int                 `json:"total_events"`
+	IssueCount  int                 `json:"issue_count"`
+	ShownIssues int                 `json:"shown_issues"`
+	Truncated   bool                `json:"truncated,omitempty"`
+	Summary     map[string]int      `json:"summary"`
+	Issues      []EventQualityIssue `json:"issues"`
+	Advice      []string            `json:"advice,omitempty"`
+}
+
+type EventQualityIssue struct {
+	Severity string                 `json:"severity"`
+	Kind     string                 `json:"kind"`
+	Message  string                 `json:"message"`
+	Line     int                    `json:"line,omitempty"`
+	Name     string                 `json:"name,omitempty"`
+	Series   string                 `json:"series,omitempty"`
+	Detail   map[string]interface{} `json:"detail,omitempty"`
+}
+
+type metricEventSample struct {
+	Name   string
+	Series string
+	Value  float64
+	Axis   float64
+	Line   int
+	Trial  string
+}
+
+func analyzeEventQuality(snapshot RunEventSnapshot) EventQualityReport {
+	report := EventQualityReport{
+		RunID:       snapshot.RunID,
+		Path:        snapshot.Path,
+		Source:      snapshot.Source,
+		CachePath:   snapshot.CachePath,
+		TotalLines:  snapshot.TotalLines,
+		TotalEvents: len(snapshot.Events),
+		Summary:     map[string]int{},
+	}
+	issues := make([]EventQualityIssue, 0)
+	addIssue := func(issue EventQualityIssue) {
+		if issue.Severity == "" {
+			issue.Severity = "warning"
+		}
+		issues = append(issues, issue)
+		report.Summary[issue.Kind]++
+	}
+
+	metricGroups := map[string][]metricEventSample{}
+	metricNames := map[string]map[string]bool{}
+	for _, ev := range snapshot.Events {
+		line := eventLine(ev)
+		rawName := eventName(ev)
+		if rawName == "" {
+			continue
+		}
+		for _, warning := range structuredEventWarnings(ev) {
+			warning.Line = line
+			addIssue(warning)
+		}
+		normalized := copyEventMap(ev)
+		normalizeStructuredEvent(normalized)
+		typ := strings.ToLower(asEventString(normalized["type"]))
+		name := eventName(normalized)
+		series := eventSeries(normalized)
+		if series != "" && len(series) > 96 {
+			addIssue(EventQualityIssue{
+				Severity: "warning",
+				Kind:     "series_too_long",
+				Message:  "series label is very long; put only trial/variant identity here and keep paths/config details in params",
+				Line:     line,
+				Name:     name,
+				Series:   series,
+				Detail: map[string]interface{}{
+					"series_len": len(series),
+				},
+			})
+		}
+		if isMetricEvent(typ, normalized) {
+			value, ok := eventFloat(normalized["value"])
+			if !ok {
+				continue
+			}
+			if metricNames[name] == nil {
+				metricNames[name] = map[string]bool{}
+			}
+			metricNames[name][series] = true
+			axis, axisOK := eventAxis(normalized)
+			if axisOK {
+				key := name + "\x00" + series
+				metricGroups[key] = append(metricGroups[key], metricEventSample{
+					Name:   name,
+					Series: series,
+					Value:  value,
+					Axis:   axis,
+					Line:   line,
+					Trial:  asEventString(normalized["trial"]),
+				})
+			}
+		}
+	}
+
+	for _, samples := range metricGroups {
+		if len(samples) < 3 {
+			continue
+		}
+		sort.Slice(samples, func(i, j int) bool {
+			if samples[i].Axis == samples[j].Axis {
+				return samples[i].Line < samples[j].Line
+			}
+			return samples[i].Axis < samples[j].Axis
+		})
+		if looksLikeParamName(samples[0].Name) && repeatedConstantMetric(samples) {
+			addIssue(EventQualityIssue{
+				Severity: "warning",
+				Kind:     "constant_as_metric",
+				Message:  "metric value is repeated and the name looks like a config parameter; emit it with param()",
+				Line:     samples[0].Line,
+				Name:     samples[0].Name,
+				Series:   samples[0].Series,
+				Detail: map[string]interface{}{
+					"points": len(samples),
+					"value":  samples[0].Value,
+				},
+			})
+		}
+		if gap, ok := largestAxisGap(samples); ok {
+			addIssue(EventQualityIssue{
+				Severity: "warning",
+				Kind:     "epoch_gap",
+				Message:  "metric axis has a large gap; check that epoch/step is local to this trial and not a global counter",
+				Line:     samples[0].Line,
+				Name:     samples[0].Name,
+				Series:   samples[0].Series,
+				Detail: map[string]interface{}{
+					"gap":   gap,
+					"first": samples[0].Axis,
+					"last":  samples[len(samples)-1].Axis,
+				},
+			})
+		}
+	}
+
+	for name, seriesSet := range metricNames {
+		if len(seriesSet) > 1 && likelySweepMetric(name) {
+			for series := range seriesSet {
+				if !strings.Contains(series, "trial:") && !strings.Contains(strings.ToLower(series), "trial") {
+					addIssue(EventQualityIssue{
+						Severity: "warning",
+						Kind:     "missing_trial",
+						Message:  "same sweep metric appears in multiple series without an explicit trial field; use trial=<id> so curves do not merge or shift",
+						Name:     name,
+						Series:   series,
+					})
+				}
+			}
+		}
+	}
+
+	lossByName := map[string]map[string][]metricEventSample{}
+	for _, samples := range metricGroups {
+		if len(samples) == 0 || !isLossMetric(samples[0].Name) {
+			continue
+		}
+		if lossByName[samples[0].Name] == nil {
+			lossByName[samples[0].Name] = map[string][]metricEventSample{}
+		}
+		lossByName[samples[0].Name][samples[0].Series] = samples
+	}
+	for name, bySeries := range lossByName {
+		if len(bySeries) < 2 {
+			continue
+		}
+		minFirst := 0.0
+		firstSet := false
+		for _, samples := range bySeries {
+			if len(samples) == 0 {
+				continue
+			}
+			if !firstSet || samples[0].Axis < minFirst {
+				minFirst = samples[0].Axis
+				firstSet = true
+			}
+		}
+		for series, samples := range bySeries {
+			if len(samples) == 0 || !firstSet {
+				continue
+			}
+			if samples[0].Axis > minFirst+5 {
+				addIssue(EventQualityIssue{
+					Severity: "warning",
+					Kind:     "loss_axis_offset",
+					Message:  "loss curve starts much later than sibling series; check for global epoch/trial counters causing chart offset",
+					Line:     samples[0].Line,
+					Name:     name,
+					Series:   series,
+					Detail: map[string]interface{}{
+						"series_first_axis": samples[0].Axis,
+						"earliest_axis":     minFirst,
+					},
+				})
+			}
+		}
+	}
+
+	report.Issues = dedupeEventQualityIssues(issues)
+	report.IssueCount = len(report.Issues)
+	report.ShownIssues = len(report.Issues)
+	if report.IssueCount > 0 {
+		report.Advice = []string{
+			"Use short metric names such as train/loss or val/observed_mse.",
+			"Put sweep identity in trial/variant/series fields; keep epoch local to each trial.",
+			"Emit config and constants with param(), not metric().",
+		}
+	}
+	return report
+}
+
+func limitEventQualityReport(report *EventQualityReport, maxIssues int) {
+	if maxIssues <= 0 || len(report.Issues) <= maxIssues {
+		report.ShownIssues = len(report.Issues)
+		return
+	}
+	report.Issues = report.Issues[:maxIssues]
+	report.ShownIssues = len(report.Issues)
+	report.Truncated = true
+}
+
+func dedupeEventQualityIssues(issues []EventQualityIssue) []EventQualityIssue {
+	seen := map[string]bool{}
+	out := make([]EventQualityIssue, 0, len(issues))
+	for _, issue := range issues {
+		key := fmt.Sprintf("%s\x00%s\x00%s\x00%d", issue.Kind, issue.Name, issue.Series, issue.Line)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, issue)
+	}
+	return out
+}
+
+func copyEventMap(ev map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(ev))
+	for k, v := range ev {
+		out[k] = v
+	}
+	return out
+}
+
+func eventLine(ev map[string]interface{}) int {
+	switch raw := ev["_line"].(type) {
+	case int:
+		return raw
+	case float64:
+		return int(raw)
+	default:
+		return 0
+	}
+}
+
+func eventAxis(ev map[string]interface{}) (float64, bool) {
+	if epoch, ok := eventFloat(ev["epoch"]); ok {
+		return epoch, true
+	}
+	if step, ok := eventFloat(ev["step"]); ok {
+		return step, true
+	}
+	return 0, false
+}
+
+func isLongMetricIdentity(name, series string) bool {
+	if len(name) > 64 || len(series) > 96 {
+		return true
+	}
+	if strings.Contains(name, "/") {
+		parts := strings.Split(name, "/")
+		if len(parts) > 2 && len(strings.Join(parts[:len(parts)-1], "/")) > 20 {
+			return true
+		}
+	}
+	if strings.Contains(name, "/home/") || strings.Contains(name, "/Users/") || strings.Count(name, "_") >= 6 {
+		return true
+	}
+	return false
+}
+
+func looksLikeParamName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	paramNames := map[string]bool{
+		"batch_size": true, "epochs": true, "seed": true, "gpu": true, "num_workers": true,
+		"model": true, "input_mode": true, "target_dim": true, "target_prefix": true,
+		"seq_len": true, "pred_len": true, "patience": true, "max_trials": true,
+		"trial_count": true, "selection_metric": true, "python": true,
+	}
+	if paramNames[lower] {
+		return true
+	}
+	for _, suffix := range []string{"_dir", "_path", "_csv", "_root", "_file"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func repeatedConstantMetric(samples []metricEventSample) bool {
+	if len(samples) < 3 {
+		return false
+	}
+	first := samples[0].Value
+	for _, sample := range samples[1:] {
+		if sample.Value != first {
+			return false
+		}
+	}
+	return true
+}
+
+func largestAxisGap(samples []metricEventSample) (float64, bool) {
+	if len(samples) < 4 {
+		return 0, false
+	}
+	gaps := make([]float64, 0, len(samples)-1)
+	for i := 1; i < len(samples); i++ {
+		gap := samples[i].Axis - samples[i-1].Axis
+		if gap > 0 {
+			gaps = append(gaps, gap)
+		}
+	}
+	if len(gaps) < 3 {
+		return 0, false
+	}
+	sorted := append([]float64(nil), gaps...)
+	sort.Float64s(sorted)
+	median := sorted[len(sorted)/2]
+	maxGap := sorted[len(sorted)-1]
+	if median <= 0 {
+		median = 1
+	}
+	return maxGap, maxGap >= 5 && maxGap >= median*4
+}
+
+func likelySweepMetric(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "loss") || strings.Contains(lower, "mse") || strings.Contains(lower, "mae") || strings.Contains(lower, "metric")
+}
+
+func isLossMetric(name string) bool {
+	return strings.Contains(strings.ToLower(name), "loss")
+}
+
 func runSnapshotCmd() *cobra.Command {
 	var tailN int
 	var asJSON, refresh bool
@@ -5192,7 +5788,7 @@ func deriveRunEventSummary(events []map[string]interface{}) RunEventSummary {
 			if name := eventName(ev); name != "" {
 				out.Params[name] = ev["value"]
 			}
-		case typ == "note" || typ == "log" || typ == "message":
+		case typ == "note" || typ == "log" || typ == "message" || typ == "warning":
 			out.Notes = append(out.Notes, ev)
 			if len(out.Notes) > 5 {
 				out.Notes = out.Notes[len(out.Notes)-5:]

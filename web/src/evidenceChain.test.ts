@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateMatches, edgeTypeLabel, groupRunCandidatesByProject, serializeEvidenceGraph, type EvidenceFlowEdge, type EvidenceFlowNode } from "./evidenceChain";
+import { candidateMatches, candidateToNode, edgeTypeLabel, groupRunCandidatesByProject, serializeEvidenceGraph, type EvidenceFlowEdge, type EvidenceFlowNode } from "./evidenceChain";
 
 describe("evidenceChain helpers", () => {
   it("matches run candidates by project card and run fields", () => {
@@ -37,6 +37,27 @@ describe("evidenceChain helpers", () => {
     expect(groups[0].candidates.map((candidate) => candidate.run_id)).toEqual(["run_one", "run_three"]);
   });
 
+  it("uses the run name as the Evidence Chain run node title", () => {
+    const node = candidateToNode(
+      {
+        id: "card:one",
+        kind: "project_card",
+        run_id: "run_abc",
+        project_card_id: "card_one",
+        verdict: "Agent note title should not replace the run name",
+        question: "Does the note explain this experiment?",
+        key_metrics: "loss=0.12",
+        run: { id: "run_abc", resource_id: "mu", name: "dx formal ablation", status: "succeeded", command: "python train.py" }
+      },
+      { x: 10, y: 20 }
+    );
+
+    expect(node.data.title).toBe("dx formal ablation");
+    expect(node.data.runTitle).toBe("dx formal ablation");
+    expect(node.data.body).toContain("Agent note title should not replace the run name");
+    expect(node.data.body).toContain("Does the note explain this experiment?");
+  });
+
   it("serializes React Flow nodes and edges to API graph payload", () => {
     const nodes: EvidenceFlowNode[] = [
       {
@@ -49,6 +70,7 @@ describe("evidenceChain helpers", () => {
           type: "run",
           title: "formal run",
           body: "question",
+          runTitle: "formal run",
           runId: "run_abc",
           projectCardId: "card_abc",
           status: "succeeded",
@@ -79,7 +101,7 @@ describe("evidenceChain helpers", () => {
       x: 10,
       y: 20
     });
-    expect(JSON.parse(payload.nodes[0].data_json || "{}")).toMatchObject({ status: "succeeded", keyMetrics: "mAP=0.6" });
+    expect(JSON.parse(payload.nodes[0].data_json || "{}")).toMatchObject({ runTitle: "formal run", status: "succeeded", keyMetrics: "mAP=0.6" });
     expect(payload.edges[0]).toMatchObject({
       id: "edge_1",
       source_node_id: "node_run",

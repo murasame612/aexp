@@ -19,6 +19,7 @@ describe("log helpers", () => {
     expect(logSnapshotError(logs({ error_kind: "remote_timeout", error: "deadline exceeded" }))).toBe("remote_timeout: deadline exceeded");
     expect(logSnapshotError(logs({ error: "log file not found" }))).toBe("log file not found");
     expect(logSnapshotError(logs({ lines: [{ content: "ok" }] }))).toBeNull();
+    expect(logSnapshotError(logs({ error_kind: "resource_unreachable", error: "offline", lines: [{ content: "cached" }] }))).toBeNull();
   });
 
   it("detects suspicious empty remote path snapshots for retry", () => {

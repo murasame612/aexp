@@ -7,6 +7,7 @@ export interface MetricFamilySummary {
   scaleKey: string;
   scaleLabel: string;
   count: number;
+  axisKind: "epoch" | "step" | "sample";
   first?: MetricPoint;
   latest?: MetricPoint;
   min: number;
@@ -41,6 +42,43 @@ function asNumber(value: unknown): number | undefined {
 
 function eventName(ev: UIEvent): string {
   return String(ev.name || ev.metric || ev.key || ev.label || "").trim();
+}
+
+function splitLegacyContextName(name: string, series?: string): { name: string; series?: string } {
+  if (series || !name.includes("/")) return { name, series };
+  const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return { name, series };
+  const leaf = parts[parts.length - 1];
+  const previous = parts[parts.length - 2];
+  const identity = metricLeafIdentity(previous, leaf);
+  const contextParts = identity.consumedPrevious ? parts.slice(0, -2) : parts.slice(0, -1);
+  if (!contextParts.length) return { name: identity.name, series };
+  const context = contextParts.join("/");
+  if (!looksLikeExperimentContext(context, parts)) return { name, series };
+  return { name: identity.name, series: context };
+}
+
+function normalizeMetricLeaf(name: string): string {
+  const match = name.match(/^(train|val|valid|validation|test|eval)_(.+)$/i);
+  if (!match) return name;
+  const split = match[1].toLowerCase();
+  return `${split === "valid" || split === "validation" ? "val" : split}/${match[2]}`;
+}
+
+function metricLeafIdentity(previous: string | undefined, leaf: string): { name: string; consumedPrevious: boolean } {
+  const normalized = normalizeMetricLeaf(leaf);
+  if (normalized !== leaf) return { name: normalized, consumedPrevious: false };
+  const prev = String(previous || "").trim().toLowerCase();
+  if (/^(train|val|valid|validation|test|eval)$/.test(prev)) {
+    return { name: `${prev === "valid" || prev === "validation" ? "val" : prev}/${leaf}`, consumedPrevious: true };
+  }
+  return { name: leaf, consumedPrevious: false };
+}
+
+function looksLikeExperimentContext(context: string, parts: string[]): boolean {
+  if (!context) return false;
+  if (context.length > 20 || parts.length > 2) return true;
+  return /[_\s-]/.test(context) && !/^(train|val|valid|validation|test|eval)$/i.test(context);
 }
 
 function eventContext(ev: UIEvent, key: string, prefix?: string): string | undefined {
@@ -119,13 +157,14 @@ export function parseEventLines(lines: string[]): ParsedEvents {
       continue;
     }
     if ((typ === "metric" || typ === "metrics" || typ === "eval" || typ === "scalar" || (typ === "" && ev.metric != null)) && name && value !== undefined) {
+      const identity = splitLegacyContextName(name, eventSeries(ev));
       metrics.push({
-        name,
+        name: identity.name,
         value,
         step: asNumber(ev.step),
         epoch: asNumber(ev.epoch),
         time: asNumber(ev.time),
-        series: eventSeries(ev),
+        series: identity.series,
         unit: eventUnit(ev)
       });
       continue;
@@ -145,7 +184,7 @@ export function parseEventLines(lines: string[]): ParsedEvents {
       });
       continue;
     }
-    if (typ === "note" || typ === "log" || typ === "message") notes.push(ev);
+    if (typ === "note" || typ === "log" || typ === "message" || typ === "warning") notes.push(ev);
   }
 
   return { events, metrics, latestMetrics: latestMetricByName(metrics), params: latestParams(params), progress, notes, errors };
@@ -196,19 +235,32 @@ export function summarizeProgress(points: ProgressPoint[]): ProgressSummary[] {
     });
 }
 
-function metricAxis(point: MetricPoint, fallback: number): number {
-  return point.step ?? point.epoch ?? point.time ?? fallback;
+function uniqueFiniteValues(values: Array<number | undefined>): number[] {
+  return Array.from(new Set(values.filter((value): value is number => value != null && Number.isFinite(value)))).sort((a, b) => a - b);
 }
 
-function sampleTrend(rows: MetricPoint[], limit = 24): Array<{ axis: number; value: number }> {
+function resolveMetricAxisKind(rows: MetricPoint[]): "epoch" | "step" | "sample" {
+  if (uniqueFiniteValues(rows.map((row) => row.epoch)).length > 1) return "epoch";
+  if (uniqueFiniteValues(rows.map((row) => row.step)).length > 1) return "step";
+  return "sample";
+}
+
+function metricAxis(point: MetricPoint, fallback: number, axisKind: "epoch" | "step" | "sample"): number {
+  if (axisKind === "epoch") return point.epoch ?? fallback;
+  if (axisKind === "step") return point.step ?? fallback;
+  return fallback;
+}
+
+function sampleTrend(rows: MetricPoint[], axisKind: "epoch" | "step" | "sample", limit = 24): Array<{ axis: number; value: number }> {
+  if (axisKind === "sample") return [];
   const finiteRows = rows.filter((row) => Number.isFinite(row.value));
   if (finiteRows.length <= limit) {
-    return finiteRows.map((row, index) => ({ axis: metricAxis(row, rows.indexOf(row)), value: row.value }));
+    return finiteRows.map((row, index) => ({ axis: metricAxis(row, rows.indexOf(row), axisKind), value: row.value }));
   }
   return Array.from({ length: limit }, (_, index) => {
     const sourceIndex = Math.round((index / (limit - 1)) * (finiteRows.length - 1));
     const row = finiteRows[sourceIndex];
-    return { axis: metricAxis(row, rows.indexOf(row)), value: row.value };
+    return { axis: metricAxis(row, rows.indexOf(row), axisKind), value: row.value };
   });
 }
 
@@ -241,6 +293,7 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
     const latest = finiteRows[finiteRows.length - 1];
     const values = finiteRows.map((row) => row.value);
     const scale = metricScale(unit, values);
+    const axisKind = resolveMetricAxisKind(finiteRows);
     const firstIndex = first ? rows.indexOf(first) : 0;
     const latestIndex = latest ? rows.indexOf(latest) : rows.length - 1;
     const delta = first && latest ? latest.value - first.value : NaN;
@@ -251,15 +304,16 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
       scaleKey: scale.key,
       scaleLabel: scale.label,
       count: rows.length,
+      axisKind,
       first,
       latest,
       min: values.length ? Math.min(...values) : NaN,
       max: values.length ? Math.max(...values) : NaN,
       delta,
       deltaPct,
-      axisStart: first ? metricAxis(first, firstIndex) : undefined,
-      axisEnd: latest ? metricAxis(latest, latestIndex) : undefined,
-      trend: sampleTrend(rows),
+      axisStart: first && axisKind !== "sample" ? metricAxis(first, firstIndex, axisKind) : undefined,
+      axisEnd: latest && axisKind !== "sample" ? metricAxis(latest, latestIndex, axisKind) : undefined,
+      trend: sampleTrend(rows, axisKind),
       points: finiteRows,
       series: Array.from(latestBySeries.values()).slice(0, 5)
     };

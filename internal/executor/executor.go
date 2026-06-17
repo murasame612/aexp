@@ -1345,10 +1345,29 @@ globals().update(runpy.run_path(_helper))
 }
 
 func AexpEventsPythonHelper() string {
-	return `import json
+	return `"""aexp structured event helper.
+
+Use this helper inside training/evaluation code while an aexp run is executing.
+Do not reconstruct loss, metric, progress, or parameter events after a run; use
+run marks for post-hoc interpretation notes instead.
+
+Contract:
+- Metric/progress names are short semantic names: "train/loss", "val/loss",
+  "val/observed_mse", "epoch", "trial".
+- Put experiment identity in fields such as trial, variant, series, split, stage,
+  seed, and fold.
+- For sweeps, epoch is local to that trial. Do not use a global trial counter as
+  epoch, or loss curves from later trials will appear shifted halfway across the
+  chart.
+"""
+
+import json
 import os
 import time
 from pathlib import Path
+
+_WARNED_EVENT_QUALITY = set()
+_FIRST_EPOCH_BY_CURVE = {}
 
 
 def _event_path():
@@ -1365,6 +1384,9 @@ def emit(event=None, **fields):
     elif event is not None:
         data["type"] = str(event)
     data.update(fields)
+    warnings = _event_warnings(data)
+    _normalize_event(data)
+    warnings.extend(_event_warnings(data, include_axis=True))
     data.setdefault("time", time.time())
     path = _event_path()
     if path is None:
@@ -1372,23 +1394,176 @@ def emit(event=None, **fields):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
+        for warning in _dedupe_warnings(warnings):
+            warning.setdefault("time", data.get("time", time.time()))
+            f.write(json.dumps(warning, ensure_ascii=False, separators=(",", ":")) + "\n")
     return data
 
 
 def metric(name, value, **fields):
+    """Record a numeric metric during training/evaluation."""
     return emit(type="metric", name=name, value=value, **fields)
 
 
 def progress(name, current=None, total=None, **fields):
+    """Record live progress such as local epoch, trial, fold, or batch."""
     return emit(type="progress", name=name, current=current, total=total, **fields)
 
 
 def param(name, value, **fields):
+    """Record a parameter/config value for the current run or trial."""
     return emit(type="param", name=name, value=value, **fields)
 
 
 def note(text, **fields):
+    """Record a short runtime note. Use run marks for post-hoc analysis."""
     return emit(type="note", text=text, **fields)
+
+
+def _normalize_event(data):
+    typ = str(data.get("type", "")).lower()
+    if typ not in {"metric", "metrics", "eval", "scalar", "progress"}:
+        return data
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return data
+    if data.get("series"):
+        if typ != "progress":
+            data["name"] = _normalize_metric_leaf(name)
+        return data
+    parts = [part.strip() for part in name.split("/") if part.strip()]
+    if len(parts) < 2:
+        return data
+    leaf = parts[-1]
+    context = "/".join(parts[:-1])
+    if len(context) <= 20 and "_" not in leaf:
+        return data
+    data["series"] = context
+    data["name"] = leaf if typ == "progress" else _normalize_metric_leaf(leaf)
+    return data
+
+
+def _normalize_metric_leaf(name):
+    lower = str(name).lower()
+    for split in ("train", "val", "valid", "validation", "test", "eval"):
+        prefix = split + "_"
+        if lower.startswith(prefix):
+            out_split = "val" if split in {"valid", "validation"} else split
+            return out_split + "/" + name[len(prefix):]
+    return name
+
+
+def _event_warnings(data, include_axis=False):
+    typ = str(data.get("type", "")).lower()
+    if typ in {"warning", "note", "log", "message"}:
+        return []
+    name = str(data.get("name") or data.get("metric") or data.get("key") or data.get("label") or "").strip()
+    if not name:
+        return []
+    series = _event_series(data)
+    warnings = []
+    if _long_metric_identity(name, series):
+        warnings.append(_event_warning(
+            "long_metric_name",
+            "metric/progress identity looks too long; keep name semantic and put experiment identity in series/trial/variant fields",
+            name,
+            series,
+            {"name_len": len(name), "series_len": len(series)},
+        ))
+    if typ in {"metric", "metrics", "eval", "scalar"} and _looks_like_param_name(name):
+        warnings.append(_event_warning(
+            "constant_as_metric",
+            "this looks like a parameter/config value emitted as a metric; use param(name, value) instead",
+            name,
+            series,
+        ))
+    if include_axis:
+        warning = _epoch_offset_warning(data, name, series, typ)
+        if warning:
+            warnings.append(warning)
+    return warnings
+
+
+def _event_warning(issue, message, name, series="", detail=None):
+    return {
+        "type": "warning",
+        "kind": "event_quality",
+        "issue": issue,
+        "severity": "warning",
+        "message": message,
+        "name": name,
+        "series": series,
+        **({"detail": detail} if detail else {}),
+    }
+
+
+def _dedupe_warnings(warnings):
+    out = []
+    for warning in warnings:
+        key = (warning.get("issue"), warning.get("name"), warning.get("series"))
+        if key in _WARNED_EVENT_QUALITY:
+            continue
+        _WARNED_EVENT_QUALITY.add(key)
+        out.append(warning)
+    return out
+
+
+def _event_series(data):
+    parts = []
+    for key in ("series", "run", "variant", "trial", "seed", "fold", "split", "stage"):
+        value = str(data.get(key, "")).strip()
+        if not value:
+            continue
+        if key in {"trial", "seed", "fold"}:
+            value = key + ":" + value
+        if value not in parts:
+            parts.append(value)
+    return "/".join(parts)
+
+
+def _long_metric_identity(name, series=""):
+    if len(name) > 64 or len(series) > 96:
+        return True
+    if "/" in name:
+        parts = [part for part in name.split("/") if part]
+        if len(parts) > 2 and len("/".join(parts[:-1])) > 20:
+            return True
+    return "/home/" in name or "/Users/" in name or name.count("_") >= 6
+
+
+def _looks_like_param_name(name):
+    lower = str(name).strip().lower()
+    if lower in {
+        "batch_size", "epochs", "seed", "gpu", "num_workers", "model",
+        "input_mode", "target_dim", "target_prefix", "seq_len", "pred_len",
+        "patience", "max_trials", "trial_count", "selection_metric", "python",
+    }:
+        return True
+    return lower.endswith(("_dir", "_path", "_csv", "_root", "_file"))
+
+
+def _epoch_offset_warning(data, name, series, typ):
+    if typ not in {"metric", "metrics", "eval", "scalar"} or "loss" not in str(name).lower():
+        return None
+    if data.get("trial"):
+        return None
+    try:
+        epoch = float(data.get("epoch"))
+    except (TypeError, ValueError):
+        return None
+    key = (str(name), str(series))
+    if key in _FIRST_EPOCH_BY_CURVE:
+        return None
+    _FIRST_EPOCH_BY_CURVE[key] = epoch
+    if epoch <= 5:
+        return None
+    return _event_warning(
+        "epoch_offset_suspect",
+        "first observed loss epoch is already high and no trial field is set; check for a global trial/epoch counter",
+        name,
+        series,
+        {"first_epoch": epoch},
+    )
 `
 }
 

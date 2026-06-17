@@ -448,35 +448,51 @@ printf 'ok\n'
 	}
 }
 
-func TestEventMetricToolInvokesAexpBinary(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args.txt")
-	stub := filepath.Join(dir, "aexp-stub")
-	script := `#!/bin/sh
-for arg in "$@"; do
-  printf '%s\n' "$arg"
-done > "$AEXP_STUB_ARGS"
-printf 'ok\n'
-`
-	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	t.Setenv("AEXP_STUB_ARGS", argsFile)
-
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_event_metric","arguments":{"name":"train/loss","value":0.25,"path":"/tmp/events.jsonl","epoch":3,"trial":"7","variant":"raw","field":["split=train"]}}}` + "\n"
+func TestManualEventToolsAreNotAgentFacing(t *testing.T) {
 	var out bytes.Buffer
-	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"
+	if err := NewServer("/bin/false").Serve(t.Context(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
 	}
 
-	rawArgs, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("read args: %v", err)
+	var listResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		} `json:"result"`
 	}
-	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
-	wantArgs := []string{"event", "metric", "train/loss", "0.25", "--path", "/tmp/events.jsonl", "--variant", "raw", "--trial", "7", "--field", "split=train", "--epoch", "3"}
-	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
-		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &listResp); err != nil {
+		t.Fatalf("decode tools/list response: %v", err)
+	}
+	for _, name := range []string{"aexp_event_metric", "aexp_event_progress", "aexp_event_param", "aexp_event_note"} {
+		if toolListed(listResp.Result.Tools, name) {
+			t.Fatalf("%s should not be exposed to agents; training telemetry belongs in aexp_events.py instrumentation", name)
+		}
+	}
+}
+
+func TestCLIRejectsManualEventEmission(t *testing.T) {
+	var out bytes.Buffer
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_cli","arguments":{"args":["event","metric","train/loss","0.25"]}}}` + "\n"
+	if err := NewServer("/bin/false").Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+		t.Fatalf("decode tool response: %v\n%s", err, out.String())
+	}
+	if !resp.Result.IsError || len(resp.Result.Content) == 0 || !strings.Contains(resp.Result.Content[0].Text, "instrument the training/eval script") {
+		t.Fatalf("manual event CLI should be rejected with instrumentation guidance: %s", out.String())
 	}
 }
 
@@ -539,6 +555,38 @@ printf '{"ok":true}\n'
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
 	wantArgs := []string{"run", "metrics", "run_abc123", "--json", "--latest", "--tail", "123"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
+func TestCheckRunEventsToolInvokesEventQualityCLI(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"ok":true}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_check_run_events","arguments":{"run_id":"run_abc123","last":50}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{"run", "event-quality", "run_abc123", "--json", "--tail", "50", "--max-issues", "200"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}

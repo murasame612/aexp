@@ -9,6 +9,7 @@ export interface EvidenceNodeData extends Record<string, unknown> {
   type: EvidenceNodeType;
   title: string;
   body: string;
+  runTitle?: string;
   runId?: string;
   projectCardId?: string;
   status?: string;
@@ -126,18 +127,25 @@ export function groupRunCandidatesByProject(candidates: EvidenceChainRunCandidat
   });
 }
 
+export function candidateRunNodeFields(candidate: EvidenceChainRunCandidate) {
+  const runDisplayTitle = candidate.run ? runTitle(candidate.run) : candidate.run_id;
+  const body = [candidate.verdict, candidate.question, candidate.next_action, candidate.key_metrics].filter((part) => text(part).trim()).join("\n\n");
+  return { runDisplayTitle, body };
+}
+
 export function candidateToNode(candidate: EvidenceChainRunCandidate, position: { x: number; y: number }): EvidenceFlowNode {
-  const title = candidate.verdict || candidate.question || (candidate.run ? runTitle(candidate.run) : candidate.run_id);
+  const { runDisplayTitle, body } = candidateRunNodeFields(candidate);
   return {
     id: `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     type: "evidence",
     position,
     width: 286,
-    height: 184,
+    height: 220,
     data: {
       type: "run",
-      title,
-      body: candidate.question || candidate.next_action || "",
+      title: runDisplayTitle,
+      body,
+      runTitle: runDisplayTitle,
       runId: candidate.run_id,
       projectCardId: candidate.project_card_id || "",
       status: candidate.run?.status || "",
@@ -220,9 +228,10 @@ export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: Evidenc
       project_card_id: node.data.projectCardId || "",
       x: node.position.x,
       y: node.position.y,
-      width: typeof node.width === "number" ? node.width : 286,
-      height: typeof node.height === "number" ? node.height : 184,
+      width: typeof node.measured?.width === "number" ? node.measured.width : typeof node.width === "number" ? node.width : 286,
+      height: typeof node.measured?.height === "number" ? node.measured.height : typeof node.height === "number" ? node.height : 184,
       data_json: JSON.stringify({
+        runTitle: node.data.runTitle || "",
         status: node.data.status || "",
         runKind: node.data.runKind || "",
         keyMetrics: node.data.keyMetrics || "",

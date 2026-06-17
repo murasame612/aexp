@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -45,6 +46,25 @@ func TestEventProgressCommandUsesEnvPath(t *testing.T) {
 	}
 }
 
+func TestEventCommandNormalizesLegacyContextNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	if err := runEventCommandForTest("metric", "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48/train_loss", "0.23", "--path", path); err != nil {
+		t.Fatal(err)
+	}
+	event := readSingleEvent(t, path)
+	if event["name"] != "train/loss" || event["series"] != "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48" {
+		t.Fatalf("legacy metric name was not normalized: %#v", event)
+	}
+	events := readEvents(t, path)
+	if len(events) != 2 {
+		t.Fatalf("expected metric plus quality warning, got %#v", events)
+	}
+	warning := events[1]
+	if warning["type"] != "warning" || warning["kind"] != "event_quality" || warning["issue"] != "long_metric_name" {
+		t.Fatalf("expected event quality warning, got %#v", warning)
+	}
+}
+
 func TestEmitStructuredEventStrictRequiresPath(t *testing.T) {
 	t.Setenv("AEXP_UI_EVENTS", "")
 	err := emitStructuredEvent(eventOptions{strict: true}, map[string]interface{}{"type": "note", "text": "hello"})
@@ -63,13 +83,32 @@ func runEventCommandForTest(args ...string) error {
 
 func readSingleEvent(t *testing.T, path string) map[string]interface{} {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	events := readEvents(t, path)
+	if len(events) == 0 {
+		t.Fatalf("no events in %s", path)
+	}
+	return events[0]
+}
+
+func readEvents(t *testing.T, path string) []map[string]interface{} {
+	t.Helper()
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var event map[string]interface{}
-	if err := json.Unmarshal(data, &event); err != nil {
-		t.Fatalf("decode event: %v\n%s", err, data)
+	defer f.Close()
+	var out []map[string]interface{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event map[string]interface{}
+		line := scanner.Bytes()
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode event: %v\n%s", err, line)
+		}
+		out = append(out, event)
 	}
-	return event
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

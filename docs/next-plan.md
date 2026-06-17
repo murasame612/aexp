@@ -110,25 +110,18 @@ aexp exec 默认尝试本地 API
 
 ### 4. 事件输出 helper
 
-现在 `$AEXP_UI_EVENTS` 虽然可用，但 agent 还要记 JSONL 格式。应该提供固定 helper。
-
-建议命令：
-
-```bash
-aexp-event metric train/loss 0.23 --epoch 3
-aexp-event metric val/mAP50 0.61 --epoch 10
-aexp-event progress train 30 --total 100
-aexp-event note "finished validation"
-```
+现在 `$AEXP_UI_EVENTS` 虽然可用，但 agent 不应该事后手写训练事实。应该提供固定 helper，
+并要求训练/评估代码在运行时自动产出 telemetry。
 
 Python helper：
 
 ```python
 from aexp_events import metric, progress, param, note
 
-param("model", "yolov8s")
-metric("train/loss", loss, epoch=epoch)
-progress("train", epoch, total=epochs)
+param("model", "yolov8s", trial=trial_id, variant=variant)
+metric("train/loss", loss, epoch=local_epoch, trial=trial_id, variant=variant, stage="train")
+metric("val/mAP50", map50, epoch=local_epoch, trial=trial_id, variant=variant, split="val", stage="eval")
+progress("epoch", local_epoch, total=epochs, trial=trial_id, variant=variant, stage="train")
 ```
 
 验收标准：
@@ -293,7 +286,7 @@ exec 只做短 SSH 检查，run 负责长任务事实记录，project 负责项�
 - GPU lock 前 active run 刷新：已实现。
 - finished run cancel 拒绝：已实现，并有 executor 单测覆盖。
 - `aexp exec` 本地 API fast path：已实现，默认尝试 `aexp serve` 复用 SSH pool，不可达时 fallback 直连，支持 `--direct`。
-- `aexp event` / `aexp-event` structured events helper：已实现，支持 metric/progress/param/note，自动写 `$AEXP_UI_EVENTS`，并在 project init 模板中展示用法。
+- `aexp_events.py` structured events helper：已实现，支持 metric/progress/param/note，训练/评估代码运行时自动写 `$AEXP_UI_EVENTS`；`aexp event` / `aexp-event` 仅作为隐藏兼容/调试入口。
 - `.aexp.yaml` 多行 `command: |`：已实现。
 - `project run --dry-run` 清晰展开：已实现。
 - `setup` 默认 no-gpu：已实现。

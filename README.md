@@ -62,7 +62,8 @@ aexp --help
 ```
 
 The installer downloads the latest GitHub Release for your OS/architecture and
-installs `aexp` plus the `aexp-event` helper into `~/.local/bin`.
+installs `aexp` plus the legacy/debug `aexp-event` compatibility entrypoint into
+`~/.local/bin`.
 
 To install a specific version or directory:
 
@@ -101,7 +102,7 @@ Open `http://localhost:8080`.
 
 ![aexp dashboard](doc/imgs/main1_EN.png)
 
-If you use Codex or Claude Code, install the MCP tools:
+If you use Codex, Claude Code, or Hermes Agent, install the MCP tools:
 
 ```bash
 aexp mcp install --target all
@@ -242,23 +243,26 @@ See [examples/python-ml](examples/python-ml) for a minimal project layout.
 ### Structured Metrics and Progress
 
 Inside a submitted run, `aexp` sets `AEXP_RUN_ID`, `AEXP_RUN_DIR`, and
-`AEXP_UI_EVENTS`. Python scripts can write structured JSONL events with the
-generated helper:
+`AEXP_UI_EVENTS`. Training and evaluation code should write structured JSONL
+events during execution with the generated helper:
 
 ```python
 from aexp_events import metric, progress, param, note
 
-param("model", "iTransformer")
-progress("epoch", current=1, total=20, series="iTransformer/raw", stage="train", label="raw input")
-metric("val/loss", 0.123, step=1, series="iTransformer/raw", split="val")
+param("model", "iTransformer", trial=trial_id, variant="raw")
+progress("epoch", current=local_epoch, total=20, trial=trial_id, variant="raw", stage="train")
+metric("train/loss", train_loss, epoch=local_epoch, trial=trial_id, variant="raw", stage="train")
+metric("val/loss", val_loss, epoch=local_epoch, trial=trial_id, variant="raw", split="val", stage="eval")
 note("first checkpoint written")
 ```
 
 Use short, stable `name` values for the quantity itself (`train/loss`,
 `val/mse`, `epoch`, `trial`, `fold`). Put model/data/split/stage context in
 fields such as `series`, `variant`, `split`, and `stage`. For hyperparameter
-search, keep the metric name the same across trials and identify the trial with
-`trial` or a stable `series` label:
+search, keep the metric name the same across trials, keep `epoch` local to each
+trial, and identify the trial with `trial` plus a stable `variant` or `series`
+label. Do not reconstruct telemetry after the run; use run marks for post-hoc
+interpretation notes.
 
 ```python
 for trial_id, cfg in enumerate(search_space):
@@ -335,8 +339,8 @@ runs stay visible in the list and the finding text remains attached to the run:
 aexp init
 aexp serve [--port 8080] [--daemon]
 aexp mcp
-aexp mcp install [--target codex|claude|all]
-aexp mcp uninstall [--target codex|claude|all]
+aexp mcp install [--target codex|claude|hermes|all]
+aexp mcp uninstall [--target codex|claude|hermes|all]
 
 aexp resource explore <host>
 aexp resource add --name <name> --host <host> --root-dir <dir>
@@ -378,21 +382,24 @@ aexp mcp
 To register it with local agent clients:
 
 ```bash
-# Install/update both Codex and Claude Code MCP configs.
+# Install/update Codex, Claude Code, and Hermes Agent MCP configs.
 aexp mcp install --target all
 
 # Or install one client only.
 aexp mcp install --target codex
 aexp mcp install --target claude
+aexp mcp install --target hermes
 
 # Remove the generated config.
 aexp mcp uninstall --target all
 ```
 
-The installer uses the clients' own MCP CLIs (`codex mcp ...` and
-`claude mcp ...`) and manages only the server named `aexp`. By default it
-points the MCP server at the current `aexp` binary and sets
-`AEXP_API_URL=http://127.0.0.1:8080/api/v1`.
+The installer uses the clients' own MCP CLIs (`codex mcp ...`,
+`claude mcp ...`, and `hermes mcp ...`) and manages only the server named
+`aexp`. By default it points the MCP server at the current `aexp` binary and
+sets `AEXP_API_URL=http://127.0.0.1:8080/api/v1`. Hermes Agent custom MCP
+servers receive that environment through `/usr/bin/env ... aexp mcp`, matching
+Hermes' `--command ... --args ...` install style.
 
 The MCP server exposes structured tools for agents:
 
@@ -421,10 +428,6 @@ The MCP server exposes structured tools for agents:
 - `aexp_list_run_marks`
 - `aexp_exec_history`
 - `aexp_exec_show`
-- `aexp_event_metric`
-- `aexp_event_progress`
-- `aexp_event_param`
-- `aexp_event_note`
 - `aexp_project_detect`
 - `aexp_project_doctor`
 - `aexp_project_run`

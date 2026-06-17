@@ -22,10 +22,11 @@ aexp mcp install --target all
 aexp mcp uninstall --target all
 ```
 
-安装器是 Codex/Claude Code MCP CLI 的薄包装：
+安装器是 Codex/Claude Code/Hermes Agent MCP CLI 的薄包装：
 
 - Codex: `codex mcp remove/add aexp ...`
 - Claude Code: `claude mcp remove/add --scope user aexp ...`
+- Hermes Agent: `hermes mcp remove/add aexp --command /usr/bin/env --args ...`
 - 默认只管理名为 `aexp` 的 MCP server。
 - 默认把 `AEXP_API_URL` 设置为 `http://127.0.0.1:8080/api/v1`，让 MCP 工具能复用本地 `aexp serve` 的 API fast path。
 
@@ -59,10 +60,6 @@ aexp mcp uninstall --target all
 - `aexp_list_run_marks`
 - `aexp_exec_history`
 - `aexp_exec_show`
-- `aexp_event_metric`
-- `aexp_event_progress`
-- `aexp_event_param`
-- `aexp_event_note`
 - `aexp_project_detect`
 - `aexp_project_doctor`
 - `aexp_project_run`
@@ -71,7 +68,7 @@ aexp mcp uninstall --target all
 - `aexp_sync_push`
 - `aexp_sync_pull`
 - `aexp_sync_remote_pull`
-- `aexp_cli`（通用 CLI 兼容口，允许修改类命令）
+- `aexp_cli`（通用 CLI 兼容口，允许修改类命令；不允许手写 `event` telemetry）
 
 下面的 `list_resources/create_run/...` 是目标语义草案；当前实现使用上面的 `aexp_*`
 名称，以避免和其他 MCP server 的通用工具名冲突。正常 agent 流程不应该退回裸 CLI；

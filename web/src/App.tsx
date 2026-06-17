@@ -9,6 +9,8 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Clock,
+  Cpu,
   Database,
   ExternalLink,
   Heart,
@@ -1391,7 +1393,8 @@ function chunkMetricFamilies(families: MetricFamily[], columns: number) {
 function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { family: MetricFamily; t: T; compressed: boolean; expanded: boolean; onToggle: () => void }) {
   const primary = family.series.length > 1 ? `${family.series.length} ${t("series").toLowerCase()}` : family.latest ? formatMetricValue(family.latest) : "-";
   const seriesPreview = family.series.slice(0, 2);
-  const axisLabel = formatMetricSpan(family.axisStart, family.axisEnd);
+  const axisLabel = metricAxisLabel(family, t);
+  const hasCurve = family.axisKind !== "sample" && family.points.length > 1;
   return (
     <motion.article
       className={`metric-family-card ${expanded ? "expanded" : ""} ${compressed ? "compressed" : ""}`}
@@ -1411,7 +1414,7 @@ function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { famil
             </div>
           ))}
         </div> : null}
-        {!expanded && !compressed && family.trend.length ? (
+        {!expanded && !compressed && hasCurve && family.trend.length ? (
           <div className="metric-card-sparkline-wrap" aria-hidden="true">
             <span>{formatMetric(family.max)}</span>
             <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none">
@@ -1423,7 +1426,7 @@ function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { famil
             <span>{formatMetric(family.min)}</span>
           </div>
         ) : null}
-        {!expanded && !compressed && !family.trend.length ? <div className="metric-card-sparkline metric-sparkline-empty" aria-hidden="true" /> : null}
+        {!expanded && !compressed && !hasCurve ? <div className="metric-sample-summary" aria-hidden="true">{family.count} {t("points")}</div> : null}
         <span className="metric-card-foot">{axisLabel} · {family.count} {t("points")}</span>
       </button>
       <AnimatePresence initial={false}>
@@ -1440,7 +1443,7 @@ function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { famil
               <span>{t("range")}: {axisLabel}</span>
               <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
             </div>
-            <MetricChart points={family.points} />
+            {hasCurve ? <MetricChart points={family.points} axisKind={family.axisKind} /> : null}
             <div>
               <span>{t("low")}</span>
               <strong>{formatMetric(family.min)}</strong>
@@ -1502,7 +1505,7 @@ function CompareModal({ t, token, runs, onClose }: { t: T; token: string; runs: 
   );
 }
 
-function MetricChart({ points, compact = false }: { points: MetricPoint[]; compact?: boolean }) {
+function MetricChart({ points, compact = false, axisKind = "sample" }: { points: MetricPoint[]; compact?: boolean; axisKind?: "epoch" | "step" | "sample" }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -1538,7 +1541,7 @@ function MetricChart({ points, compact = false }: { points: MetricPoint[]; compa
         smooth: false,
         lineStyle: { width: compact ? 1.7 : 2 },
         showSymbol: false,
-        data: rows.map((row, idx) => [row.step ?? row.epoch ?? idx, row.value])
+        data: rows.map((row, idx) => [metricChartAxis(row, idx, axisKind), row.value])
       }))
     });
     const resize = () => chart.resize();
@@ -1550,7 +1553,7 @@ function MetricChart({ points, compact = false }: { points: MetricPoint[]; compa
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
-  }, [points, compact]);
+  }, [points, compact, axisKind]);
   return <div className={compact ? "chart chart-compact" : "chart"} ref={ref} />;
 }
 
@@ -2004,20 +2007,20 @@ function RunListCard({
         </button>
       </div>
       <div className="run-list-facts">
-        <span className="run-fact run-fact-resource" title={resourceName} aria-label={`${t("resource")}: ${resourceName}`}>
-          <span className="run-fact-label">{t("resource")}</span>
+        <span className="run-fact run-fact-resource" title={`${t("resource")}: ${resourceName}`} aria-label={`${t("resource")}: ${resourceName}`}>
+          <Server size={12} className="run-fact-icon" />
           <span className="run-fact-value">{resourceName}</span>
         </span>
-        <span className={`run-fact run-fact-kind run-kind-chip ${runKindClass(kind)}`} title={kind} aria-label={`${t("kind")}: ${kind}`}>
-          <span className="run-fact-label">{t("kind")}</span>
+        <span className={`run-fact run-fact-kind run-kind-chip ${runKindClass(kind)}`} title={`${t("kind")}: ${kind}`} aria-label={`${t("kind")}: ${kind}`}>
+          <span className="run-fact-dot" />
           <span className="run-fact-value">{kind}</span>
         </span>
-        <span className="run-fact run-fact-gpu" aria-label={`${t("gpu")}: ${gpu}`}>
-          <span className="run-fact-label">{t("gpu")}</span>
+        <span className="run-fact run-fact-gpu" title={`${t("gpu")}: ${gpu}`} aria-label={`${t("gpu")}: ${gpu}`}>
+          <Cpu size={12} className="run-fact-icon" />
           <span className="run-fact-value">{gpu}</span>
         </span>
         <span className="run-fact run-fact-time" title={createdAt} aria-label={`${t("time")}: ${createdAt}`}>
-          <span className="run-fact-label">{t("time")}</span>
+          <Clock size={12} className="run-fact-icon" />
           <span className="run-fact-value">{createdAt}</span>
         </span>
       </div>
@@ -2132,16 +2135,14 @@ function DashboardFinding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () =
     <button className={`dashboard-finding dashboard-finding-${tone}`} onClick={onOpenRun} type="button">
       <div className="dashboard-finding-kicker">
         <Pill tone={tone}>{mark.kind || "mark"}</Pill>
+        <span className="dashboard-finding-actor">{mark.actor || "agent"}</span>
         <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
-        <span>{mark.actor || "agent"}</span>
-      </div>
-      <div className="dashboard-finding-title-row">
-        <strong>{mark.title || mark.kind || mark.run_id}</strong>
         <span className="dashboard-finding-run">
           <span className="mono">{mark.run_id}</span>
           {onOpenRun ? <ExternalLink size={13} /> : null}
         </span>
       </div>
+      <strong className="dashboard-finding-title">{mark.title || mark.kind || mark.run_id}</strong>
       <div className="dashboard-finding-body">
         <p>{statement || mark.run_id}</p>
       </div>
@@ -2327,6 +2328,18 @@ function formatMetricSpan(start?: number, end?: number) {
   return `${formatMetric(start)} -> ${formatMetric(end)}`;
 }
 
+function metricAxisLabel(family: MetricFamily, t: T) {
+  if (family.axisKind === "epoch") return `epoch ${formatMetricSpan(family.axisStart, family.axisEnd)}`;
+  if (family.axisKind === "step") return `step ${formatMetricSpan(family.axisStart, family.axisEnd)}`;
+  return `${family.count} ${t("points")}`;
+}
+
+function metricChartAxis(point: MetricPoint, fallback: number, axisKind: "epoch" | "step" | "sample") {
+  if (axisKind === "epoch") return point.epoch ?? fallback;
+  if (axisKind === "step") return point.step ?? fallback;
+  return fallback;
+}
+
 function metricRangePosition(family: MetricFamily) {
   const latest = family.latest?.value;
   if (latest == null || !Number.isFinite(latest) || !Number.isFinite(family.min) || !Number.isFinite(family.max) || family.max === family.min) return 50;
@@ -2363,14 +2376,15 @@ function formatExitCode(value: unknown) {
 
 function ResourceMeter({ value, label, detail }: { value: number; label: string; detail?: string }) {
   const pct = Math.max(0, Math.min(100, value || 0));
+  const level = pct >= 88 ? "high" : pct >= 65 ? "mid" : "low";
   return (
-    <div className="resource-meter">
+    <div className="resource-meter" data-level={level}>
       <span className="resource-meter-label">{label}</span>
-      <span className="resource-meter-detail">{detail || ""}</span>
+      <b>{pct.toFixed(0)}%</b>
+      {detail ? <span className="resource-meter-detail">{detail}</span> : null}
       <div className="resource-meter-track">
         <i style={{ width: `${pct}%` }} />
       </div>
-      <b>{pct.toFixed(0)}%</b>
     </div>
   );
 }

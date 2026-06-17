@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   addEdge,
   Background,
@@ -36,6 +36,7 @@ import {
   apiEdgeToFlowEdge,
   apiNodeToFlowNode,
   candidateMatches,
+  candidateRunNodeFields,
   candidateToNode,
   createTextNode,
   evidenceMarkerEnd,
@@ -53,7 +54,7 @@ import {
 } from "./evidenceChain";
 import type { I18nKey } from "./i18n";
 import type { EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType } from "./types";
-import { fmtShortTime, runTitle, text } from "./utils";
+import { fmtShortTime, text } from "./utils";
 
 const candidateMime = "application/x-aexp-run-candidate";
 const evidenceHandleSides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
@@ -180,9 +181,52 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     setEdges((current) => current.map((edge) => ({ ...edge, data: { type: edge.data?.type || "next_step", rationale: edge.data?.rationale || "", ...edge.data, labels: boardLabels } })));
   }, [boardLabels, setEdges, setNodes]);
 
+  const candidateByRunId = useMemo(() => {
+    const out = new Map<string, EvidenceChainRunCandidate>();
+    for (const candidate of candidates.data || []) {
+      if (!candidate.run_id || out.has(candidate.run_id)) continue;
+      out.set(candidate.run_id, candidate);
+    }
+    return out;
+  }, [candidates.data]);
+
+  const hydrateRunNodeFromCandidate = useCallback(
+    (node: EvidenceFlowNode): EvidenceFlowNode => {
+      if (node.data.type !== "run" || !node.data.runId) return node;
+      const candidate = candidateByRunId.get(node.data.runId);
+      if (!candidate) return node;
+      const { runDisplayTitle, body } = candidateRunNodeFields(candidate);
+      const currentTitle = text(node.data.title).trim();
+      const currentBody = text(node.data.body).trim();
+      const nextBody = currentTitle && currentTitle !== runDisplayTitle
+        ? [currentTitle, currentBody || body].filter(Boolean).join("\n\n")
+        : currentBody || body;
+      if (node.data.runTitle === runDisplayTitle && node.data.title === runDisplayTitle && node.data.body === nextBody) return node;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          title: runDisplayTitle,
+          body: nextBody,
+          runTitle: runDisplayTitle,
+          status: node.data.status || candidate.run?.status || "",
+          runKind: node.data.runKind || candidate.run?.kind || "",
+          keyMetrics: node.data.keyMetrics || candidate.key_metrics || "",
+          evidenceLevel: node.data.evidenceLevel || candidate.evidence_level || ""
+        }
+      };
+    },
+    [candidateByRunId]
+  );
+
+  useEffect(() => {
+    if (!candidateByRunId.size) return;
+    setNodes((current) => current.map(hydrateRunNodeFromCandidate));
+  }, [candidateByRunId, hydrateRunNodeFromCandidate, setNodes]);
+
   useEffect(() => {
     if (!detail.data) return;
-    const nextNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(withNodeHandlers);
+    const nextNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(hydrateRunNodeFromCandidate).map(withNodeHandlers);
     const nextEdges = autoRouteEvidenceEdges((detail.data.edges || []).map(apiEdgeToFlowEdge).map(withEdgeHandlers), nextNodes);
     setNodes(nextNodes);
     setEdges(nextEdges);
@@ -192,7 +236,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
     setSelected(null);
     setDirty(false);
     setSaveState("saved");
-  }, [detail.data, setEdges, setNodes, withEdgeHandlers, withNodeHandlers]);
+  }, [detail.data, hydrateRunNodeFromCandidate, setEdges, setNodes, withEdgeHandlers, withNodeHandlers]);
 
   const createChain = useMutation({
     mutationFn: () => createEvidenceChain(token, { title: t("newEvidenceChain"), description: "" }),
@@ -275,7 +319,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun }: { token: string; t: (ke
       renameChain.mutate({ id: detail.data!.id, title, description });
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [chainDescriptionDraft, chainMetaComposing, chainTitleDraft, detail.data, renameChain]);
+  }, [chainDescriptionDraft, chainMetaComposing, chainTitleDraft, detail.data, hydrateRunNodeFromCandidate, renameChain, withEdgeHandlers, withNodeHandlers]);
 
   const filteredCandidates = useMemo(() => (candidates.data || []).filter((candidate) => candidateMatches(candidate, candidateQuery)), [candidates.data, candidateQuery]);
   const candidateGroups = useMemo(() => groupRunCandidatesByProject(filteredCandidates, { unassignedRuns: t("unassignedRuns"), runsWithoutProjectCards: t("runsWithoutProjectCards") }), [filteredCandidates, t]);
@@ -554,8 +598,9 @@ function isComposingInput(event: Event) {
 }
 
 function CandidateItem({ candidate }: { candidate: EvidenceChainRunCandidate }) {
-  const title = candidate.verdict || candidate.question || (candidate.run ? runTitle(candidate.run) : candidate.run_id);
-  const meta = candidate.key_metrics || candidate.next_action || candidate.run?.status || candidate.kind;
+  const { runDisplayTitle } = candidateRunNodeFields(candidate);
+  const title = runDisplayTitle;
+  const meta = candidate.verdict || candidate.question || candidate.key_metrics || candidate.next_action || candidate.run?.status || candidate.kind;
   return (
     <div
       className="candidate-item"
@@ -576,12 +621,20 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
   const color = evidenceColor(data.type);
   const typeOptions: EvidenceNodeType[] = data.type === "run" ? ["run", ...evidenceNodeTypes] : evidenceNodeTypes;
   const composingRef = useRef(false);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const [draft, setDraft] = useState({ title: data.title, body: data.body });
 
   useEffect(() => {
     if (composingRef.current) return;
     setDraft({ title: data.title, body: data.body });
   }, [data.body, data.title]);
+
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    body.style.height = "0px";
+    body.style.height = `${Math.max(72, body.scrollHeight)}px`;
+  }, [draft.body]);
 
   const updateDraft = (field: "title" | "body", value: string, commit = true) => {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -617,6 +670,7 @@ function EvidenceNode({ id, data, selected }: { id: string; data: EvidenceNodeDa
         placeholder={data.labels?.titlePlaceholder || "标题"}
       />
       <textarea
+        ref={bodyRef}
         className="evidence-node-body nodrag nopan"
         value={draft.body}
         onChange={(event) => updateDraft("body", event.target.value, !isComposingInput(event.nativeEvent))}

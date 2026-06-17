@@ -876,7 +876,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	if logPath != "" {
 		var err error
 		lines, total, remote, err = s.remoteLogFileLines(r.Context(), id, logPath, limit)
-		if err != nil {
+		if err != nil && len(lines) == 0 {
 			logError = err.Error()
 			logErrorKind = logReadErrorKind(err)
 		}

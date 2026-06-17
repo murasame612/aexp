@@ -126,7 +126,7 @@ func TestProjectInitDryRun(t *testing.T) {
 		"no_gpu: true",
 		"train:",
 		"command: bash scripts/train_fusion.sh configs/experiments/fusion.yaml",
-		"aexp event metric train/loss 0.23 --epoch 1",
+		"metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=\"sl192_pl96\")",
 		"aexp project doctor",
 	} {
 		if !strings.Contains(text, want) {

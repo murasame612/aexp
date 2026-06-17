@@ -110,7 +110,7 @@ http://localhost:8080
 
 ![aexp dashboard](doc/imgs/main1_zh.png)
 
-如果你使用 Codex 或 Claude Code，安装 MCP 工具：
+如果你使用 Codex、Claude Code 或 Hermes Agent，安装 MCP 工具：
 
 ```bash
 aexp mcp install --target all
@@ -311,6 +311,7 @@ aexp mcp
 aexp mcp install --target all
 aexp mcp install --target codex
 aexp mcp install --target claude
+aexp mcp install --target hermes
 ```
 
 常用工具包括：

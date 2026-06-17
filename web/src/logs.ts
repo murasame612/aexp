@@ -1,6 +1,7 @@
 import type { LogLine, LogsResponse } from "./types";
 
 export function logSnapshotError(logs: LogsResponse): string | null {
+  if (logs.lines?.length) return null;
   const kind = logs.error_kind?.trim();
   const message = logs.error?.trim();
   if (!kind && !message) return null;

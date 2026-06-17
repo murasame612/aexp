@@ -407,6 +407,17 @@ func (s *Server) toolRunMetrics(ctx context.Context, args map[string]interface{}
 	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
 }
 
+func (s *Server) toolRunEventQuality(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	last := intArg(args, "last", intArg(args, "last_n", 100000))
+	maxIssues := intArg(args, "max_issues", 200)
+	cli := []string{"run", "event-quality", runID, "--json", "--tail", strconv.Itoa(last), "--max-issues", strconv.Itoa(maxIssues)}
+	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
+}
+
 func (s *Server) toolCLI(ctx context.Context, args map[string]interface{}) (string, error) {
 	cliArgs := stringSliceArg(args, "args")
 	if len(cliArgs) == 0 {
@@ -909,6 +920,8 @@ func validateCLIArgs(args []string) error {
 	switch args[0] {
 	case "mcp", "serve":
 		return fmt.Errorf("aexp_cli does not start long-lived %q; run it outside MCP", args[0])
+	case "event", "events":
+		return fmt.Errorf("aexp_cli does not emit manual training events; instrument the training/eval script with aexp_events.py before submitting the run, and use aexp_mark_run for post-hoc interpretation notes")
 	}
 	for _, arg := range args {
 		if arg == "--follow" {
@@ -979,16 +992,21 @@ func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
 		"env": map[string]string{
 			"AEXP_UI_EVENTS": uiEvents,
 		},
+		"purpose": "Training telemetry must be produced by the training/eval code while the run is executing. Do not reconstruct loss, metric, progress, or parameter events after the run.",
 		"python": []string{
 			"from aexp_events import metric, progress, param, note",
-			"metric(\"train/loss\", loss, epoch=epoch, step=step, trial=trial_id)",
-			"metric(\"val/loss\", val_loss, epoch=epoch, step=step, trial=trial_id, split=\"val\")",
-			"progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, stage=\"train\")",
+			"param(\"model\", model_name, trial=trial_id, variant=variant)",
+			"metric(\"train/loss\", loss, epoch=local_epoch, trial=trial_id, variant=variant, stage=\"train\")",
+			"metric(\"val/loss\", val_loss, epoch=local_epoch, trial=trial_id, variant=variant, split=\"val\", stage=\"eval\")",
+			"progress(\"epoch\", local_epoch, total=max_epochs, trial=trial_id, variant=variant, stage=\"train\")",
 		},
 		"rules": []string{
+			"Add aexp_events instrumentation to the training/eval script before submitting the run; do not use manual event tools for post-hoc telemetry.",
 			"Keep metric/progress names short and stable, e.g. train/loss, val/loss, val/mse, epoch, trial.",
 			"Put model, dataset, split, stage, seed, fold, and hyperparameter-trial context in series/run/variant/split/stage/trial fields.",
+			"For sweeps, epoch is the local epoch inside that trial; use trial/variant/series for global sweep identity so loss curves do not start halfway across the chart.",
 			"Do not embed a full experiment config or trial id in the metric name; the UI uses context fields to draw one chart with multiple series.",
+			"After the run, use aexp_mark_run for interpretation, findings, images, and Markdown notes; marks are not training telemetry.",
 			"Snapshot/events readers cache successful UI event reads locally, so later offline resource or temporary-container loss can still show the last known event stream.",
 		},
 		"monitor": []string{
@@ -1476,13 +1494,27 @@ func toolRegistry() []toolSpec {
 			Name:        "aexp_get_run_metrics",
 			Description: "Get latest structured metrics for a run from UI events.",
 			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":     stringSchema("Run id."),
+				"last":       numberSchema("Number of latest event lines to inspect."),
+				"last_n":     numberSchema("Alias for last."),
+				"max_issues": numberSchema("Maximum issue details to include; summary keeps total counts."),
+				"timeout":    numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolRunMetrics(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_check_run_events",
+			Description: "Scan a run's structured UI events for semantic quality problems: long metric names, constants recorded as metrics, epoch gaps, missing trial context, oversized series labels, and shifted loss axes.",
+			InputSchema: objectSchema(map[string]interface{}{
 				"run_id":  stringSchema("Run id."),
 				"last":    numberSchema("Number of latest event lines to inspect."),
 				"last_n":  numberSchema("Alias for last."),
 				"timeout": numberSchema("Tool timeout in seconds."),
 			}, []string{"run_id"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
-				return s.toolRunMetrics(ctx, args)
+				return s.toolRunEventQuality(ctx, args)
 			},
 		},
 		{
@@ -1615,56 +1647,6 @@ func toolRegistry() []toolSpec {
 			}, []string{"event_id"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolExecShow(ctx, args)
-			},
-		},
-		{
-			Name:        "aexp_event_metric",
-			Description: "Emit a numeric metric event to a structured UI event JSONL file. Keep metric names short/stable; use series/variant/split/stage/trial fields for context.",
-			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"name":    stringSchema("Short stable metric name, e.g. train/loss, val/loss, or val/mse. Do not include model, dataset, or trial config here."),
-				"value":   stringSchema("Numeric metric value."),
-				"epoch":   numberSchema("Optional epoch value."),
-				"step":    numberSchema("Optional step value."),
-				"timeout": numberSchema("Tool timeout in seconds."),
-			}), []string{"name", "value"}),
-			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
-				return s.toolEventMetric(ctx, args)
-			},
-		},
-		{
-			Name:        "aexp_event_progress",
-			Description: "Emit a progress event to a structured UI event JSONL file.",
-			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"name":    stringSchema("Short stable progress dimension, e.g. epoch, trial, fold, or batch."),
-				"current": stringSchema("Current progress value."),
-				"total":   numberSchema("Optional total progress value."),
-				"timeout": numberSchema("Tool timeout in seconds."),
-			}), []string{"name", "current"}),
-			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
-				return s.toolEventProgress(ctx, args)
-			},
-		},
-		{
-			Name:        "aexp_event_param",
-			Description: "Emit a run parameter event to a structured UI event JSONL file.",
-			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"name":    stringSchema("Parameter name."),
-				"value":   stringSchema("Parameter value."),
-				"timeout": numberSchema("Tool timeout in seconds."),
-			}), []string{"name", "value"}),
-			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
-				return s.toolEventParam(ctx, args)
-			},
-		},
-		{
-			Name:        "aexp_event_note",
-			Description: "Emit a note event to a structured UI event JSONL file.",
-			InputSchema: objectSchema(eventSchema(map[string]interface{}{
-				"text":    stringSchema("Note text."),
-				"timeout": numberSchema("Tool timeout in seconds."),
-			}), []string{"text"}),
-			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
-				return s.toolEventNote(ctx, args)
 			},
 		},
 		{

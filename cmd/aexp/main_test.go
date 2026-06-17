@@ -70,9 +70,40 @@ func TestBuildMCPInstallPlanAll(t *testing.T) {
 		{"codex", "mcp", "add", "aexp", "--env", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "--", "/usr/local/bin/aexp", "mcp"},
 		{"claude", "mcp", "remove", "aexp"},
 		{"claude", "mcp", "add", "--scope", "user", "aexp", "-e", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "--", "/usr/local/bin/aexp", "mcp"},
+		{"hermes", "mcp", "remove", "aexp"},
+		{"hermes", "mcp", "add", "aexp", "--command", "/usr/bin/env", "--args", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "/usr/local/bin/aexp", "mcp"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan = %#v, want %#v", got, want)
+	}
+	if !plan[len(plan)-1].Optional {
+		t.Fatal("implicit --target all should tolerate missing Hermes Agent")
+	}
+}
+
+func TestBuildMCPInstallPlanHermes(t *testing.T) {
+	plan, err := buildMCPInstallPlan(mcpInstallOptions{
+		Target: "hermes-agent",
+		Name:   "aexp",
+		Binary: "/opt/aexp/bin/aexp",
+		APIURL: "http://127.0.0.1:8080/api/v1",
+	}, false)
+	if err != nil {
+		t.Fatalf("buildMCPInstallPlan error: %v", err)
+	}
+	got := make([][]string, 0, len(plan))
+	for _, step := range plan {
+		got = append(got, append([]string{step.Program}, step.Args...))
+	}
+	want := [][]string{
+		{"hermes", "mcp", "remove", "aexp"},
+		{"hermes", "mcp", "add", "aexp", "--command", "/usr/bin/env", "--args", "AEXP_API_URL=http://127.0.0.1:8080/api/v1", "/opt/aexp/bin/aexp", "mcp"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan = %#v, want %#v", got, want)
+	}
+	if plan[1].Optional {
+		t.Fatal("explicit hermes target should fail loudly when hermes is unavailable")
 	}
 }
 
