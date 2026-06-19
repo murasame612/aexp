@@ -48,6 +48,53 @@ describe("event parsing", () => {
     ]);
   });
 
+  it("keeps baseline points separate from a continuing metric curve", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "val/observed_mse", value: 0.1434, epoch: 0, series: "residual_itransformer_downstream", variant: "ResidualITransformer_cnn_frozen_dam_2h_saits_clean_mask_inputs_sl192_pl96", split: "val", stage: "baseline" }),
+      JSON.stringify({ type: "metric", name: "val/observed_mse", value: 0.148, epoch: 1, series: "residual_itransformer_downstream", variant: "ResidualITransformer_cnn_frozen_dam_2h_saits_clean_mask_inputs_sl192_pl96", split: "val" }),
+      JSON.stringify({ type: "metric", name: "val/observed_mse", value: 0.1566, epoch: 2, series: "residual_itransformer_downstream", variant: "ResidualITransformer_cnn_frozen_dam_2h_saits_clean_mask_inputs_sl192_pl96", split: "val" }),
+      JSON.stringify({ type: "metric", name: "val/observed_mse", value: 0.1538, epoch: 5, series: "residual_itransformer_downstream", variant: "ResidualITransformer_cnn_frozen_dam_2h_saits_clean_mask_inputs_sl192_pl96", split: "val" })
+    ]);
+    const family = summarizeMetricFamilies(parsed.metrics).find((row) => row.name === "val/observed_mse");
+    expect(family?.trends).toHaveLength(2);
+    expect(family?.trends.map((row) => [row.label, row.count, row.latest.value])).toEqual([
+      ["baseline", 1, 0.1434],
+      ["val", 3, 0.1538]
+    ]);
+    expect(family?.referenceTrends.map((row) => row.label)).toEqual(["baseline"]);
+    expect(family?.curveTrends.map((row) => row.label)).toEqual(["val"]);
+    expect(family?.trends[0].trend).toEqual([{ axis: 0, value: 0.1434 }]);
+    expect(family?.trends[1].trend.map((point) => point.axis)).toEqual([1, 2, 5]);
+  });
+
+  it("splits fusion modes and keeps final metrics out of runtime curves", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0981, epoch: 1, step: 1, split: "test", fusion: "global", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", seed: 2021 }),
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0980, epoch: 2, step: 2, split: "test", fusion: "global", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", seed: 2021 }),
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0979, epoch: 1, step: 1, split: "test", fusion: "channel", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", seed: 2021 }),
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0978, epoch: 2, step: 2, split: "test", fusion: "channel", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", seed: 2021 }),
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0980, step: 1, split: "test", fusion: "global", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", stage: "final" }),
+      JSON.stringify({ type: "metric", name: "test/fusion_mse", value: 0.0978, step: 2, split: "test", fusion: "channel", series: "late_fusion_downstream", variant: "residual_wavelet_sl192_pl96", stage: "final" })
+    ]);
+    const family = summarizeMetricFamilies(parsed.metrics).find((row) => row.name === "test/fusion_mse");
+    expect(parsed.metrics.map((metric) => metric.series)).toEqual([
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/seed:2021/test/fusion:global",
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/seed:2021/test/fusion:global",
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/seed:2021/test/fusion:channel",
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/seed:2021/test/fusion:channel",
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/test/final/fusion:global",
+      "late_fusion_downstream/residual_wavelet_sl192_pl96/test/final/fusion:channel"
+    ]);
+    expect(family?.curveTrends.map((row) => [row.label, row.count])).toEqual([
+      ["global · test", 2],
+      ["channel · test", 2]
+    ]);
+    expect(family?.referenceTrends.map((row) => [row.label, row.count])).toEqual([
+      ["global · final · test", 1],
+      ["channel · final · test", 1]
+    ]);
+  });
+
   it("normalizes legacy metric names that embed long series context", () => {
     const parsed = parseEventLines([
       JSON.stringify({ type: "metric", name: "WaveletITransformer_dam_2h_raw_linear_mask_inputs_sl96_pl48/train_loss", value: 0.08, epoch: 1 }),

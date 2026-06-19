@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -100,7 +100,7 @@ import {
   text,
   uiEventsPath
 } from "./utils";
-import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type ProgressSummary } from "./events";
+import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type MetricSeriesSummary, type ProgressSummary } from "./events";
 import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
 
@@ -1137,14 +1137,11 @@ function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
 
 function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null; run: Run }) {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
-  const [metricGridColumns, setMetricGridColumns] = useState(1);
-  const metricGridRef = useRef<HTMLElement | null>(null);
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
   const params = parsed.params.slice(0, 24);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
-  const metricRows = expandedMetric ? chunkMetricFamilies(metricFamilies, metricGridColumns) : [];
   const summary = [
     { label: t("events"), value: parsed.events.length },
     { label: t("progress"), value: parsed.progress.length },
@@ -1156,7 +1153,6 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
   const toggleMetric = (key: string) => {
     setExpandedMetric((current) => {
       if (current === key) return null;
-      if (!current) setMetricGridColumns(measureMetricGridColumns(metricGridRef.current));
       return key;
     });
   };
@@ -1221,43 +1217,57 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
         ) : null}
       </div>
       <EventFoldout className="metric-family-foldout" title={t("metricTrends")} count={metricFamilies.length} defaultOpen>
-        <section ref={metricGridRef} className={`metric-card-grid ${expandedMetric ? "has-expanded" : ""}`} aria-label={t("metrics")}>
-          {metricFamilies.length && !expandedMetric ? metricFamilies.map((family) => {
-            const key = metricFamilyKey(family);
-            return (
-              <MetricFamilyCard
-                key={key}
-                family={family}
-                t={t}
-                compressed={false}
-                expanded={false}
-                onToggle={() => toggleMetric(key)}
-              />
-            );
-          }) : null}
-          {metricRows.length ? metricRows.map((row, rowIndex) => {
-            const activeRow = row.some((family) => metricFamilyKey(family) === expandedMetric);
-            return (
-              <div className={`metric-card-row ${activeRow ? "active" : ""}`} key={`metric-row-${rowIndex}`}>
-                {row.map((family) => {
+        <LayoutGroup id={`metric-cards-${run.id}`}>
+          <section className={`metric-card-grid ${expandedMetric ? "has-expanded" : ""}`} aria-label={t("metrics")}>
+            {metricFamilies.length && !expandedMetric ? metricFamilies.map((family) => {
+              const key = metricFamilyKey(family);
+              return (
+                <MetricFamilyCard
+                  key={key}
+                  layoutKey={key}
+                  family={family}
+                  t={t}
+                  compressed={false}
+                  expanded={false}
+                  onToggle={() => toggleMetric(key)}
+                />
+              );
+            }) : null}
+            {expandedMetric ? metricFamilies.filter((family) => metricFamilyKey(family) === expandedMetric).map((family) => {
+              const key = metricFamilyKey(family);
+              return (
+                <MetricFamilyCard
+                  key={key}
+                  layoutKey={key}
+                  family={family}
+                  t={t}
+                  compressed={false}
+                  expanded
+                  onToggle={() => toggleMetric(key)}
+                />
+              );
+            }) : null}
+            {expandedMetric ? (
+              <motion.div className="metric-card-collapsed-grid" layout="position" transition={metricLayoutTransition}>
+                {metricFamilies.filter((family) => metricFamilyKey(family) !== expandedMetric).map((family) => {
                   const key = metricFamilyKey(family);
-                  const expanded = expandedMetric === key;
                   return (
                     <MetricFamilyCard
                       key={key}
+                      layoutKey={key}
                       family={family}
                       t={t}
-                      compressed={!!expandedMetric && activeRow && !expanded}
-                      expanded={expanded}
+                      compressed
+                      expanded={false}
                       onToggle={() => toggleMetric(key)}
                     />
                   );
                 })}
-              </div>
-            );
-          }) : null}
-          {!metricFamilies.length ? <span className="muted">{t("noMetricFamiliesYet")}</span> : null}
-        </section>
+              </motion.div>
+            ) : null}
+            {!metricFamilies.length ? <span className="muted">{t("noMetricFamiliesYet")}</span> : null}
+          </section>
+        </LayoutGroup>
       </EventFoldout>
     </section>
   );
@@ -1369,106 +1379,127 @@ function paramCardStyle(param: ParamPoint): CSSProperties {
 
 type MetricFamily = ReturnType<typeof summarizeMetricFamilies>[number];
 
+const metricLayoutTransition = {
+  layout: { type: "spring", stiffness: 430, damping: 38, mass: 0.85 },
+  opacity: { duration: 0.12 }
+} as const;
+
 function metricFamilyKey(family: MetricFamily) {
   return `${family.name}\u0000${family.scaleKey}`;
 }
 
-function measureMetricGridColumns(node: HTMLElement | null) {
-  if (!node) return 1;
-  const cards = Array.from(node.querySelectorAll<HTMLElement>(".metric-family-card"));
-  if (!cards.length) return 1;
-  const firstTop = cards[0].getBoundingClientRect().top;
-  return Math.max(1, cards.filter((card) => Math.abs(card.getBoundingClientRect().top - firstTop) < 4).length);
-}
-
-function chunkMetricFamilies(families: MetricFamily[], columns: number) {
-  const size = Math.max(1, columns || 1);
-  const rows: MetricFamily[][] = [];
-  for (let index = 0; index < families.length; index += size) {
-    rows.push(families.slice(index, index + size));
-  }
-  return rows;
-}
-
-function MetricFamilyCard({ family, t, compressed, expanded, onToggle }: { family: MetricFamily; t: T; compressed: boolean; expanded: boolean; onToggle: () => void }) {
-  const primary = family.series.length > 1 ? `${family.series.length} ${t("series").toLowerCase()}` : family.latest ? formatMetricValue(family.latest) : "-";
-  const seriesPreview = family.series.slice(0, 2);
+function MetricFamilyCard({ family, t, compressed, expanded, layoutKey, onToggle }: { family: MetricFamily; t: T; compressed: boolean; expanded: boolean; layoutKey: string; onToggle: () => void }) {
+  const curveCount = family.curveTrends.length;
+  const referenceCount = family.referenceTrends.length;
+  const primary = curveCount || referenceCount
+    ? [curveCount ? `${curveCount} ${t("curves").toLowerCase()}` : "", referenceCount ? `${referenceCount} ${t("references").toLowerCase()}` : ""].filter(Boolean).join(" · ")
+    : family.latest ? formatMetricValue(family.latest) : "-";
+  const seriesPreview = expanded ? family.trends : family.trends.slice(0, 2);
   const axisLabel = metricAxisLabel(family, t);
-  const hasCurve = family.axisKind !== "sample" && family.points.length > 1;
+  const previewTrend = family.curveTrends[0]?.trend || [];
+  const hasCurve = family.axisKind !== "sample" && family.curveTrends.length > 0;
+  const referenceRows = family.referenceTrends.length ? family.referenceTrends : family.trends;
   return (
     <motion.article
       className={`metric-family-card ${expanded ? "expanded" : ""} ${compressed ? "compressed" : ""}`}
       layout
-      transition={{ layout: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
+      layoutId={`metric-card-${encodeURIComponent(layoutKey)}`}
+      layoutDependency={expanded}
+      transition={metricLayoutTransition}
     >
-      <button className="metric-card-button" type="button" onClick={onToggle} aria-expanded={expanded}>
-        <div className="metric-card-head">
+      <motion.button layout className="metric-card-button" type="button" onClick={onToggle} aria-expanded={expanded} transition={metricLayoutTransition}>
+        <motion.div layout="position" className="metric-card-head" transition={metricLayoutTransition}>
           <span>{metricTitle(family.name)}</span>
           <strong>{primary}</strong>
-        </div>
-        {!compressed ? <div className="metric-card-series">
+        </motion.div>
+        {!compressed && !expanded ? <motion.div layout="position" className="metric-card-series" transition={metricLayoutTransition}>
           {seriesPreview.map((row, index) => (
-            <div key={`${row.series || t("defaultSeries")}-${index}`}>
-              <span>{shortSeriesName(row.series || t("defaultSeries"))}</span>
-              <strong>{formatMetricValue(row)}</strong>
+            <div key={`${row.key || t("defaultSeries")}-${index}`} title={row.fullLabel}>
+              <span>{shortSeriesName(row.label || t("defaultSeries"))}</span>
+              <strong>{formatMetricValue(row.latest)}</strong>
             </div>
           ))}
-        </div> : null}
-        {!expanded && !compressed && hasCurve && family.trend.length ? (
-          <div className="metric-card-sparkline-wrap" aria-hidden="true">
+        </motion.div> : null}
+        {!expanded && !compressed && hasCurve && previewTrend.length ? (
+          <motion.div layout="position" className="metric-card-sparkline-wrap" aria-hidden="true" transition={metricLayoutTransition}>
             <span>{formatMetric(family.max)}</span>
             <svg className="metric-card-sparkline" viewBox="0 0 120 42" preserveAspectRatio="none">
               <line x1="0" y1="5" x2="120" y2="5" />
               <line x1="0" y1="21" x2="120" y2="21" />
               <line x1="0" y1="37" x2="120" y2="37" />
-              <polyline points={metricSparklinePoints(family.trend, 42)} />
+              <polyline points={metricSparklinePoints(previewTrend, 42)} />
             </svg>
             <span>{formatMetric(family.min)}</span>
-          </div>
+          </motion.div>
         ) : null}
-        {!expanded && !compressed && !hasCurve ? <div className="metric-sample-summary" aria-hidden="true">{family.count} {t("points")}</div> : null}
-        <span className="metric-card-foot">{axisLabel} · {family.count} {t("points")}</span>
-      </button>
+        {!expanded && !compressed && !hasCurve ? <motion.div layout="position" className="metric-sample-summary" aria-hidden="true" transition={metricLayoutTransition}>{family.count} {t("points")}</motion.div> : null}
+        <motion.span layout="position" className="metric-card-foot" transition={metricLayoutTransition}>{axisLabel} · {family.count} {t("points")}</motion.span>
+      </motion.button>
       <AnimatePresence initial={false}>
         {expanded ? (
           <motion.div
             className="metric-card-detail"
+            layout
             key="metric-detail"
             initial={{ opacity: 0, height: 0, y: -8 }}
             animate={{ opacity: 1, height: "auto", y: 0 }}
             exit={{ opacity: 0, height: 0, y: -8 }}
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div className="metric-card-chart-head">
+            {hasCurve ? <div className="metric-card-chart-head">
               <span>{t("range")}: {axisLabel}</span>
               <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
-            </div>
-            {hasCurve ? <MetricChart points={family.points} axisKind={family.axisKind} /> : null}
-            <div>
-              <span>{t("low")}</span>
-              <strong>{formatMetric(family.min)}</strong>
-            </div>
-            <div>
-              <span>{t("high")}</span>
-              <strong>{formatMetric(family.max)}</strong>
-            </div>
-            <div>
-              <span>{t("delta")}</span>
-              <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
-            </div>
-            <div className="metric-card-rangebar" aria-hidden="true">
-              <i />
-              <b style={{ left: `${metricRangePosition(family)}%` }} />
-            </div>
-            <div className="metric-card-detail-series">
-              <span>{t("series")}</span>
-              {family.series.map((row, index) => (
-                <p key={`${row.series || t("defaultSeries")}-${index}`}>
-                  <span>{row.series || t("defaultSeries")}</span>
-                  <strong>{formatMetricValue(row)}</strong>
+            </div> : null}
+            {hasCurve ? <MetricChart points={family.points} series={family.curveTrends} axisKind={family.axisKind} /> : null}
+            {!hasCurve ? (
+              <div className="metric-reference-board">
+                <span>{t("references")}</span>
+                <div className="metric-reference-grid">
+                  {referenceRows.map((row, index) => (
+                    <div className="metric-reference-value" key={`${row.key || t("defaultSeries")}-${index}`} title={row.fullLabel}>
+                      <span><i style={{ backgroundColor: metricSeriesColor(index) }} />{row.label || t("defaultSeries")}</span>
+                      <strong>{formatMetricValue(row.latest)}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {hasCurve ? (
+              <>
+                <div>
+                  <span>{t("low")}</span>
+                  <strong>{formatMetric(family.min)}</strong>
+                </div>
+                <div>
+                  <span>{t("high")}</span>
+                  <strong>{formatMetric(family.max)}</strong>
+                </div>
+                <div>
+                  <span>{t("delta")}</span>
+                  <strong>{formatMetricDelta(family.delta, family.deltaPct)}</strong>
+                </div>
+              </>
+            ) : null}
+            {hasCurve ? <div className="metric-card-detail-series">
+              <span>{t("curves")}</span>
+              {family.curveTrends.map((row, index) => (
+                <p key={`${row.key || t("defaultSeries")}-${index}`} title={row.fullLabel}>
+                  <span><i style={{ backgroundColor: metricSeriesColor(index) }} />{row.label || t("defaultSeries")}</span>
+                  <strong>{formatMetricValue(row.latest)}</strong>
                 </p>
               ))}
-            </div>
+            </div> : null}
+            {hasCurve && family.referenceTrends.length ? (
+              <div className="metric-card-detail-series metric-card-reference-series">
+                <span>{t("references")}</span>
+                {family.referenceTrends.map((row, index) => (
+                  <p key={`${row.key || t("defaultSeries")}-${index}`} title={row.fullLabel}>
+                    <span><i style={{ backgroundColor: metricSeriesColor(index + family.curveTrends.length) }} />{row.label || t("defaultSeries")}</span>
+                    <strong>{formatMetricValue(row.latest)}</strong>
+                  </p>
+                ))}
+              </div>
+            ) : null}
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -1505,20 +1536,19 @@ function CompareModal({ t, token, runs, onClose }: { t: T; token: string; runs: 
   );
 }
 
-function MetricChart({ points, compact = false, axisKind = "sample" }: { points: MetricPoint[]; compact?: boolean; axisKind?: "epoch" | "step" | "sample" }) {
+function MetricChart({ points, series, compact = false, axisKind = "sample" }: { points: MetricPoint[]; series?: MetricSeriesSummary[]; compact?: boolean; axisKind?: "epoch" | "step" | "sample" }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
-    const grouped = new Map<string, MetricPoint[]>();
-    for (const point of points) {
-      const key = point.series ? point.series + "/" + point.name : point.name;
-      grouped.set(key, [...(grouped.get(key) || []), point]);
-    }
+    const chartSeries = series?.length
+      ? series
+      : summarizeChartSeries(points, axisKind);
     chart.setOption({
       animationDuration: 180,
-      color: ["#4d6f91", "#b3522f", "#648a5a", "#9a6a24", "#6e6a9a", "#3f7e82"],
+      color: chartSeries.map((_, index) => metricSeriesColor(index)),
       grid: compact ? { left: 46, right: 12, top: 12, bottom: 28 } : { left: 46, right: 16, top: 18, bottom: 30 },
+      legend: undefined,
       tooltip: { trigger: "axis", valueFormatter: (value: unknown) => formatMetric(Number(value)) },
       xAxis: {
         type: "value",
@@ -1535,13 +1565,18 @@ function MetricChart({ points, compact = false, axisKind = "sample" }: { points:
         axisTick: { show: true, lineStyle: { color: "#d7dde2" } },
         splitLine: { lineStyle: { color: "#edf1f4" } }
       },
-      series: Array.from(grouped.entries()).slice(0, 12).map(([name, rows]) => ({
-        name,
+      series: chartSeries.slice(0, 12).map((row, index) => ({
+        name: row.label,
         type: "line",
         smooth: false,
         lineStyle: { width: compact ? 1.7 : 2 },
-        showSymbol: false,
-        data: rows.map((row, idx) => [metricChartAxis(row, idx, axisKind), row.value])
+        showSymbol: row.points.length <= 1,
+        symbolSize: row.points.length <= 1 ? 8 : 4,
+        data: row.points.map((point, idx) => ({
+          name: row.fullLabel,
+          value: [metricChartAxis(point, idx, axisKind), point.value],
+          itemStyle: { color: metricSeriesColor(index) }
+        }))
       }))
     });
     const resize = () => chart.resize();
@@ -1553,7 +1588,7 @@ function MetricChart({ points, compact = false, axisKind = "sample" }: { points:
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
-  }, [points, compact, axisKind]);
+  }, [points, series, compact, axisKind]);
   return <div className={compact ? "chart chart-compact" : "chart"} ref={ref} />;
 }
 
@@ -2340,10 +2375,27 @@ function metricChartAxis(point: MetricPoint, fallback: number, axisKind: "epoch"
   return fallback;
 }
 
-function metricRangePosition(family: MetricFamily) {
-  const latest = family.latest?.value;
-  if (latest == null || !Number.isFinite(latest) || !Number.isFinite(family.min) || !Number.isFinite(family.max) || family.max === family.min) return 50;
-  return Math.max(0, Math.min(100, ((latest - family.min) / (family.max - family.min)) * 100));
+function metricSeriesColor(index: number) {
+  const colors = ["#4d6f91", "#b3522f", "#648a5a", "#9a6a24", "#6e6a9a", "#3f7e82", "#8a5a44", "#58748a"];
+  return colors[index % colors.length];
+}
+
+function summarizeChartSeries(points: MetricPoint[], axisKind: "epoch" | "step" | "sample"): MetricSeriesSummary[] {
+  const grouped = new Map<string, MetricPoint[]>();
+  for (const point of points) {
+    const key = point.series ? `${point.series}/${point.name}` : point.name;
+    grouped.set(key, [...(grouped.get(key) || []), point]);
+  }
+  return Array.from(grouped.entries()).map(([key, rows]) => ({
+    key,
+    label: shortSeriesName(key),
+    fullLabel: key,
+    latest: rows[rows.length - 1],
+    count: rows.length,
+    role: "curve",
+    trend: rows.map((row, index) => ({ axis: metricChartAxis(row, index, axisKind), value: row.value })),
+    points: rows
+  }));
 }
 
 function metricSparklinePoints(points: Array<{ value: number }>, height = 34) {

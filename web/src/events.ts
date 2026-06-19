@@ -19,6 +19,20 @@ export interface MetricFamilySummary {
   trend: Array<{ axis: number; value: number }>;
   points: MetricPoint[];
   series: MetricPoint[];
+  trends: MetricSeriesSummary[];
+  curveTrends: MetricSeriesSummary[];
+  referenceTrends: MetricSeriesSummary[];
+}
+
+export interface MetricSeriesSummary {
+  key: string;
+  label: string;
+  fullLabel: string;
+  latest: MetricPoint;
+  count: number;
+  role: "curve" | "reference";
+  trend: Array<{ axis: number; value: number }>;
+  points: MetricPoint[];
 }
 
 export interface ProgressSummary {
@@ -96,7 +110,8 @@ function eventSeries(ev: UIEvent): string | undefined {
     eventContext(ev, "seed", "seed"),
     eventContext(ev, "fold", "fold"),
     eventContext(ev, "split"),
-    eventContext(ev, "stage")
+    eventContext(ev, "stage"),
+    eventContext(ev, "fusion", "fusion")
   ].filter(Boolean) as string[];
   const parts = rawParts.filter((part, index) => rawParts.indexOf(part) === index);
   return parts.length ? parts.join("/") : undefined;
@@ -255,13 +270,102 @@ function sampleTrend(rows: MetricPoint[], axisKind: "epoch" | "step" | "sample",
   if (axisKind === "sample") return [];
   const finiteRows = rows.filter((row) => Number.isFinite(row.value));
   if (finiteRows.length <= limit) {
-    return finiteRows.map((row, index) => ({ axis: metricAxis(row, rows.indexOf(row), axisKind), value: row.value }));
+    return finiteRows.map((row, index) => ({ axis: metricAxis(row, index, axisKind), value: row.value }));
   }
   return Array.from({ length: limit }, (_, index) => {
     const sourceIndex = Math.round((index / (limit - 1)) * (finiteRows.length - 1));
     const row = finiteRows[sourceIndex];
-    return { axis: metricAxis(row, rows.indexOf(row), axisKind), value: row.value };
+    return { axis: metricAxis(row, sourceIndex, axisKind), value: row.value };
   });
+}
+
+function metricSeriesKey(point: MetricPoint): string {
+  return point.series || "";
+}
+
+function compactSeriesLabels(keys: string[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  if (!keys.length) return labels;
+  const parts = keys.map((key) => key.split("/").map((part) => part.trim()).filter(Boolean));
+  let common = 0;
+  while (parts.every((segments) => segments[common] && segments[common] === parts[0][common])) common += 1;
+  const used = new Map<string, number>();
+  keys.forEach((key, index) => {
+    const segments = parts[index];
+    let label = semanticSeriesLabel(segments, common);
+    if (!label) label = "default";
+    const seen = used.get(label) || 0;
+    used.set(label, seen + 1);
+    labels.set(key, seen ? `${label} #${seen + 1}` : label);
+  });
+  return labels;
+}
+
+function semanticSeriesLabel(segments: string[], commonPrefixLength: number): string {
+  const suffix = segments.slice(commonPrefixLength);
+  const all = suffix.length ? suffix : segments.slice(Math.max(0, commonPrefixLength - 1));
+  const fusion = all.find((part) => part.startsWith("fusion:"))?.replace(/^fusion:/, "");
+  const stage = all.find((part) => /^(final|baseline|reference|ref)$/i.test(part));
+  const split = all.find((part) => /^(train|val|valid|validation|test|eval)$/i.test(part));
+  const trial = all.find((part) => part.startsWith("trial:"));
+  const seed = all.find((part) => part.startsWith("seed:"));
+  const pieces = [fusion, normalizeStageLabel(stage), normalizeSplitLabel(split), trial].filter(Boolean) as string[];
+  if (pieces.length) return pieces.join(" · ");
+  const variant = all.find((part) => part.length > 18 && /[_-]/.test(part));
+  if (variant) return compactVariantLabel(variant);
+  if (seed) return seed;
+  return all.join(" / ");
+}
+
+function normalizeStageLabel(stage?: string) {
+  if (!stage) return undefined;
+  return stage === "ref" ? "reference" : stage;
+}
+
+function normalizeSplitLabel(split?: string) {
+  if (!split) return undefined;
+  if (split === "valid" || split === "validation") return "val";
+  return split;
+}
+
+function compactVariantLabel(value: string) {
+  const clean = value.replace(/[_-]+/g, " ");
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  const cues = ["finetune", "frozen", "baseline", "raw", "saits", "clean", "cnn", "wavelet", "residual", "linear"];
+  const picked = cues.filter((cue) => tokens.some((token) => token.toLowerCase() === cue));
+  if (picked.length) return picked.slice(0, 3).join(" · ");
+  return tokens.slice(0, 3).join(" ");
+}
+
+function seriesRole(key: string, rows: MetricPoint[], axisKind: "epoch" | "step" | "sample"): "curve" | "reference" {
+  if (axisKind === "sample") return "reference";
+  const segments = key.split("/").map((part) => part.trim()).filter(Boolean);
+  if (segments.some((part) => /^(final|baseline|reference|ref)$/i.test(part))) return "reference";
+  const axes = uniqueFiniteValues(rows.map((row, index) => metricAxis(row, index, axisKind)));
+  return axes.length > 1 && rows.length > 1 ? "curve" : "reference";
+}
+
+function summarizeMetricSeries(rows: MetricPoint[], axisKind: "epoch" | "step" | "sample"): MetricSeriesSummary[] {
+  const grouped = new Map<string, MetricPoint[]>();
+  for (const row of rows) {
+    const key = metricSeriesKey(row);
+    grouped.set(key, [...(grouped.get(key) || []), row]);
+  }
+  const labelByKey = compactSeriesLabels(Array.from(grouped.keys()));
+  return Array.from(grouped.entries()).map(([key, seriesRows]) => {
+    const finiteRows = seriesRows.filter((row) => Number.isFinite(row.value));
+    const latest = finiteRows[finiteRows.length - 1] || seriesRows[seriesRows.length - 1];
+    return {
+      key,
+      label: labelByKey.get(key) || key || "default",
+      fullLabel: key || "default",
+      latest,
+      count: finiteRows.length,
+      role: seriesRole(key, finiteRows, axisKind),
+      trend: sampleTrend(finiteRows, axisKind),
+      points: finiteRows
+    };
+  }).filter((row) => row.latest);
 }
 
 function metricScale(unit: string | undefined, values: number[]) {
@@ -294,6 +398,13 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
     const values = finiteRows.map((row) => row.value);
     const scale = metricScale(unit, values);
     const axisKind = resolveMetricAxisKind(finiteRows);
+    const trends = summarizeMetricSeries(finiteRows, axisKind);
+    const curveTrends = trends.filter((trend) => trend.role === "curve");
+    const referenceTrends = trends.filter((trend) => trend.role === "reference");
+    const axisRows = curveTrends.length ? curveTrends.flatMap((trend) => trend.points) : finiteRows;
+    const axisValues = axisKind === "sample"
+      ? []
+      : axisRows.map((row, index) => metricAxis(row, finiteRows.indexOf(row) >= 0 ? finiteRows.indexOf(row) : index, axisKind)).filter((value) => Number.isFinite(value));
     const firstIndex = first ? rows.indexOf(first) : 0;
     const latestIndex = latest ? rows.indexOf(latest) : rows.length - 1;
     const delta = first && latest ? latest.value - first.value : NaN;
@@ -311,11 +422,14 @@ export function summarizeMetricFamilies(points: MetricPoint[]): MetricFamilySumm
       max: values.length ? Math.max(...values) : NaN,
       delta,
       deltaPct,
-      axisStart: first && axisKind !== "sample" ? metricAxis(first, firstIndex, axisKind) : undefined,
-      axisEnd: latest && axisKind !== "sample" ? metricAxis(latest, latestIndex, axisKind) : undefined,
+      axisStart: axisValues.length ? Math.min(...axisValues) : first && axisKind !== "sample" ? metricAxis(first, firstIndex, axisKind) : undefined,
+      axisEnd: axisValues.length ? Math.max(...axisValues) : latest && axisKind !== "sample" ? metricAxis(latest, latestIndex, axisKind) : undefined,
       trend: sampleTrend(rows, axisKind),
       points: finiteRows,
-      series: Array.from(latestBySeries.values()).slice(0, 5)
+      series: Array.from(latestBySeries.values()).slice(0, 5),
+      trends,
+      curveTrends,
+      referenceTrends
     };
   });
 }

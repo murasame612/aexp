@@ -1,4 +1,5 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
+import type { CSSProperties } from "react";
 import type { EvidenceChainEdge, EvidenceChainNode, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType } from "./types";
 import { runTitle, text } from "./utils";
 
@@ -18,6 +19,7 @@ export interface EvidenceNodeData extends Record<string, unknown> {
   evidenceLevel?: string;
   onOpenRun?: (runId: string) => void;
   onUpdateNode?: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
+  onResizeNode?: (nodeId: string, size: { width: number; height: number }) => void;
   labels?: EvidenceBoardLabels;
 }
 
@@ -211,7 +213,7 @@ export function apiEdgeToFlowEdge(edge: EvidenceChainEdge): EvidenceFlowEdge {
     targetHandle: typeof data.targetHandle === "string" ? data.targetHandle : undefined,
     label: edge.label ?? edgeTypeLabel(type),
     data: { type, rationale: edge.rationale || "", ...data },
-    animated: type === "next_step",
+    animated: false,
     markerEnd: evidenceMarkerEnd(type),
     style: edgeStyle(type)
   };
@@ -228,8 +230,8 @@ export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: Evidenc
       project_card_id: node.data.projectCardId || "",
       x: node.position.x,
       y: node.position.y,
-      width: typeof node.measured?.width === "number" ? node.measured.width : typeof node.width === "number" ? node.width : 286,
-      height: typeof node.measured?.height === "number" ? node.measured.height : typeof node.height === "number" ? node.height : 184,
+      width: typeof node.width === "number" ? node.width : typeof node.measured?.width === "number" ? node.measured.width : 286,
+      height: typeof node.height === "number" ? node.height : typeof node.measured?.height === "number" ? node.measured.height : 184,
       data_json: JSON.stringify({
         runTitle: node.data.runTitle || "",
         status: node.data.status || "",
@@ -266,16 +268,16 @@ export function evidenceMarkerEnd(type: EvidenceEdgeType) {
   };
 }
 
-export function edgeStyle(type: EvidenceEdgeType) {
+export function edgeStyle(type: EvidenceEdgeType): CSSProperties {
   switch (type) {
     case "supports":
-      return { stroke: "#32664b", strokeWidth: 2 };
+      return { stroke: "#32664b", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
     case "does_not_prove":
-      return { stroke: "#b24b43", strokeWidth: 2, strokeDasharray: "6 4" };
+      return { stroke: "#b24b43", strokeWidth: 2, strokeDasharray: "6 4", strokeLinecap: "round", strokeLinejoin: "round" };
     case "custom":
-      return { stroke: "#56616d", strokeWidth: 2 };
+      return { stroke: "#56616d", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
     case "next_step":
     default:
-      return { stroke: "#4f6f8f", strokeWidth: 2 };
+      return { stroke: "#4f6f8f", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
   }
 }
