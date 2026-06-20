@@ -623,3 +623,94 @@ func TestEvidenceChainAPIAndValidation(t *testing.T) {
 		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
 }
+
+func TestExperimentMatrixAPIAndValidation(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_matrix_api",
+		Name:    "mu",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []*store.Run{
+		{ID: "run_matrix_card", ResourceID: "rsrc_matrix_api", Name: "carded", Kind: store.RunKindFormal, Status: store.RunStatusSucceeded, Command: "python train.py"},
+		{ID: "run_matrix_free", ResourceID: "rsrc_matrix_api", Name: "free", Kind: store.RunKindPilot, Status: store.RunStatusSucceeded, Command: "python pilot.py"},
+	} {
+		if err := db.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.SaveProjectRunCard(ctx, &store.ProjectRunCard{
+		ID:          "card_matrix",
+		ProjectID:   "dam",
+		ProjectName: "Dam",
+		RunID:       "run_matrix_card",
+		Question:    "Does the ablation help?",
+		Verdict:     "It helps.",
+		KeyMetrics:  "val_loss=0.12",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/experiment-matrices", bytes.NewBufferString(`{"title":"Dam ablations","source_kind":"project","source_id":"dam","source_name":"Dam","seed_from_source":true}`))
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var detail store.ExperimentMatrixDetail
+	if err := json.Unmarshal(createRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if detail.ID == "" || len(detail.Rows) != 1 || len(detail.Columns) != 1 || len(detail.Cells) != 1 {
+		t.Fatalf("seeded detail = %#v, want one seeded cell", detail)
+	}
+	if detail.Cells[0].RunID != "run_matrix_card" || detail.Cells[0].ProjectCardID != "card_matrix" {
+		t.Fatalf("seeded cell = %#v, want carded run", detail.Cells[0])
+	}
+
+	saveBody := `{
+		"rows":[{"id":"row_a","label":"Ablation A","position":0}],
+		"columns":[{"id":"col_result","label":"Result","position":0}],
+		"cells":[{"id":"cell_a","row_id":"row_a","column_id":"col_result","run_id":"run_matrix_free","title":"free","statement":"pilot only"}]
+	}`
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/v1/experiment-matrices/"+detail.ID+"/grid", bytes.NewBufferString(saveBody))
+	saveRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", saveRec.Code, saveRec.Body.String())
+	}
+	var saved store.ExperimentMatrixDetail
+	if err := json.Unmarshal(saveRec.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("decode saved matrix: %v", err)
+	}
+	if len(saved.Cells) != 1 || saved.Cells[0].RunID != "run_matrix_free" {
+		t.Fatalf("saved detail = %#v, want free run cell", saved)
+	}
+
+	badRun := `{"rows":[{"id":"row_a","label":"A","position":0}],"columns":[{"id":"col_a","label":"A","position":0}],"cells":[{"id":"cell_bad","row_id":"row_a","column_id":"col_a","run_id":"missing"}]}`
+	badReq := httptest.NewRequest(http.MethodPut, "/api/v1/experiment-matrices/"+detail.ID+"/grid", bytes.NewBufferString(badRun))
+	badRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad run status = %d body=%s", badRec.Code, badRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/experiment-matrices/"+detail.ID, nil)
+	deleteRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}

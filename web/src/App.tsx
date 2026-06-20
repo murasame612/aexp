@@ -13,6 +13,7 @@ import {
   Cpu,
   Database,
   ExternalLink,
+  Grid3X3,
   Heart,
   Languages,
   Network,
@@ -103,8 +104,9 @@ import {
 import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type MetricSeriesSummary, type ProgressSummary } from "./events";
 import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
+import { ExperimentMatrixPage } from "./ExperimentMatrixPage";
 
-type Tab = "dashboard" | "resources" | "projects" | "evidence" | "runs" | "favorites" | "execs";
+type Tab = "dashboard" | "resources" | "projects" | "matrices" | "evidence" | "runs" | "favorites" | "execs";
 
 interface RunProjectMeta {
   projectId: string;
@@ -278,6 +280,7 @@ export function App() {
           <NavButton active={tab === "dashboard"} icon={<Activity />} label={t("dashboard")} onClick={() => setActiveTab("dashboard")} />
           <NavButton active={tab === "resources"} icon={<Server />} label={t("resources")} onClick={() => setActiveTab("resources")} />
           <NavButton active={tab === "projects"} icon={<Database />} label={t("projects")} onClick={() => setActiveTab("projects")} />
+          <NavButton active={tab === "matrices"} icon={<Grid3X3 />} label={t("matrices")} onClick={() => setActiveTab("matrices")} />
           <NavButton active={tab === "evidence"} icon={<Network />} label={t("evidenceChains")} onClick={() => setActiveTab("evidence")} />
           <NavButton active={tab === "runs"} icon={<PlayCircle />} label={t("runs")} onClick={() => setActiveTab("runs")} />
           <NavButton active={tab === "favorites"} icon={<Star />} label={t("favorites")} onClick={() => setActiveTab("favorites")} />
@@ -373,6 +376,7 @@ export function App() {
               />
             )}
             {tab === "projects" && <ProjectsTab t={t} projects={visibleProjects} query={projectQuery} setQuery={setProjectQuery} resourceById={resourceById} onOpenRun={setDetailRunId} />}
+            {tab === "matrices" && <ExperimentMatrixPage token={token} t={t} onOpenRun={setDetailRunId} />}
             {tab === "evidence" && <EvidenceChainBoard token={token} t={t} onOpenRun={setDetailRunId} />}
             {tab === "runs" && (
               <RunsTab
@@ -2578,7 +2582,7 @@ function statusTone(status?: string): "good" | "bad" | "warn" | "neutral" | "acc
 }
 
 function labelForTab(tab: Tab, t: T) {
-  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", projects: "projects", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs" };
+  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", projects: "projects", matrices: "matrices", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs" };
   return t(map[tab]);
 }
 
@@ -2670,6 +2674,7 @@ function readInitialTab(): Tab {
   const path = window.location.pathname;
   if (path.startsWith("/ui-v2/resources")) return "resources";
   if (path.startsWith("/ui-v2/projects")) return "projects";
+  if (path.startsWith("/ui-v2/matrices")) return "matrices";
   if (path.startsWith("/ui-v2/evidence-chains")) return "evidence";
   if (path.startsWith("/ui-v2/runs")) return "runs";
   if (path.startsWith("/ui-v2/favorites")) return "favorites";
@@ -2682,6 +2687,7 @@ function pathForTab(tab: Tab) {
     dashboard: "/ui-v2/",
     resources: "/ui-v2/resources",
     projects: "/ui-v2/projects",
+    matrices: "/ui-v2/matrices",
     evidence: "/ui-v2/evidence-chains",
     runs: "/ui-v2/runs",
     favorites: "/ui-v2/favorites",

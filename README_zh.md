@@ -76,6 +76,20 @@ AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasa
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 
+后续更新或卸载：
+
+```bash
+aexp update
+aexp update --stop-serve
+aexp uninstall --yes
+aexp uninstall --yes --purge-data
+```
+
+`aexp update` 会下载当前系统/架构对应的 GitHub Release，校验
+`checksums.txt`，用 `--version` 做一次冒烟验证，备份旧二进制后替换，并重建
+`aexp-event` 兼容入口。`aexp uninstall` 默认删除二进制和 MCP 客户端配置，但保留
+`~/.aexp`；只有显式传入 `--purge-data` 才会删除本地数据库、日志和缓存。
+
 ### 从源码构建
 
 ```bash

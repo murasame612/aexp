@@ -490,6 +490,128 @@ func (s *Server) toolProjectDigest(ctx context.Context, args map[string]interfac
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
 
+func (s *Server) toolEvidenceList(ctx context.Context, args map[string]interface{}) (string, error) {
+	cli := []string{"evidence", "list", "--json"}
+	addOptionalStringFlag(&cli, args, "query", "--query")
+	if v, ok := optionalIntArg(args, "limit"); ok {
+		cli = append(cli, "--limit", strconv.Itoa(v))
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolEvidenceCreate(ctx context.Context, args map[string]interface{}) (string, error) {
+	title, err := requiredString(args, "title")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"evidence", "create", title, "--json"}
+	addOptionalStringFlag(&cli, args, "description", "--description")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolEvidenceGet(ctx context.Context, args map[string]interface{}) (string, error) {
+	chainID, err := requiredString(args, "chain_id")
+	if err != nil {
+		return "", err
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "show", chainID, "--json")
+}
+
+func (s *Server) toolEvidenceAddNode(ctx context.Context, args map[string]interface{}) (string, error) {
+	chainID, err := requiredString(args, "chain_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"evidence", "add-node", chainID, "--json"}
+	addOptionalStringFlag(&cli, args, "id", "--id")
+	addOptionalStringFlag(&cli, args, "type", "--type")
+	addOptionalStringFlag(&cli, args, "title", "--title")
+	addOptionalStringFlag(&cli, args, "body", "--body")
+	addOptionalStringFlag(&cli, args, "run_id", "--run-id")
+	addOptionalStringFlag(&cli, args, "project_card_id", "--project-card-id")
+	if v, ok := optionalIntArg(args, "width"); ok {
+		cli = append(cli, "--width", strconv.Itoa(v))
+	}
+	if v, ok := optionalIntArg(args, "height"); ok {
+		cli = append(cli, "--height", strconv.Itoa(v))
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolEvidenceAddEdge(ctx context.Context, args map[string]interface{}) (string, error) {
+	chainID, err := requiredString(args, "chain_id")
+	if err != nil {
+		return "", err
+	}
+	fromNodeID, err := requiredString(args, "from_node_id")
+	if err != nil {
+		return "", err
+	}
+	toNodeID, err := requiredString(args, "to_node_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"evidence", "add-edge", chainID, "--json", "--from", fromNodeID, "--to", toNodeID}
+	addOptionalStringFlag(&cli, args, "id", "--id")
+	addOptionalStringFlag(&cli, args, "type", "--type")
+	addOptionalStringFlag(&cli, args, "label", "--label")
+	addOptionalStringFlag(&cli, args, "rationale", "--rationale")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolMatrixList(ctx context.Context, args map[string]interface{}) (string, error) {
+	cli := []string{"matrix", "list", "--json"}
+	addOptionalStringFlag(&cli, args, "query", "--query")
+	if v, ok := optionalIntArg(args, "limit"); ok {
+		cli = append(cli, "--limit", strconv.Itoa(v))
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolMatrixCreate(ctx context.Context, args map[string]interface{}) (string, error) {
+	title, err := requiredString(args, "title")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"matrix", "create", title, "--json"}
+	addOptionalStringFlag(&cli, args, "description", "--description")
+	for _, column := range stringSliceArg(args, "columns") {
+		cli = append(cli, "--column", column)
+	}
+	if boolArg(args, "no_defaults", false) {
+		cli = append(cli, "--no-defaults")
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolMatrixGet(ctx context.Context, args map[string]interface{}) (string, error) {
+	matrixID, err := requiredString(args, "matrix_id")
+	if err != nil {
+		return "", err
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "matrix", "show", matrixID, "--json")
+}
+
+func (s *Server) toolMatrixSetCell(ctx context.Context, args map[string]interface{}) (string, error) {
+	matrixID, err := requiredString(args, "matrix_id")
+	if err != nil {
+		return "", err
+	}
+	row, err := requiredString(args, "row")
+	if err != nil {
+		return "", err
+	}
+	column, err := requiredString(args, "column")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"matrix", "set", matrixID, "--json", "--row", row, "--column", column}
+	addOptionalStringFlag(&cli, args, "value", "--value")
+	addOptionalStringFlag(&cli, args, "run_id", "--run-id")
+	addOptionalStringFlag(&cli, args, "project_card_id", "--project-card-id")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
 func (s *Server) toolMarkRun(ctx context.Context, args map[string]interface{}) (string, error) {
 	runID, err := requiredString(args, "run_id")
 	if err != nil {
@@ -1623,6 +1745,130 @@ func toolRegistry() []toolSpec {
 			}, nil),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolListRunMarks(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_list_evidence_chains",
+			Description: "List Evidence Chain boards as JSON. Use this to find a reasoning board before reading or linking nodes.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"query":   stringSchema("Optional search over chain id, title, or description."),
+				"limit":   numberSchema("Maximum chains to return."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, nil),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceList(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_create_evidence_chain",
+			Description: "Create an Evidence Chain reasoning board. This creates the board only; humans still organize the visual whiteboard.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"title":       stringSchema("Evidence Chain title."),
+				"description": stringSchema("Short description of the research question or reasoning scope."),
+				"timeout":     numberSchema("Tool timeout in seconds."),
+			}, []string{"title"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceCreate(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_get_evidence_chain",
+			Description: "Read an agent-friendly Evidence Chain snapshot: node ids, run ids with short intros, note cards, and typed edges. Use run tools for detailed run logs/metrics.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"chain_id": stringSchema("Evidence Chain id."),
+				"timeout":  numberSchema("Tool timeout in seconds."),
+			}, []string{"chain_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceGet(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_add_evidence_node",
+			Description: "Add one Evidence Chain card. Agents should use this for note/hypothesis/plan/conclusion cards or run cards; it only picks a simple non-overlapping position and does not arrange the board.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"chain_id":        stringSchema("Evidence Chain id."),
+				"id":              stringSchema("Optional node id."),
+				"type":            stringSchema("Node type: run, hypothesis, experiment, plan, conclusion, note."),
+				"title":           stringSchema("Card title."),
+				"body":            stringSchema("Card body."),
+				"run_id":          stringSchema("Run id for run nodes."),
+				"project_card_id": stringSchema("Project card id for run nodes."),
+				"width":           numberSchema("Initial card width."),
+				"height":          numberSchema("Initial card height."),
+				"timeout":         numberSchema("Tool timeout in seconds."),
+			}, []string{"chain_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceAddNode(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_add_evidence_edge",
+			Description: "Add one typed Evidence Chain relationship edge between existing nodes. This records the link only; it does not lay out the whiteboard.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"chain_id":     stringSchema("Evidence Chain id."),
+				"id":           stringSchema("Optional edge id."),
+				"from_node_id": stringSchema("Source node id."),
+				"to_node_id":   stringSchema("Target node id."),
+				"type":         stringSchema("Edge type: supports, does_not_prove, next_step, custom."),
+				"label":        stringSchema("Edge label; required for custom edges."),
+				"rationale":    stringSchema("Why this relation should exist."),
+				"timeout":      numberSchema("Tool timeout in seconds."),
+			}, []string{"chain_id", "from_node_id", "to_node_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceAddEdge(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_list_matrices",
+			Description: "List Experiment Matrices as JSON. Matrices are plain experiment tables, not project containers.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"query":   stringSchema("Optional search over matrix id, title, or description."),
+				"limit":   numberSchema("Maximum matrices to return."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, nil),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolMatrixList(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_create_matrix",
+			Description: "Create an Experiment Matrix table. Use rows as experiments/runs and columns as aligned fields or metrics.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"title":       stringSchema("Matrix title."),
+				"description": stringSchema("Optional matrix scope/question."),
+				"columns":     arrayStringSchema("Initial column labels, e.g. run_id, val_loss, test_mse, conclusion."),
+				"no_defaults": boolSchema("Create with no default row/columns."),
+				"timeout":     numberSchema("Tool timeout in seconds."),
+			}, []string{"title"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolMatrixCreate(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_get_matrix",
+			Description: "Read one Experiment Matrix as JSON, including rows, columns, cells, run ids, card ids, metrics, and conclusions.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"matrix_id": stringSchema("Experiment Matrix id."),
+				"timeout":   numberSchema("Tool timeout in seconds."),
+			}, []string{"matrix_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolMatrixGet(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_set_matrix_cell",
+			Description: "Set one Experiment Matrix cell by row label and column label. Missing rows/columns are created. Use run_id to attach an experiment; never edit SQLite directly.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"matrix_id":       stringSchema("Experiment Matrix id."),
+				"row":             stringSchema("Experiment row label, e.g. trial022 seed2021."),
+				"column":          stringSchema("Column label, e.g. run_id, val_loss, conclusion."),
+				"value":           stringSchema("Cell value. For run_id columns this may be the run id."),
+				"run_id":          stringSchema("Run id to attach to this cell."),
+				"project_card_id": stringSchema("Optional project card id for the run."),
+				"timeout":         numberSchema("Tool timeout in seconds."),
+			}, []string{"matrix_id", "row", "column"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolMatrixSetCell(ctx, args)
 			},
 		},
 		{

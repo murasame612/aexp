@@ -72,6 +72,15 @@ type Store interface {
 	ListRunProjectAssignments(ctx context.Context) ([]RunProjectAssignment, error)
 	UnassignRunFromManualProjectCategory(ctx context.Context, runID string) error
 
+	// Experiment Matrices
+	CreateExperimentMatrix(ctx context.Context, m *ExperimentMatrix) error
+	GetExperimentMatrix(ctx context.Context, id string) (*ExperimentMatrix, error)
+	ListExperimentMatrices(ctx context.Context, filter ExperimentMatrixFilter) ([]ExperimentMatrix, error)
+	UpdateExperimentMatrix(ctx context.Context, m *ExperimentMatrix) error
+	DeleteExperimentMatrix(ctx context.Context, id string) error
+	GetExperimentMatrixGrid(ctx context.Context, matrixID string) (*ExperimentMatrixGrid, error)
+	SaveExperimentMatrixGrid(ctx context.Context, matrixID string, grid ExperimentMatrixGrid) error
+
 	// Evidence Chains
 	CreateEvidenceChain(ctx context.Context, c *EvidenceChain) error
 	GetEvidenceChain(ctx context.Context, id string) (*EvidenceChain, error)

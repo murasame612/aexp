@@ -69,6 +69,17 @@ func TestServerInitializeAndListTools(t *testing.T) {
 		!toolListed(listResp.Result.Tools, "aexp_project_digest") {
 		t.Fatalf("project card tools should be listed: %#v", listResp.Result.Tools)
 	}
+	if !toolListed(listResp.Result.Tools, "aexp_get_evidence_chain") ||
+		!toolListed(listResp.Result.Tools, "aexp_add_evidence_node") ||
+		!toolListed(listResp.Result.Tools, "aexp_add_evidence_edge") {
+		t.Fatalf("evidence chain tools should be listed: %#v", listResp.Result.Tools)
+	}
+	if !toolListed(listResp.Result.Tools, "aexp_list_matrices") ||
+		!toolListed(listResp.Result.Tools, "aexp_create_matrix") ||
+		!toolListed(listResp.Result.Tools, "aexp_get_matrix") ||
+		!toolListed(listResp.Result.Tools, "aexp_set_matrix_cell") {
+		t.Fatalf("matrix tools should be listed: %#v", listResp.Result.Tools)
+	}
 }
 
 func toolListed(tools []struct {
@@ -307,6 +318,114 @@ printf 'ok\n'
 	wantArgs := []string{"project", "digest", "--config", "/tmp/.aexp.yaml", "--important", "--json", "--limit", "5"}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
+func TestEvidenceChainToolsInvokeAexpBinary(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "get",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_get_evidence_chain","arguments":{"chain_id":"chain_ABC"}}}` + "\n",
+			want:  []string{"evidence", "show", "chain_ABC", "--json"},
+		},
+		{
+			name:  "add node",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_add_evidence_node","arguments":{"chain_id":"chain_ABC","type":"note","title":"Next check","body":"Compare failed seeds","run_id":"run_123","width":300,"height":180}}}` + "\n",
+			want:  []string{"evidence", "add-node", "chain_ABC", "--json", "--type", "note", "--title", "Next check", "--body", "Compare failed seeds", "--run-id", "run_123", "--width", "300", "--height", "180"},
+		},
+		{
+			name:  "add edge",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_add_evidence_edge","arguments":{"chain_id":"chain_ABC","from_node_id":"node_a","to_node_id":"node_b","type":"supports","label":"supports","rationale":"metric improved"}}}` + "\n",
+			want:  []string{"evidence", "add-edge", "chain_ABC", "--json", "--from", "node_a", "--to", "node_b", "--type", "supports", "--label", "supports", "--rationale", "metric improved"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "args.txt")
+			stub := filepath.Join(dir, "aexp-stub")
+			script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"ok":true}\n'
+`
+			if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+				t.Fatalf("write stub: %v", err)
+			}
+			t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+			var out bytes.Buffer
+			if err := NewServer(stub).Serve(t.Context(), strings.NewReader(tc.input), &out); err != nil {
+				t.Fatalf("Serve returned error: %v", err)
+			}
+			rawArgs, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+			if strings.Join(gotArgs, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", tc.want, gotArgs)
+			}
+		})
+	}
+}
+
+func TestMatrixToolsInvokeAexpBinary(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "get",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_get_matrix","arguments":{"matrix_id":"matrix_ABC"}}}` + "\n",
+			want:  []string{"matrix", "show", "matrix_ABC", "--json"},
+		},
+		{
+			name:  "create",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_create_matrix","arguments":{"title":"Dam ablation","description":"Compare trials","columns":["run_id","val_loss","conclusion"]}}}` + "\n",
+			want:  []string{"matrix", "create", "Dam ablation", "--json", "--description", "Compare trials", "--column", "run_id", "--column", "val_loss", "--column", "conclusion"},
+		},
+		{
+			name:  "set cell",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_set_matrix_cell","arguments":{"matrix_id":"matrix_ABC","row":"trial022 seed2021","column":"val_loss","value":"0.071","run_id":"run_123","project_card_id":"card_123"}}}` + "\n",
+			want:  []string{"matrix", "set", "matrix_ABC", "--json", "--row", "trial022 seed2021", "--column", "val_loss", "--value", "0.071", "--run-id", "run_123", "--project-card-id", "card_123"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "args.txt")
+			stub := filepath.Join(dir, "aexp-stub")
+			script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"ok":true}\n'
+`
+			if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+				t.Fatalf("write stub: %v", err)
+			}
+			t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+			var out bytes.Buffer
+			if err := NewServer(stub).Serve(t.Context(), strings.NewReader(tc.input), &out); err != nil {
+				t.Fatalf("Serve returned error: %v", err)
+			}
+			rawArgs, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+			if strings.Join(gotArgs, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", tc.want, gotArgs)
+			}
+		})
 	}
 }
 

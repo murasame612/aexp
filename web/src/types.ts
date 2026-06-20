@@ -202,6 +202,63 @@ export interface RunProjectAssignment {
   updated_at?: string;
 }
 
+export interface ExperimentMatrix {
+  id: string;
+  title: string;
+  description?: string;
+  source_kind?: string;
+  source_id?: string;
+  source_name?: string;
+  default_metric_key?: string;
+  default_metric_goal?: string;
+  data_json?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExperimentMatrixRow {
+  id: string;
+  matrix_id?: string;
+  label: string;
+  position: number;
+  data_json?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExperimentMatrixColumn {
+  id: string;
+  matrix_id?: string;
+  label: string;
+  position: number;
+  data_json?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExperimentMatrixCell {
+  id: string;
+  matrix_id?: string;
+  row_id: string;
+  column_id: string;
+  run_id?: string;
+  project_card_id?: string;
+  title?: string;
+  statement?: string;
+  metric_key?: string;
+  metric_value?: string;
+  note?: string;
+  data_json?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExperimentMatrixDetail extends ExperimentMatrix {
+  rows: ExperimentMatrixRow[];
+  columns: ExperimentMatrixColumn[];
+  cells: ExperimentMatrixCell[];
+}
+
 export type EvidenceNodeType = "run" | "hypothesis" | "experiment" | "plan" | "conclusion" | "note";
 export type EvidenceEdgeType = "supports" | "does_not_prove" | "next_step" | "custom";
 

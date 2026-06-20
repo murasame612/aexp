@@ -246,6 +246,85 @@ type RunProjectAssignment struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// ExperimentMatrix is a human-readable comparison grid for a research question.
+type ExperimentMatrix struct {
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	SourceKind        string    `json:"source_kind"`
+	SourceID          string    `json:"source_id"`
+	SourceName        string    `json:"source_name"`
+	DefaultMetricKey  string    `json:"default_metric_key"`
+	DefaultMetricGoal string    `json:"default_metric_goal"`
+	DataJSON          string    `json:"data_json"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// ExperimentMatrixRow is a row axis entry in an Experiment Matrix.
+type ExperimentMatrixRow struct {
+	ID        string    `json:"id"`
+	MatrixID  string    `json:"matrix_id"`
+	Label     string    `json:"label"`
+	Position  int       `json:"position"`
+	DataJSON  string    `json:"data_json"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ExperimentMatrixColumn is a column axis entry in an Experiment Matrix.
+type ExperimentMatrixColumn struct {
+	ID        string    `json:"id"`
+	MatrixID  string    `json:"matrix_id"`
+	Label     string    `json:"label"`
+	Position  int       `json:"position"`
+	DataJSON  string    `json:"data_json"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ExperimentMatrixCell links evidence to a row/column comparison slot.
+type ExperimentMatrixCell struct {
+	ID            string    `json:"id"`
+	MatrixID      string    `json:"matrix_id"`
+	RowID         string    `json:"row_id"`
+	ColumnID      string    `json:"column_id"`
+	RunID         string    `json:"run_id"`
+	ProjectCardID string    `json:"project_card_id"`
+	Title         string    `json:"title"`
+	Statement     string    `json:"statement"`
+	MetricKey     string    `json:"metric_key"`
+	MetricValue   string    `json:"metric_value"`
+	Note          string    `json:"note"`
+	DataJSON      string    `json:"data_json"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// ExperimentMatrixGrid stores editable matrix axes and cells.
+type ExperimentMatrixGrid struct {
+	Rows    []ExperimentMatrixRow    `json:"rows"`
+	Columns []ExperimentMatrixColumn `json:"columns"`
+	Cells   []ExperimentMatrixCell   `json:"cells"`
+}
+
+// ExperimentMatrixDetail returns a matrix with its grid.
+type ExperimentMatrixDetail struct {
+	ExperimentMatrix
+	Rows    []ExperimentMatrixRow    `json:"rows"`
+	Columns []ExperimentMatrixColumn `json:"columns"`
+	Cells   []ExperimentMatrixCell   `json:"cells"`
+}
+
+// ExperimentMatrixFilter is used to list Experiment Matrices.
+type ExperimentMatrixFilter struct {
+	Query      string
+	SourceKind string
+	SourceID   string
+	Limit      int
+	Offset     int
+}
+
 // EvidenceChain is a human-curated research reasoning board.
 type EvidenceChain struct {
 	ID          string    `json:"id"`

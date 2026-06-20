@@ -122,6 +122,74 @@ func TestBuildMCPUninstallPlanClaudeAlias(t *testing.T) {
 	}
 }
 
+func TestReleaseAssetNameAndURLs(t *testing.T) {
+	asset, err := releaseAssetName("darwin", "arm64")
+	if err != nil {
+		t.Fatalf("releaseAssetName error: %v", err)
+	}
+	if asset != "aexp_darwin_arm64.tar.gz" {
+		t.Fatalf("asset = %q", asset)
+	}
+	download, sums := releaseAssetURLs("murasame612/aexp", "v0.2.0", asset)
+	if download != "https://github.com/murasame612/aexp/releases/download/v0.2.0/aexp_darwin_arm64.tar.gz" {
+		t.Fatalf("download URL = %q", download)
+	}
+	if sums != "https://github.com/murasame612/aexp/releases/download/v0.2.0/checksums.txt" {
+		t.Fatalf("checksums URL = %q", sums)
+	}
+	latest, _ := releaseAssetURLs("murasame612/aexp", "latest", asset)
+	if latest != "https://github.com/murasame612/aexp/releases/latest/download/aexp_darwin_arm64.tar.gz" {
+		t.Fatalf("latest URL = %q", latest)
+	}
+}
+
+func TestChecksumForAsset(t *testing.T) {
+	checksums := "abc123  aexp_linux_amd64.tar.gz\nfeedface  aexp_darwin_arm64.tar.gz\n"
+	if got := checksumForAsset(checksums, "aexp_darwin_arm64.tar.gz"); got != "feedface" {
+		t.Fatalf("checksum = %q", got)
+	}
+	if got := checksumForAsset(checksums, "missing.tar.gz"); got != "" {
+		t.Fatalf("missing checksum = %q", got)
+	}
+}
+
+func TestReplaceBinaryCreatesBackupAndAliasPaths(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "aexp")
+	candidate := filepath.Join(dir, "candidate")
+	if err := os.WriteFile(target, []byte("old"), 0755); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(candidate, []byte("new"), 0755); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	backup, err := replaceBinary(target, candidate)
+	if err != nil {
+		t.Fatalf("replaceBinary error: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("target content = %q", got)
+	}
+	if backup == "" {
+		t.Fatal("expected backup path")
+	}
+	old, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(old) != "old" {
+		t.Fatalf("backup content = %q", old)
+	}
+	paths := uninstallBinaryPaths(target)
+	if !reflect.DeepEqual(paths, []string{target, filepath.Join(dir, "aexp-event")}) {
+		t.Fatalf("uninstall paths = %#v", paths)
+	}
+}
+
 func TestExecViaLocalAPIFallsBackOnUnauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

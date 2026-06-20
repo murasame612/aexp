@@ -136,6 +136,14 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/manual-project-categories", s.handleCreateManualProjectCategory)
 		r.Get("/manual-run-project-assignments", s.handleListManualRunProjectAssignments)
 
+		// Experiment Matrix comparison workspaces
+		r.Get("/experiment-matrices", s.handleListExperimentMatrices)
+		r.Post("/experiment-matrices", s.handleCreateExperimentMatrix)
+		r.Get("/experiment-matrices/{id}", s.handleGetExperimentMatrix)
+		r.Put("/experiment-matrices/{id}", s.handleUpdateExperimentMatrix)
+		r.Delete("/experiment-matrices/{id}", s.handleDeleteExperimentMatrix)
+		r.Put("/experiment-matrices/{id}/grid", s.handleSaveExperimentMatrixGrid)
+
 		// Evidence Chain reasoning boards
 		r.Get("/evidence-chains", s.handleListEvidenceChains)
 		r.Post("/evidence-chains", s.handleCreateEvidenceChain)
@@ -1672,6 +1680,319 @@ func (s *Server) handleUnassignRunManualProjectCategory(w http.ResponseWriter, r
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Experiment Matrices ---
+
+type experimentMatrixRequest struct {
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	SourceKind        string `json:"source_kind"`
+	SourceID          string `json:"source_id"`
+	SourceName        string `json:"source_name"`
+	DefaultMetricKey  string `json:"default_metric_key"`
+	DefaultMetricGoal string `json:"default_metric_goal"`
+	DataJSON          string `json:"data_json"`
+	SeedFromSource    bool   `json:"seed_from_source"`
+}
+
+func (s *Server) handleListExperimentMatrices(w http.ResponseWriter, r *http.Request) {
+	matrices, err := s.store.ListExperimentMatrices(r.Context(), store.ExperimentMatrixFilter{
+		Query:      r.URL.Query().Get("query"),
+		SourceKind: r.URL.Query().Get("source_kind"),
+		SourceID:   r.URL.Query().Get("source_id"),
+		Limit:      projectLimitFromQuery(r, 200),
+		Offset:     parseIntQuery(r.URL.Query().Get("offset"), 0),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, matrices)
+}
+
+func (s *Server) handleCreateExperimentMatrix(w http.ResponseWriter, r *http.Request) {
+	var req experimentMatrixRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	matrix := store.ExperimentMatrix{
+		ID:                genID("matrix_"),
+		Title:             strings.TrimSpace(req.Title),
+		Description:       strings.TrimSpace(req.Description),
+		SourceKind:        strings.TrimSpace(req.SourceKind),
+		SourceID:          strings.TrimSpace(req.SourceID),
+		SourceName:        strings.TrimSpace(req.SourceName),
+		DefaultMetricKey:  strings.TrimSpace(req.DefaultMetricKey),
+		DefaultMetricGoal: strings.TrimSpace(req.DefaultMetricGoal),
+		DataJSON:          normalizeJSONText(req.DataJSON),
+	}
+	if matrix.Title == "" {
+		matrix.Title = matrix.SourceName
+	}
+	if matrix.Title == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "title is required")
+		return
+	}
+	if err := s.store.CreateExperimentMatrix(r.Context(), &matrix); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if req.SeedFromSource {
+		grid, err := s.seedExperimentMatrixGrid(r.Context(), matrix)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "SEED_FAILED", err.Error())
+			return
+		}
+		if err := s.store.SaveExperimentMatrixGrid(r.Context(), matrix.ID, grid); err != nil {
+			writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+			return
+		}
+	}
+	detail, ok := s.experimentMatrixDetail(r.Context(), matrix.ID, w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusCreated, detail)
+}
+
+func (s *Server) handleGetExperimentMatrix(w http.ResponseWriter, r *http.Request) {
+	matrixID := chi.URLParam(r, "id")
+	detail, ok := s.experimentMatrixDetail(r.Context(), matrixID, w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) experimentMatrixDetail(ctx context.Context, matrixID string, w http.ResponseWriter) (store.ExperimentMatrixDetail, bool) {
+	matrix, err := s.store.GetExperimentMatrix(ctx, matrixID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return store.ExperimentMatrixDetail{}, false
+	}
+	if matrix == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "experiment matrix not found")
+		return store.ExperimentMatrixDetail{}, false
+	}
+	grid, err := s.store.GetExperimentMatrixGrid(ctx, matrixID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return store.ExperimentMatrixDetail{}, false
+	}
+	return store.ExperimentMatrixDetail{ExperimentMatrix: *matrix, Rows: grid.Rows, Columns: grid.Columns, Cells: grid.Cells}, true
+}
+
+func (s *Server) handleUpdateExperimentMatrix(w http.ResponseWriter, r *http.Request) {
+	matrixID := chi.URLParam(r, "id")
+	existing, err := s.store.GetExperimentMatrix(r.Context(), matrixID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "experiment matrix not found")
+		return
+	}
+	var req experimentMatrixRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	existing.Title = strings.TrimSpace(req.Title)
+	existing.Description = strings.TrimSpace(req.Description)
+	existing.SourceKind = strings.TrimSpace(req.SourceKind)
+	existing.SourceID = strings.TrimSpace(req.SourceID)
+	existing.SourceName = strings.TrimSpace(req.SourceName)
+	existing.DefaultMetricKey = strings.TrimSpace(req.DefaultMetricKey)
+	existing.DefaultMetricGoal = strings.TrimSpace(req.DefaultMetricGoal)
+	existing.DataJSON = normalizeJSONText(req.DataJSON)
+	if existing.Title == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "title is required")
+		return
+	}
+	if err := s.store.UpdateExperimentMatrix(r.Context(), existing); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, existing)
+}
+
+func (s *Server) handleDeleteExperimentMatrix(w http.ResponseWriter, r *http.Request) {
+	matrixID := chi.URLParam(r, "id")
+	if err := s.store.DeleteExperimentMatrix(r.Context(), matrixID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSaveExperimentMatrixGrid(w http.ResponseWriter, r *http.Request) {
+	matrixID := chi.URLParam(r, "id")
+	if matrix, err := s.store.GetExperimentMatrix(r.Context(), matrixID); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	} else if matrix == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "experiment matrix not found")
+		return
+	}
+	var grid store.ExperimentMatrixGrid
+	if err := json.NewDecoder(r.Body).Decode(&grid); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	if err := s.validateExperimentMatrixGrid(r.Context(), matrixID, &grid); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_GRID", err.Error())
+		return
+	}
+	if err := s.store.SaveExperimentMatrixGrid(r.Context(), matrixID, grid); err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	detail, ok := s.experimentMatrixDetail(r.Context(), matrixID, w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) validateExperimentMatrixGrid(ctx context.Context, matrixID string, grid *store.ExperimentMatrixGrid) error {
+	rowIDs := make(map[string]bool, len(grid.Rows))
+	for i := range grid.Rows {
+		row := &grid.Rows[i]
+		row.ID = strings.TrimSpace(row.ID)
+		row.MatrixID = matrixID
+		row.Label = strings.TrimSpace(row.Label)
+		row.DataJSON = normalizeJSONText(row.DataJSON)
+		if row.ID == "" {
+			return fmt.Errorf("row id is required")
+		}
+		if row.Label == "" {
+			return fmt.Errorf("row %q label is required", row.ID)
+		}
+		if rowIDs[row.ID] {
+			return fmt.Errorf("duplicate row id %q", row.ID)
+		}
+		rowIDs[row.ID] = true
+	}
+	columnIDs := make(map[string]bool, len(grid.Columns))
+	for i := range grid.Columns {
+		column := &grid.Columns[i]
+		column.ID = strings.TrimSpace(column.ID)
+		column.MatrixID = matrixID
+		column.Label = strings.TrimSpace(column.Label)
+		column.DataJSON = normalizeJSONText(column.DataJSON)
+		if column.ID == "" {
+			return fmt.Errorf("column id is required")
+		}
+		if column.Label == "" {
+			return fmt.Errorf("column %q label is required", column.ID)
+		}
+		if columnIDs[column.ID] {
+			return fmt.Errorf("duplicate column id %q", column.ID)
+		}
+		columnIDs[column.ID] = true
+	}
+	cellIDs := make(map[string]bool, len(grid.Cells))
+	for i := range grid.Cells {
+		cell := &grid.Cells[i]
+		cell.ID = strings.TrimSpace(cell.ID)
+		cell.MatrixID = matrixID
+		cell.RowID = strings.TrimSpace(cell.RowID)
+		cell.ColumnID = strings.TrimSpace(cell.ColumnID)
+		cell.RunID = strings.TrimSpace(cell.RunID)
+		cell.ProjectCardID = strings.TrimSpace(cell.ProjectCardID)
+		cell.DataJSON = normalizeJSONText(cell.DataJSON)
+		if cell.ID == "" {
+			return fmt.Errorf("cell id is required")
+		}
+		if cellIDs[cell.ID] {
+			return fmt.Errorf("duplicate cell id %q", cell.ID)
+		}
+		if !rowIDs[cell.RowID] {
+			return fmt.Errorf("cell %q row %q does not exist", cell.ID, cell.RowID)
+		}
+		if !columnIDs[cell.ColumnID] {
+			return fmt.Errorf("cell %q column %q does not exist", cell.ID, cell.ColumnID)
+		}
+		if cell.RunID != "" {
+			run, err := s.store.GetRun(ctx, cell.RunID)
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %q does not exist", cell.RunID)
+			}
+		}
+		cellIDs[cell.ID] = true
+	}
+	return nil
+}
+
+func (s *Server) seedExperimentMatrixGrid(ctx context.Context, matrix store.ExperimentMatrix) (store.ExperimentMatrixGrid, error) {
+	column := store.ExperimentMatrixColumn{ID: genID("mcol_"), Label: "结果", Position: 0}
+	grid := store.ExperimentMatrixGrid{Columns: []store.ExperimentMatrixColumn{column}}
+	switch matrix.SourceKind {
+	case "project":
+		cards, err := s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{ProjectID: matrix.SourceID, Limit: 500})
+		if err != nil {
+			return grid, err
+		}
+		for i, card := range cards {
+			row := store.ExperimentMatrixRow{ID: genID("mrow_"), Label: firstNonEmpty(card.Question, card.Verdict, card.RunID, card.ID), Position: i}
+			cell := store.ExperimentMatrixCell{
+				ID:            genID("mcell_"),
+				RowID:         row.ID,
+				ColumnID:      column.ID,
+				RunID:         card.RunID,
+				ProjectCardID: card.ID,
+				Title:         firstNonEmpty(card.Verdict, card.Question, card.RunID),
+				Statement:     firstNonEmpty(card.KeyMetrics, card.SupportsClaim, card.WeakensClaim, card.NextAction),
+				MetricKey:     matrix.DefaultMetricKey,
+			}
+			grid.Rows = append(grid.Rows, row)
+			grid.Cells = append(grid.Cells, cell)
+		}
+	case "manual_project":
+		assignments, err := s.store.ListRunProjectAssignments(ctx)
+		if err != nil {
+			return grid, err
+		}
+		pos := 0
+		for _, assignment := range assignments {
+			if assignment.CategoryID != matrix.SourceID {
+				continue
+			}
+			run, _ := s.store.GetRun(ctx, assignment.RunID)
+			label := assignment.RunID
+			if run != nil {
+				label = firstNonEmpty(run.Name, run.ID)
+			}
+			row := store.ExperimentMatrixRow{ID: genID("mrow_"), Label: label, Position: pos}
+			cell := store.ExperimentMatrixCell{ID: genID("mcell_"), RowID: row.ID, ColumnID: column.ID, RunID: assignment.RunID, Title: label, MetricKey: matrix.DefaultMetricKey}
+			grid.Rows = append(grid.Rows, row)
+			grid.Cells = append(grid.Cells, cell)
+			pos++
+		}
+	case "":
+		grid.Rows = []store.ExperimentMatrixRow{{ID: genID("mrow_"), Label: "实验", Position: 0}}
+	default:
+		return grid, fmt.Errorf("unsupported source_kind %q", matrix.SourceKind)
+	}
+	if len(grid.Rows) == 0 {
+		grid.Rows = []store.ExperimentMatrixRow{{ID: genID("mrow_"), Label: "待归类", Position: 0}}
+	}
+	return grid, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // --- Evidence Chains ---

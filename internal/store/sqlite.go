@@ -1007,6 +1007,275 @@ func (s *SQLite) UnassignRunFromManualProjectCategory(ctx context.Context, runID
 	return err
 }
 
+// --- Experiment Matrices ---
+
+const experimentMatrixColumns = "id, title, description, source_kind, source_id, source_name, default_metric_key, default_metric_goal, data_json, created_at, updated_at"
+
+func scanExperimentMatrix(m *ExperimentMatrix) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&m.ID, &m.Title, &m.Description, &m.SourceKind, &m.SourceID, &m.SourceName, &m.DefaultMetricKey, &m.DefaultMetricGoal, &m.DataJSON, &m.CreatedAt, &m.UpdatedAt)
+	}
+}
+
+func (s *SQLite) CreateExperimentMatrix(ctx context.Context, m *ExperimentMatrix) error {
+	now := time.Now()
+	if m.ID == "" {
+		m.ID = fmt.Sprintf("matrix_%d", now.UnixNano())
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+	if strings.TrimSpace(m.DataJSON) == "" {
+		m.DataJSON = "{}"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO experiment_matrices (`+experimentMatrixColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Title, m.Description, m.SourceKind, m.SourceID, m.SourceName, m.DefaultMetricKey, m.DefaultMetricGoal, m.DataJSON, m.CreatedAt, m.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLite) GetExperimentMatrix(ctx context.Context, id string) (*ExperimentMatrix, error) {
+	m := &ExperimentMatrix{}
+	err := scanExperimentMatrix(m)(s.db.QueryRowContext(ctx, `SELECT `+experimentMatrixColumns+` FROM experiment_matrices WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return m, err
+}
+
+func (s *SQLite) ListExperimentMatrices(ctx context.Context, filter ExperimentMatrixFilter) ([]ExperimentMatrix, error) {
+	query := `SELECT ` + experimentMatrixColumns + ` FROM experiment_matrices WHERE 1=1`
+	var args []interface{}
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		query += " AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(source_name) LIKE ? OR LOWER(id) LIKE ?)"
+		args = append(args, like, like, like, like)
+	}
+	if filter.SourceKind != "" {
+		query += " AND source_kind = ?"
+		args = append(args, filter.SourceKind)
+	}
+	if filter.SourceID != "" {
+		query += " AND source_id = ?"
+		args = append(args, filter.SourceID)
+	}
+	query += " ORDER BY updated_at DESC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	matrices := make([]ExperimentMatrix, 0)
+	for rows.Next() {
+		var m ExperimentMatrix
+		if err := scanExperimentMatrix(&m)(rows); err != nil {
+			return nil, err
+		}
+		matrices = append(matrices, m)
+	}
+	return matrices, rows.Err()
+}
+
+func (s *SQLite) UpdateExperimentMatrix(ctx context.Context, m *ExperimentMatrix) error {
+	m.UpdatedAt = time.Now()
+	if strings.TrimSpace(m.DataJSON) == "" {
+		m.DataJSON = "{}"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE experiment_matrices SET title = ?, description = ?, source_kind = ?, source_id = ?, source_name = ?, default_metric_key = ?, default_metric_goal = ?, data_json = ?, updated_at = ? WHERE id = ?`,
+		m.Title, m.Description, m.SourceKind, m.SourceID, m.SourceName, m.DefaultMetricKey, m.DefaultMetricGoal, m.DataJSON, m.UpdatedAt, m.ID,
+	)
+	return err
+}
+
+func (s *SQLite) DeleteExperimentMatrix(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_cells WHERE matrix_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_columns WHERE matrix_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_rows WHERE matrix_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrices WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+const experimentMatrixRowColumns = "id, matrix_id, label, position, data_json, created_at, updated_at"
+const experimentMatrixColumnColumns = "id, matrix_id, label, position, data_json, created_at, updated_at"
+const experimentMatrixCellColumns = "id, matrix_id, row_id, column_id, run_id, project_card_id, title, statement, metric_key, metric_value, note, data_json, created_at, updated_at"
+
+func scanExperimentMatrixRow(r *ExperimentMatrixRow) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&r.ID, &r.MatrixID, &r.Label, &r.Position, &r.DataJSON, &r.CreatedAt, &r.UpdatedAt)
+	}
+}
+
+func scanExperimentMatrixColumn(c *ExperimentMatrixColumn) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&c.ID, &c.MatrixID, &c.Label, &c.Position, &c.DataJSON, &c.CreatedAt, &c.UpdatedAt)
+	}
+}
+
+func scanExperimentMatrixCell(c *ExperimentMatrixCell) func(rowScanner) error {
+	return func(row rowScanner) error {
+		return row.Scan(&c.ID, &c.MatrixID, &c.RowID, &c.ColumnID, &c.RunID, &c.ProjectCardID, &c.Title, &c.Statement, &c.MetricKey, &c.MetricValue, &c.Note, &c.DataJSON, &c.CreatedAt, &c.UpdatedAt)
+	}
+}
+
+func (s *SQLite) GetExperimentMatrixGrid(ctx context.Context, matrixID string) (*ExperimentMatrixGrid, error) {
+	rows, err := s.listExperimentMatrixRows(ctx, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	columns, err := s.listExperimentMatrixColumns(ctx, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	cells, err := s.listExperimentMatrixCells(ctx, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	return &ExperimentMatrixGrid{Rows: rows, Columns: columns, Cells: cells}, nil
+}
+
+func (s *SQLite) listExperimentMatrixRows(ctx context.Context, matrixID string) ([]ExperimentMatrixRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+experimentMatrixRowColumns+` FROM experiment_matrix_rows WHERE matrix_id = ? ORDER BY position, updated_at DESC`, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ExperimentMatrixRow, 0)
+	for rows.Next() {
+		var row ExperimentMatrixRow
+		if err := scanExperimentMatrixRow(&row)(rows); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) listExperimentMatrixColumns(ctx context.Context, matrixID string) ([]ExperimentMatrixColumn, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+experimentMatrixColumnColumns+` FROM experiment_matrix_columns WHERE matrix_id = ? ORDER BY position, updated_at DESC`, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ExperimentMatrixColumn, 0)
+	for rows.Next() {
+		var column ExperimentMatrixColumn
+		if err := scanExperimentMatrixColumn(&column)(rows); err != nil {
+			return nil, err
+		}
+		out = append(out, column)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) listExperimentMatrixCells(ctx context.Context, matrixID string) ([]ExperimentMatrixCell, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+experimentMatrixCellColumns+` FROM experiment_matrix_cells WHERE matrix_id = ? ORDER BY updated_at DESC`, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ExperimentMatrixCell, 0)
+	for rows.Next() {
+		var cell ExperimentMatrixCell
+		if err := scanExperimentMatrixCell(&cell)(rows); err != nil {
+			return nil, err
+		}
+		out = append(out, cell)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) SaveExperimentMatrixGrid(ctx context.Context, matrixID string, grid ExperimentMatrixGrid) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_cells WHERE matrix_id = ?`, matrixID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_columns WHERE matrix_id = ?`, matrixID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM experiment_matrix_rows WHERE matrix_id = ?`, matrixID); err != nil {
+		return err
+	}
+	for _, row := range grid.Rows {
+		if row.CreatedAt.IsZero() {
+			row.CreatedAt = now
+		}
+		row.UpdatedAt = now
+		if strings.TrimSpace(row.DataJSON) == "" {
+			row.DataJSON = "{}"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO experiment_matrix_rows (`+experimentMatrixRowColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			row.ID, matrixID, row.Label, row.Position, row.DataJSON, row.CreatedAt, row.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	for _, column := range grid.Columns {
+		if column.CreatedAt.IsZero() {
+			column.CreatedAt = now
+		}
+		column.UpdatedAt = now
+		if strings.TrimSpace(column.DataJSON) == "" {
+			column.DataJSON = "{}"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO experiment_matrix_columns (`+experimentMatrixColumnColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			column.ID, matrixID, column.Label, column.Position, column.DataJSON, column.CreatedAt, column.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	for _, cell := range grid.Cells {
+		if cell.CreatedAt.IsZero() {
+			cell.CreatedAt = now
+		}
+		cell.UpdatedAt = now
+		if strings.TrimSpace(cell.DataJSON) == "" {
+			cell.DataJSON = "{}"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO experiment_matrix_cells (`+experimentMatrixCellColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cell.ID, matrixID, cell.RowID, cell.ColumnID, cell.RunID, cell.ProjectCardID, cell.Title, cell.Statement, cell.MetricKey, cell.MetricValue, cell.Note, cell.DataJSON, cell.CreatedAt, cell.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE experiment_matrices SET updated_at = ? WHERE id = ?`, now, matrixID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // --- Evidence Chains ---
 
 const evidenceChainColumns = "id, title, description, created_at, updated_at"

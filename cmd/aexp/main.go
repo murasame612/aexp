@@ -1,8 +1,12 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,11 +67,15 @@ Agent workflow:
 	root.AddCommand(
 		agentCmd(),
 		doctorCmd(),
+		evidenceCmd(),
 		eventCmd(),
+		matrixCmd(),
 		mcpCmd(),
 		projectCmd(),
 		syncCmd(),
+		updateCmd(),
 		serveCmd(),
+		uninstallCmd(),
 		initCmd(),
 		resourceCmd(),
 		runCmd(),
@@ -464,6 +472,480 @@ func stripFlag(args []string, flag string) []string {
 		out = append(out, arg)
 	}
 	return out
+}
+
+// --- self update / uninstall ---
+
+type selfUpdateOptions struct {
+	Repo       string
+	Version    string
+	Binary     string
+	InstallDir string
+	Name       string
+	DryRun     bool
+	NoChecksum bool
+	StopServe  bool
+	Port       int
+}
+
+func updateCmd() *cobra.Command {
+	opts := selfUpdateOptions{
+		Repo:    "murasame612/aexp",
+		Version: "latest",
+		Name:    "aexp",
+		Port:    8080,
+	}
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Download a GitHub Release and replace the local aexp binary",
+		Long: `Download a GitHub Release and replace the local aexp binary.
+
+The update is staged in a temporary directory, checksum-verified when
+checksums.txt is available, smoke-tested with --version, then copied into place
+through a same-directory temporary file and rename. The previous binary is kept
+as a timestamped .bak file.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := resolveManagedBinaryPath(opts.Binary, opts.InstallDir, opts.Name)
+			if err != nil {
+				return err
+			}
+			asset, err := releaseAssetName(runtime.GOOS, runtime.GOARCH)
+			if err != nil {
+				return err
+			}
+			archiveURL, checksumsURL := releaseAssetURLs(opts.Repo, opts.Version, asset)
+			if opts.DryRun {
+				fmt.Printf("target: %s\n", target)
+				fmt.Printf("asset: %s\n", asset)
+				fmt.Printf("download: %s\n", archiveURL)
+				if !opts.NoChecksum {
+					fmt.Printf("checksums: %s\n", checksumsURL)
+				}
+				if opts.StopServe {
+					fmt.Printf("would stop listeners on tcp:%d before replacement\n", opts.Port)
+				}
+				return nil
+			}
+			tmp, err := os.MkdirTemp("", "aexp-update-*")
+			if err != nil {
+				return fmt.Errorf("create temp dir: %w", err)
+			}
+			defer os.RemoveAll(tmp)
+
+			archivePath := filepath.Join(tmp, asset)
+			fmt.Printf("Downloading %s\n", archiveURL)
+			if err := downloadFile(cmd.Context(), archiveURL, archivePath); err != nil {
+				return err
+			}
+			if !opts.NoChecksum {
+				if err := verifyReleaseChecksum(cmd.Context(), checksumsURL, archivePath, asset); err != nil {
+					return err
+				}
+			}
+			candidate := filepath.Join(tmp, "aexp")
+			if err := extractBinaryFromTarGz(archivePath, "aexp", candidate); err != nil {
+				return err
+			}
+			if err := validateAexpCandidate(cmd.Context(), candidate); err != nil {
+				return err
+			}
+			if opts.StopServe {
+				if err := stopServeListenersByPort(cmd.Context(), opts.Port, false); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: stop serve on port %d failed: %v\n", opts.Port, err)
+				}
+			}
+			backup, err := replaceBinary(target, candidate)
+			if err != nil {
+				return err
+			}
+			if err := ensureEventAlias(target); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: create aexp-event alias failed: %v\n", err)
+			}
+			fmt.Printf("Updated %s\n", target)
+			if backup != "" {
+				fmt.Printf("Backup: %s\n", backup)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&opts.Repo, "repo", opts.Repo, "GitHub repo owner/name")
+	cmd.Flags().StringVar(&opts.Version, "version", opts.Version, "Release version tag or latest")
+	cmd.Flags().StringVar(&opts.Binary, "binary", "", "Binary path to replace (defaults to current executable)")
+	cmd.Flags().StringVar(&opts.InstallDir, "install-dir", "", "Install directory; target becomes install-dir/name")
+	cmd.Flags().StringVar(&opts.Name, "name", opts.Name, "Binary name when --install-dir is used")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Print update plan without downloading or replacing")
+	cmd.Flags().BoolVar(&opts.NoChecksum, "no-checksum", false, "Skip checksums.txt verification")
+	cmd.Flags().BoolVar(&opts.StopServe, "stop-serve", false, "Stop local aexp serve listener before replacing the binary")
+	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "Port to stop when --stop-serve is set")
+	return cmd
+}
+
+type uninstallOptions struct {
+	Binary     string
+	InstallDir string
+	Name       string
+	RemoveMCP  bool
+	MCPTarget  string
+	StopServe  bool
+	Port       int
+	PurgeData  bool
+	Yes        bool
+	DryRun     bool
+}
+
+func uninstallCmd() *cobra.Command {
+	opts := uninstallOptions{
+		Name:      "aexp",
+		RemoveMCP: true,
+		MCPTarget: "all",
+		Port:      8080,
+	}
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove the local aexp binary and MCP client config",
+		Long: `Remove the local aexp binary and MCP client config.
+
+This command does not remove ~/.aexp data by default. Use --purge-data only
+when you intentionally want to delete the local database, logs, and run cache.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !opts.DryRun && !opts.Yes {
+				return fmt.Errorf("refusing to uninstall without --yes")
+			}
+			target, err := resolveManagedBinaryPath(opts.Binary, opts.InstallDir, opts.Name)
+			if err != nil {
+				return err
+			}
+			if opts.StopServe {
+				if err := stopServeListenersByPort(cmd.Context(), opts.Port, opts.DryRun); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: stop serve on port %d failed: %v\n", opts.Port, err)
+				}
+			}
+			if opts.RemoveMCP {
+				plan, err := buildMCPInstallPlan(mcpInstallOptions{Target: opts.MCPTarget, Name: opts.Name}, true)
+				if err != nil {
+					return err
+				}
+				for _, step := range plan {
+					if opts.DryRun {
+						fmt.Println(renderHostCommand(step))
+						continue
+					}
+					if err := runMCPHostCommand(cmd.Context(), step); err != nil {
+						if step.Optional {
+							fmt.Fprintf(os.Stderr, "warning: %s failed: %v\n", step.Description, err)
+							continue
+						}
+						return err
+					}
+					fmt.Printf("%s: %s\n", step.Target, step.Description)
+				}
+			}
+			for _, path := range uninstallBinaryPaths(target) {
+				if opts.DryRun {
+					fmt.Printf("rm %s\n", path)
+					continue
+				}
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("remove %s: %w", path, err)
+				}
+				fmt.Printf("Removed %s\n", path)
+			}
+			if opts.PurgeData {
+				dataDir := expandPath("~/.aexp")
+				if opts.DryRun {
+					fmt.Printf("rm -rf %s\n", dataDir)
+				} else if err := os.RemoveAll(dataDir); err != nil {
+					return fmt.Errorf("remove %s: %w", dataDir, err)
+				} else {
+					fmt.Printf("Removed %s\n", dataDir)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&opts.Binary, "binary", "", "Binary path to remove (defaults to current executable)")
+	cmd.Flags().StringVar(&opts.InstallDir, "install-dir", "", "Install directory; target becomes install-dir/name")
+	cmd.Flags().StringVar(&opts.Name, "name", opts.Name, "Binary/MCP server name")
+	cmd.Flags().BoolVar(&opts.RemoveMCP, "mcp", opts.RemoveMCP, "Remove MCP config from selected clients")
+	cmd.Flags().StringVar(&opts.MCPTarget, "mcp-target", opts.MCPTarget, "MCP target: codex, claude, hermes, or all")
+	cmd.Flags().BoolVar(&opts.StopServe, "stop-serve", false, "Stop local aexp serve listener before uninstalling")
+	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "Port to stop when --stop-serve is set")
+	cmd.Flags().BoolVar(&opts.PurgeData, "purge-data", false, "Also remove ~/.aexp data")
+	cmd.Flags().BoolVar(&opts.Yes, "yes", false, "Confirm uninstall")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Print uninstall plan without removing anything")
+	return cmd
+}
+
+func resolveManagedBinaryPath(explicit, installDir, name string) (string, error) {
+	if installDir != "" {
+		if strings.TrimSpace(name) == "" {
+			return "", fmt.Errorf("--name is required with --install-dir")
+		}
+		return filepath.Abs(filepath.Join(expandPath(installDir), name))
+	}
+	if explicit != "" {
+		return filepath.Abs(expandPath(explicit))
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("find current executable: %w", err)
+	}
+	return filepath.Abs(exe)
+}
+
+func releaseAssetName(goos, goarch string) (string, error) {
+	switch goos {
+	case "darwin", "linux":
+	default:
+		return "", fmt.Errorf("unsupported OS %q", goos)
+	}
+	switch goarch {
+	case "amd64", "arm64":
+	default:
+		return "", fmt.Errorf("unsupported architecture %q", goarch)
+	}
+	return fmt.Sprintf("aexp_%s_%s.tar.gz", goos, goarch), nil
+}
+
+func releaseAssetURLs(repo, version, asset string) (string, string) {
+	repo = strings.Trim(strings.TrimSpace(repo), "/")
+	version = strings.TrimSpace(version)
+	if version == "" || version == "latest" {
+		base := "https://github.com/" + repo + "/releases/latest/download/"
+		return base + asset, base + "checksums.txt"
+	}
+	base := "https://github.com/" + repo + "/releases/download/" + version + "/"
+	return base + asset, base + "checksums.txt"
+}
+
+func downloadFile(ctx context.Context, url, dest string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "aexp/"+version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download %s: HTTP %s", url, resp.Status)
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dest, err)
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("write %s: %w", dest, err)
+	}
+	return nil
+}
+
+func verifyReleaseChecksum(ctx context.Context, checksumsURL, archivePath, asset string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumsURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "aexp/"+version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download checksums: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download checksums: HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read checksums: %w", err)
+	}
+	expected := checksumForAsset(string(body), asset)
+	if expected == "" {
+		return fmt.Errorf("checksums.txt did not contain %s", asset)
+	}
+	actual, err := sha256File(archivePath)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(expected, actual) {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset, expected, actual)
+	}
+	fmt.Println("Checksum ok")
+	return nil
+}
+
+func checksumForAsset(checksums, asset string) string {
+	for _, line := range strings.Split(checksums, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 2 && fields[len(fields)-1] == asset {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func extractBinaryFromTarGz(archivePath, memberName, dest string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("read gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+		if filepath.Base(header.Name) != memberName || header.Typeflag != tar.TypeReg {
+			continue
+		}
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", dest, err)
+		}
+		_, copyErr := io.Copy(out, tr)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return fmt.Errorf("extract %s: %w", memberName, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close %s: %w", dest, closeErr)
+		}
+		return os.Chmod(dest, 0755)
+	}
+	return fmt.Errorf("archive did not contain executable %s", memberName)
+}
+
+func validateAexpCandidate(ctx context.Context, candidate string) error {
+	cmd := osexec.CommandContext(ctx, candidate, "--version")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("candidate failed --version: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func replaceBinary(target, candidate string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return "", fmt.Errorf("create install dir: %w", err)
+	}
+	backup := ""
+	if _, err := os.Stat(target); err == nil {
+		backup = target + ".bak." + time.Now().Format("20060102150405")
+		if err := os.Rename(target, backup); err != nil {
+			return "", fmt.Errorf("backup existing binary: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat %s: %w", target, err)
+	}
+	tmp := target + ".tmp." + genID("")
+	if err := copyFileMode(candidate, tmp, 0755); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, target)
+		}
+		return "", err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		if backup != "" {
+			_ = os.Rename(backup, target)
+		}
+		return "", fmt.Errorf("install binary: %w", err)
+	}
+	return backup, nil
+}
+
+func copyFileMode(src, dest string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dest, err)
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy %s to %s: %w", src, dest, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", dest, closeErr)
+	}
+	return os.Chmod(dest, mode)
+}
+
+func ensureEventAlias(target string) error {
+	dir := filepath.Dir(target)
+	name := filepath.Base(target)
+	alias := filepath.Join(dir, "aexp-event")
+	_ = os.Remove(alias)
+	return os.Symlink(name, alias)
+}
+
+func uninstallBinaryPaths(target string) []string {
+	paths := []string{target}
+	alias := filepath.Join(filepath.Dir(target), "aexp-event")
+	if alias != target {
+		paths = append(paths, alias)
+	}
+	return paths
+}
+
+func stopServeListenersByPort(ctx context.Context, port int, dryRun bool) error {
+	if port <= 0 {
+		return fmt.Errorf("invalid port %d", port)
+	}
+	if _, err := osexec.LookPath("lsof"); err != nil {
+		return fmt.Errorf("lsof not found")
+	}
+	args := []string{"-tiTCP:" + strconv.Itoa(port), "-sTCP:LISTEN"}
+	if dryRun {
+		fmt.Printf("lsof %s | xargs kill\n", strings.Join(args, " "))
+		return nil
+	}
+	out, err := osexec.CommandContext(ctx, "lsof", args...).Output()
+	if err != nil {
+		if strings.TrimSpace(string(out)) == "" {
+			return nil
+		}
+		return fmt.Errorf("list listeners: %w", err)
+	}
+	for _, line := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(line)
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	return nil
 }
 
 // --- agent ---
@@ -2036,6 +2518,1032 @@ func projectDigestCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of cards")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+type evidenceChainAgentSnapshot struct {
+	ChainID     string                   `json:"chain_id"`
+	Title       string                   `json:"title"`
+	Description string                   `json:"description,omitempty"`
+	Intro       string                   `json:"intro"`
+	UpdatedAt   time.Time                `json:"updated_at"`
+	Nodes       []evidenceChainAgentNode `json:"nodes"`
+	Edges       []evidenceChainAgentEdge `json:"edges"`
+}
+
+type evidenceChainAgentNode struct {
+	NodeID        string                       `json:"node_id"`
+	Type          string                       `json:"type"`
+	Title         string                       `json:"title"`
+	Body          string                       `json:"body,omitempty"`
+	RunID         string                       `json:"run_id,omitempty"`
+	ProjectCardID string                       `json:"project_card_id,omitempty"`
+	ShortIntro    string                       `json:"short_intro"`
+	Run           *evidenceChainRunSummary     `json:"run,omitempty"`
+	ProjectCard   *evidenceChainProjectSummary `json:"project_card,omitempty"`
+	Marks         []evidenceChainMarkSummary   `json:"marks,omitempty"`
+}
+
+type evidenceChainAgentEdge struct {
+	EdgeID     string `json:"edge_id"`
+	FromNodeID string `json:"from_node_id"`
+	ToNodeID   string `json:"to_node_id"`
+	Type       string `json:"type"`
+	Label      string `json:"label,omitempty"`
+	Rationale  string `json:"rationale,omitempty"`
+}
+
+type evidenceChainRunSummary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	ResourceID string `json:"resource_id,omitempty"`
+	Command    string `json:"command,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+}
+
+type evidenceChainProjectSummary struct {
+	ID            string `json:"id"`
+	ProjectID     string `json:"project_id,omitempty"`
+	ProjectName   string `json:"project_name,omitempty"`
+	Question      string `json:"question,omitempty"`
+	Verdict       string `json:"verdict,omitempty"`
+	EvidenceLevel string `json:"evidence_level,omitempty"`
+	KeyMetrics    string `json:"key_metrics,omitempty"`
+	NextAction    string `json:"next_action,omitempty"`
+	SupportsClaim string `json:"supports_claim,omitempty"`
+	WeakensClaim  string `json:"weakens_claim,omitempty"`
+}
+
+type evidenceChainMarkSummary struct {
+	ID        string `json:"id"`
+	Actor     string `json:"actor,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Statement string `json:"statement,omitempty"`
+}
+
+func evidenceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "evidence",
+		Short: "Read and edit Evidence Chain reasoning boards",
+		Long: `Read and edit Evidence Chain reasoning boards.
+
+This command is intentionally semantic rather than visual: agents may list
+chains, read an agent-friendly graph snapshot, add cards, and add typed links.
+Agents should not try to arrange the whiteboard for humans; newly created cards
+are only placed on a simple non-overlapping grid so humans can move them later.`,
+	}
+	cmd.AddCommand(evidenceListCmd())
+	cmd.AddCommand(evidenceCreateCmd())
+	cmd.AddCommand(evidenceShowCmd())
+	cmd.AddCommand(evidenceAddNodeCmd())
+	cmd.AddCommand(evidenceAddEdgeCmd())
+	return cmd
+}
+
+func evidenceListCmd() *cobra.Command {
+	var query string
+	var limit int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List Evidence Chains",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			chains, err := db.ListEvidenceChains(cmd.Context(), store.EvidenceChainFilter{Query: query, Limit: limit})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(chains)
+			}
+			if len(chains) == 0 {
+				fmt.Println("No Evidence Chains yet.")
+				return nil
+			}
+			for _, chain := range chains {
+				fmt.Printf("%s\t%s", chain.ID, chain.Title)
+				if chain.Description != "" {
+					fmt.Printf("\t%s", evidencePreview(chain.Description, 90))
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&query, "query", "", "Search chain id, title, or description")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum chains to list")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceCreateCmd() *cobra.Command {
+	var description string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "create [title]",
+		Short: "Create an Evidence Chain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			title := strings.TrimSpace(args[0])
+			if title == "" {
+				return fmt.Errorf("title is required")
+			}
+			db := openDB()
+			defer db.Close()
+			chain := &store.EvidenceChain{
+				ID:          genID("chain_"),
+				Title:       title,
+				Description: strings.TrimSpace(description),
+			}
+			if err := db.CreateEvidenceChain(cmd.Context(), chain); err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(chain)
+			}
+			fmt.Printf("Created Evidence Chain %s: %s\n", chain.ID, chain.Title)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&description, "description", "", "Short description")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceShowCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "show [chain_id]",
+		Short: "Show an agent-readable Evidence Chain snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			snapshot, err := buildEvidenceChainAgentSnapshot(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(snapshot)
+			}
+			printEvidenceChainSnapshot(snapshot)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceAddNodeCmd() *cobra.Command {
+	var nodeID, nodeType, title, body, runID, projectCardID string
+	var width, height float64
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "add-node [chain_id]",
+		Short: "Add one card to an Evidence Chain",
+		Long: `Add one card to an Evidence Chain.
+
+This only creates a non-overlapping card. It does not attempt to arrange the
+board; humans should move and resize cards in the UI.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeType = strings.TrimSpace(nodeType)
+			if nodeType == "" {
+				nodeType = store.EvidenceNodeNote
+			}
+			if !validEvidenceNodeTypeForCLI(nodeType) {
+				return fmt.Errorf("invalid node type %q", nodeType)
+			}
+			db := openDB()
+			defer db.Close()
+			_, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			if nodeID == "" {
+				nodeID = genID("node_")
+			}
+			if evidenceNodeExists(graph.Nodes, nodeID) {
+				return fmt.Errorf("node %q already exists", nodeID)
+			}
+			runID = strings.TrimSpace(runID)
+			projectCardID = strings.TrimSpace(projectCardID)
+			var run *store.Run
+			var card *store.ProjectRunCard
+			if nodeType == store.EvidenceNodeRun {
+				if runID == "" {
+					return fmt.Errorf("run node requires --run-id")
+				}
+				run, err = db.GetRun(cmd.Context(), runID)
+				if err != nil {
+					return err
+				}
+				if run == nil {
+					return fmt.Errorf("run %q does not exist", runID)
+				}
+				card, _ = db.GetProjectRunCard(cmd.Context(), runID)
+				if projectCardID == "" && card != nil {
+					projectCardID = card.ID
+				}
+			}
+			x, y := nextEvidenceNodePosition(graph.Nodes)
+			if width <= 0 {
+				width = 280
+			}
+			if height <= 0 {
+				height = 150
+			}
+			node := store.EvidenceChainNode{
+				ID:            nodeID,
+				ChainID:       args[0],
+				Type:          nodeType,
+				Title:         firstNonEmpty(title, evidenceDefaultNodeTitle(nodeType, run, card)),
+				Body:          strings.TrimSpace(body),
+				RunID:         runID,
+				ProjectCardID: projectCardID,
+				X:             x,
+				Y:             y,
+				Width:         width,
+				Height:        height,
+				DataJSON:      "{}",
+			}
+			graph.Nodes = append(graph.Nodes, node)
+			if err := db.SaveEvidenceChainGraph(cmd.Context(), args[0], *graph); err != nil {
+				return err
+			}
+			if saved, ok := evidenceNodeByID(ctxGraph(cmd.Context(), db, args[0]), node.ID); ok {
+				node = saved
+			}
+			if asJSON {
+				return printJSON(node)
+			}
+			fmt.Printf("Added node %s (%s) to %s\n", node.ID, node.Type, args[0])
+			if node.RunID != "" {
+				fmt.Printf("run_id: %s\n", node.RunID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&nodeID, "id", "", "Node id (default: generated)")
+	cmd.Flags().StringVar(&nodeType, "type", store.EvidenceNodeNote, "Node type: run, hypothesis, experiment, plan, conclusion, note")
+	cmd.Flags().StringVar(&title, "title", "", "Card title")
+	cmd.Flags().StringVar(&body, "body", "", "Card body")
+	cmd.Flags().StringVar(&runID, "run-id", "", "Run id for run nodes")
+	cmd.Flags().StringVar(&projectCardID, "project-card-id", "", "Project card id for run nodes")
+	cmd.Flags().Float64Var(&width, "width", 0, "Initial card width")
+	cmd.Flags().Float64Var(&height, "height", 0, "Initial card height")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceAddEdgeCmd() *cobra.Command {
+	var edgeID, fromNodeID, toNodeID, edgeType, label, rationale string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "add-edge [chain_id]",
+		Short: "Add one typed relationship edge to an Evidence Chain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fromNodeID = strings.TrimSpace(fromNodeID)
+			toNodeID = strings.TrimSpace(toNodeID)
+			if fromNodeID == "" || toNodeID == "" {
+				return fmt.Errorf("--from and --to are required")
+			}
+			edgeType = strings.TrimSpace(edgeType)
+			if edgeType == "" {
+				edgeType = store.EvidenceEdgeNextStep
+			}
+			if !validEvidenceEdgeTypeForCLI(edgeType) {
+				return fmt.Errorf("invalid edge type %q", edgeType)
+			}
+			if edgeType == store.EvidenceEdgeCustom && strings.TrimSpace(label) == "" {
+				return fmt.Errorf("custom edge requires --label")
+			}
+			db := openDB()
+			defer db.Close()
+			_, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			if !evidenceNodeExists(graph.Nodes, fromNodeID) {
+				return fmt.Errorf("source node %q does not exist", fromNodeID)
+			}
+			if !evidenceNodeExists(graph.Nodes, toNodeID) {
+				return fmt.Errorf("target node %q does not exist", toNodeID)
+			}
+			if edgeID == "" {
+				edgeID = genID("edge_")
+			}
+			for _, edge := range graph.Edges {
+				if edge.ID == edgeID {
+					return fmt.Errorf("edge %q already exists", edgeID)
+				}
+			}
+			edge := store.EvidenceChainEdge{
+				ID:           edgeID,
+				ChainID:      args[0],
+				SourceNodeID: fromNodeID,
+				TargetNodeID: toNodeID,
+				Type:         edgeType,
+				Label:        firstNonEmpty(label, defaultEvidenceEdgeLabel(edgeType)),
+				Rationale:    strings.TrimSpace(rationale),
+				DataJSON:     "{}",
+			}
+			graph.Edges = append(graph.Edges, edge)
+			if err := db.SaveEvidenceChainGraph(cmd.Context(), args[0], *graph); err != nil {
+				return err
+			}
+			if saved, ok := evidenceEdgeByID(ctxGraph(cmd.Context(), db, args[0]), edge.ID); ok {
+				edge = saved
+			}
+			if asJSON {
+				return printJSON(edge)
+			}
+			fmt.Printf("Added edge %s: %s --%s--> %s\n", edge.ID, edge.SourceNodeID, edge.Type, edge.TargetNodeID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&edgeID, "id", "", "Edge id (default: generated)")
+	cmd.Flags().StringVar(&fromNodeID, "from", "", "Source node id")
+	cmd.Flags().StringVar(&toNodeID, "to", "", "Target node id")
+	cmd.Flags().StringVar(&edgeType, "type", store.EvidenceEdgeNextStep, "Edge type: supports, does_not_prove, next_step, custom")
+	cmd.Flags().StringVar(&label, "label", "", "Edge label")
+	cmd.Flags().StringVar(&rationale, "rationale", "", "Why this relation should exist")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func matrixCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "matrix",
+		Short: "Read and edit Experiment Matrices",
+		Long: `Read and edit Experiment Matrices.
+
+An Experiment Matrix is a plain table: each row is an experiment/run, columns
+are aligned fields such as run_id, val_loss, test_mse, conclusion, and notes.
+Agents should write cells through this command instead of editing SQLite
+directly.`,
+	}
+	cmd.AddCommand(matrixListCmd())
+	cmd.AddCommand(matrixCreateCmd())
+	cmd.AddCommand(matrixShowCmd())
+	cmd.AddCommand(matrixSetCmd())
+	return cmd
+}
+
+func matrixListCmd() *cobra.Command {
+	var query string
+	var limit int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List Experiment Matrices",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			matrices, err := db.ListExperimentMatrices(cmd.Context(), store.ExperimentMatrixFilter{Query: query, Limit: limit})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(matrices)
+			}
+			if len(matrices) == 0 {
+				fmt.Println("No Experiment Matrices yet.")
+				return nil
+			}
+			for _, matrix := range matrices {
+				fmt.Printf("%s\t%s", matrix.ID, matrix.Title)
+				if matrix.Description != "" {
+					fmt.Printf("\t%s", evidencePreview(matrix.Description, 90))
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&query, "query", "", "Search matrix id, title, or description")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum matrices to list")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func matrixCreateCmd() *cobra.Command {
+	var description string
+	var columns []string
+	var noDefaults bool
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "create [title]",
+		Short: "Create an Experiment Matrix",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			title := strings.TrimSpace(args[0])
+			if title == "" {
+				return fmt.Errorf("title is required")
+			}
+			db := openDB()
+			defer db.Close()
+			matrix := &store.ExperimentMatrix{
+				ID:          genID("matrix_"),
+				Title:       title,
+				Description: strings.TrimSpace(description),
+				DataJSON:    "{}",
+			}
+			if err := db.CreateExperimentMatrix(cmd.Context(), matrix); err != nil {
+				return err
+			}
+			if !noDefaults {
+				if len(columns) == 0 {
+					columns = []string{"run_id", "metric_1", "metric_2", "实验时间"}
+				}
+				grid := store.ExperimentMatrixGrid{
+					Rows: []store.ExperimentMatrixRow{{
+						ID:       genID("mrow_"),
+						Label:    "实验 1",
+						Position: 0,
+						DataJSON: "{}",
+					}},
+				}
+				for i, label := range columns {
+					label = strings.TrimSpace(label)
+					if label == "" {
+						continue
+					}
+					grid.Columns = append(grid.Columns, store.ExperimentMatrixColumn{
+						ID:       genID("mcol_"),
+						Label:    label,
+						Position: i,
+						DataJSON: "{}",
+					})
+				}
+				if err := db.SaveExperimentMatrixGrid(cmd.Context(), matrix.ID, grid); err != nil {
+					return err
+				}
+			}
+			if asJSON {
+				detail, err := loadExperimentMatrixDetail(cmd.Context(), db, matrix.ID)
+				if err != nil {
+					return err
+				}
+				return printJSON(detail)
+			}
+			fmt.Printf("Created Experiment Matrix %s: %s\n", matrix.ID, matrix.Title)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&description, "description", "", "Short description")
+	cmd.Flags().StringArrayVar(&columns, "column", nil, "Initial column label (repeatable). Defaults to run_id, metric_1, metric_2, 实验时间")
+	cmd.Flags().BoolVar(&noDefaults, "no-defaults", false, "Create an empty matrix with no rows or columns")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func matrixShowCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "show [matrix_id]",
+		Short: "Show an Experiment Matrix",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			detail, err := loadExperimentMatrixDetail(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(detail)
+			}
+			printExperimentMatrixTable(detail)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func matrixSetCmd() *cobra.Command {
+	var rowLabel, columnLabel, value, runID, projectCardID string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "set [matrix_id]",
+		Short: "Set one Experiment Matrix cell by row and column label",
+		Long: `Set one Experiment Matrix cell by row and column label.
+
+Missing rows and columns are created automatically. Use --run-id for an
+experiment reference. For a run_id column, --value may also be the run id.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rowLabel = strings.TrimSpace(rowLabel)
+			columnLabel = strings.TrimSpace(columnLabel)
+			value = strings.TrimSpace(value)
+			runID = strings.TrimSpace(runID)
+			projectCardID = strings.TrimSpace(projectCardID)
+			if rowLabel == "" || columnLabel == "" {
+				return fmt.Errorf("--row and --column are required")
+			}
+			if value == "" && runID == "" {
+				return fmt.Errorf("--value or --run-id is required")
+			}
+			db := openDB()
+			defer db.Close()
+			matrix, grid, err := loadExperimentMatrixGridForEdit(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			if runID == "" && isRunIDMatrixColumn(columnLabel) {
+				runID = value
+			}
+			if runID != "" {
+				run, err := db.GetRun(cmd.Context(), runID)
+				if err != nil {
+					return err
+				}
+				if run == nil {
+					return fmt.Errorf("run %q does not exist", runID)
+				}
+				if value == "" || isRunIDMatrixColumn(columnLabel) {
+					value = runID
+				}
+				if projectCardID == "" {
+					if card, _ := db.GetProjectRunCard(cmd.Context(), runID); card != nil {
+						projectCardID = card.ID
+					}
+				}
+			}
+			row := ensureExperimentMatrixRow(grid, rowLabel)
+			column := ensureExperimentMatrixColumn(grid, columnLabel)
+			cell := upsertExperimentMatrixCell(grid, matrix.ID, row.ID, column.ID, column.Label, value, runID, projectCardID)
+			if err := db.SaveExperimentMatrixGrid(cmd.Context(), matrix.ID, *grid); err != nil {
+				return err
+			}
+			if asJSON {
+				if detail, err := loadExperimentMatrixDetail(cmd.Context(), db, matrix.ID); err == nil {
+					if saved, ok := experimentMatrixCellByID(detail.Cells, cell.ID); ok {
+						cell = saved
+					}
+				}
+				return printJSON(cell)
+			}
+			fmt.Printf("Set %s [%s, %s] = %s\n", matrix.ID, row.Label, column.Label, value)
+			if runID != "" {
+				fmt.Printf("run_id: %s\n", runID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&rowLabel, "row", "", "Experiment row label, e.g. trial022 seed2021")
+	cmd.Flags().StringVar(&columnLabel, "column", "", "Column label, e.g. run_id, val_loss, conclusion")
+	cmd.Flags().StringVar(&value, "value", "", "Cell value")
+	cmd.Flags().StringVar(&runID, "run-id", "", "Run id to attach to this cell")
+	cmd.Flags().StringVar(&projectCardID, "project-card-id", "", "Optional project card id associated with the run")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func loadExperimentMatrixDetail(ctx context.Context, db *store.SQLite, matrixID string) (*store.ExperimentMatrixDetail, error) {
+	matrix, grid, err := loadExperimentMatrixGridForEdit(ctx, db, matrixID)
+	if err != nil {
+		return nil, err
+	}
+	return &store.ExperimentMatrixDetail{
+		ExperimentMatrix: *matrix,
+		Rows:             grid.Rows,
+		Columns:          grid.Columns,
+		Cells:            grid.Cells,
+	}, nil
+}
+
+func loadExperimentMatrixGridForEdit(ctx context.Context, db *store.SQLite, matrixID string) (*store.ExperimentMatrix, *store.ExperimentMatrixGrid, error) {
+	matrixID = strings.TrimSpace(matrixID)
+	if matrixID == "" {
+		return nil, nil, fmt.Errorf("matrix_id is required")
+	}
+	matrix, err := db.GetExperimentMatrix(ctx, matrixID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if matrix == nil {
+		return nil, nil, fmt.Errorf("experiment matrix %q not found", matrixID)
+	}
+	grid, err := db.GetExperimentMatrixGrid(ctx, matrixID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if grid == nil {
+		grid = &store.ExperimentMatrixGrid{}
+	}
+	return matrix, grid, nil
+}
+
+func ensureExperimentMatrixRow(grid *store.ExperimentMatrixGrid, label string) store.ExperimentMatrixRow {
+	for _, row := range grid.Rows {
+		if strings.EqualFold(strings.TrimSpace(row.Label), label) {
+			return row
+		}
+	}
+	row := store.ExperimentMatrixRow{
+		ID:       genID("mrow_"),
+		Label:    label,
+		Position: len(grid.Rows),
+		DataJSON: "{}",
+	}
+	grid.Rows = append(grid.Rows, row)
+	return row
+}
+
+func ensureExperimentMatrixColumn(grid *store.ExperimentMatrixGrid, label string) store.ExperimentMatrixColumn {
+	for _, column := range grid.Columns {
+		if strings.EqualFold(strings.TrimSpace(column.Label), label) {
+			return column
+		}
+	}
+	column := store.ExperimentMatrixColumn{
+		ID:       genID("mcol_"),
+		Label:    label,
+		Position: len(grid.Columns),
+		DataJSON: "{}",
+	}
+	grid.Columns = append(grid.Columns, column)
+	return column
+}
+
+func upsertExperimentMatrixCell(grid *store.ExperimentMatrixGrid, matrixID, rowID, columnID, metricKey, value, runID, projectCardID string) store.ExperimentMatrixCell {
+	cell := store.ExperimentMatrixCell{
+		ID:            genID("mcell_"),
+		MatrixID:      matrixID,
+		RowID:         rowID,
+		ColumnID:      columnID,
+		RunID:         runID,
+		ProjectCardID: projectCardID,
+		MetricKey:     metricKey,
+		MetricValue:   value,
+		DataJSON:      "{}",
+	}
+	next := grid.Cells[:0]
+	for _, existing := range grid.Cells {
+		if existing.RowID == rowID && existing.ColumnID == columnID {
+			cell.ID = existing.ID
+			cell.Title = existing.Title
+			cell.Statement = existing.Statement
+			cell.Note = existing.Note
+			if cell.RunID == "" {
+				cell.RunID = existing.RunID
+			}
+			if cell.ProjectCardID == "" {
+				cell.ProjectCardID = existing.ProjectCardID
+			}
+			if existing.DataJSON != "" && existing.DataJSON != "{}" {
+				cell.DataJSON = existing.DataJSON
+			}
+			continue
+		}
+		next = append(next, existing)
+	}
+	next = append(next, cell)
+	grid.Cells = next
+	return cell
+}
+
+func printExperimentMatrixTable(detail *store.ExperimentMatrixDetail) {
+	fmt.Printf("# %s (%s)\n", detail.Title, detail.ID)
+	if detail.Description != "" {
+		fmt.Println(detail.Description)
+	}
+	fmt.Printf("\nRows: %d  Columns: %d  Cells: %d\n\n", len(detail.Rows), len(detail.Columns), len(detail.Cells))
+	fmt.Print("实验名称")
+	for _, column := range detail.Columns {
+		fmt.Printf("\t%s", column.Label)
+	}
+	fmt.Println()
+	for _, row := range detail.Rows {
+		fmt.Print(row.Label)
+		for _, column := range detail.Columns {
+			fmt.Printf("\t%s", experimentMatrixCellDisplay(detail.Cells, row.ID, column.ID, column.Label))
+		}
+		fmt.Println()
+	}
+}
+
+func experimentMatrixCellDisplay(cells []store.ExperimentMatrixCell, rowID, columnID, columnLabel string) string {
+	for _, cell := range cells {
+		if cell.RowID == rowID && cell.ColumnID == columnID {
+			if isRunIDMatrixColumn(columnLabel) && cell.RunID != "" {
+				return cell.RunID
+			}
+			return firstNonEmpty(cell.MetricValue, cell.Statement, cell.Title, cell.Note, cell.RunID)
+		}
+	}
+	return ""
+}
+
+func experimentMatrixCellByID(cells []store.ExperimentMatrixCell, cellID string) (store.ExperimentMatrixCell, bool) {
+	for _, cell := range cells {
+		if cell.ID == cellID {
+			return cell, true
+		}
+	}
+	return store.ExperimentMatrixCell{}, false
+}
+
+func isRunIDMatrixColumn(label string) bool {
+	return strings.EqualFold(strings.ReplaceAll(strings.TrimSpace(label), " ", "_"), "run_id")
+}
+
+func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chainID string) (*evidenceChainAgentSnapshot, error) {
+	chain, graph, err := loadEvidenceChainGraphForEdit(ctx, db, chainID)
+	if err != nil {
+		return nil, err
+	}
+	nodes := append([]store.EvidenceChainNode(nil), graph.Nodes...)
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if nodes[i].Y == nodes[j].Y {
+			if nodes[i].X == nodes[j].X {
+				return nodes[i].ID < nodes[j].ID
+			}
+			return nodes[i].X < nodes[j].X
+		}
+		return nodes[i].Y < nodes[j].Y
+	})
+	edges := append([]store.EvidenceChainEdge(nil), graph.Edges...)
+	sort.SliceStable(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
+	snapshot := &evidenceChainAgentSnapshot{
+		ChainID:     chain.ID,
+		Title:       chain.Title,
+		Description: chain.Description,
+		Intro:       fmt.Sprintf("%s: %d nodes, %d typed edges", chain.Title, len(nodes), len(edges)),
+		UpdatedAt:   chain.UpdatedAt,
+		Nodes:       make([]evidenceChainAgentNode, 0, len(nodes)),
+		Edges:       make([]evidenceChainAgentEdge, 0, len(edges)),
+	}
+	for _, node := range nodes {
+		view := evidenceChainAgentNode{
+			NodeID:        node.ID,
+			Type:          node.Type,
+			Title:         node.Title,
+			Body:          node.Body,
+			RunID:         node.RunID,
+			ProjectCardID: node.ProjectCardID,
+		}
+		var run *store.Run
+		var card *store.ProjectRunCard
+		if node.RunID != "" {
+			run, _ = db.GetRun(ctx, node.RunID)
+			if run != nil {
+				view.Run = &evidenceChainRunSummary{
+					ID:         run.ID,
+					Name:       run.Name,
+					Status:     run.Status,
+					Kind:       run.Kind,
+					ResourceID: run.ResourceID,
+					Command:    evidencePreview(run.Command, 220),
+					Cwd:        firstNonEmpty(run.ResolvedCwd, run.Cwd),
+				}
+			}
+			card, _ = db.GetProjectRunCard(ctx, node.RunID)
+			if card != nil {
+				view.ProjectCard = &evidenceChainProjectSummary{
+					ID:            card.ID,
+					ProjectID:     card.ProjectID,
+					ProjectName:   card.ProjectName,
+					Question:      card.Question,
+					Verdict:       card.Verdict,
+					EvidenceLevel: card.EvidenceLevel,
+					KeyMetrics:    card.KeyMetrics,
+					NextAction:    card.NextAction,
+					SupportsClaim: card.SupportsClaim,
+					WeakensClaim:  card.WeakensClaim,
+				}
+			}
+			marks, _ := db.ListRunMarks(ctx, store.RunMarkFilter{RunID: node.RunID, Limit: 8})
+			for _, mark := range marks {
+				view.Marks = append(view.Marks, evidenceChainMarkSummary{
+					ID:        mark.ID,
+					Actor:     mark.Actor,
+					Kind:      mark.Kind,
+					Title:     mark.Title,
+					Statement: mark.Statement,
+				})
+			}
+		}
+		view.ShortIntro = evidenceNodeShortIntro(node, run, card)
+		snapshot.Nodes = append(snapshot.Nodes, view)
+	}
+	for _, edge := range edges {
+		snapshot.Edges = append(snapshot.Edges, evidenceChainAgentEdge{
+			EdgeID:     edge.ID,
+			FromNodeID: edge.SourceNodeID,
+			ToNodeID:   edge.TargetNodeID,
+			Type:       edge.Type,
+			Label:      edge.Label,
+			Rationale:  edge.Rationale,
+		})
+	}
+	return snapshot, nil
+}
+
+func printEvidenceChainSnapshot(snapshot *evidenceChainAgentSnapshot) {
+	fmt.Printf("# %s (%s)\n", snapshot.Title, snapshot.ChainID)
+	if snapshot.Description != "" {
+		fmt.Println(snapshot.Description)
+	}
+	fmt.Printf("\nNodes: %d  Edges: %d\n\n", len(snapshot.Nodes), len(snapshot.Edges))
+	for _, node := range snapshot.Nodes {
+		fmt.Printf("- %s [%s] %s\n", node.NodeID, node.Type, firstNonEmpty(node.Title, node.ShortIntro))
+		if node.RunID != "" {
+			fmt.Printf("  run_id: %s\n", node.RunID)
+		}
+		if node.ShortIntro != "" {
+			fmt.Printf("  intro: %s\n", node.ShortIntro)
+		}
+	}
+	if len(snapshot.Edges) > 0 {
+		fmt.Println("\nEdges:")
+		for _, edge := range snapshot.Edges {
+			label := firstNonEmpty(edge.Label, defaultEvidenceEdgeLabel(edge.Type))
+			fmt.Printf("- %s: %s --%s/%s--> %s\n", edge.EdgeID, edge.FromNodeID, edge.Type, label, edge.ToNodeID)
+			if edge.Rationale != "" {
+				fmt.Printf("  rationale: %s\n", edge.Rationale)
+			}
+		}
+	}
+}
+
+func loadEvidenceChainGraphForEdit(ctx context.Context, db *store.SQLite, chainID string) (*store.EvidenceChain, *store.EvidenceChainGraph, error) {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return nil, nil, fmt.Errorf("chain_id is required")
+	}
+	chain, err := db.GetEvidenceChain(ctx, chainID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if chain == nil {
+		return nil, nil, fmt.Errorf("evidence chain %q not found", chainID)
+	}
+	graph, err := db.GetEvidenceChainGraph(ctx, chainID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if graph == nil {
+		graph = &store.EvidenceChainGraph{}
+	}
+	return chain, graph, nil
+}
+
+func ctxGraph(ctx context.Context, db *store.SQLite, chainID string) *store.EvidenceChainGraph {
+	graph, err := db.GetEvidenceChainGraph(ctx, chainID)
+	if err != nil {
+		return nil
+	}
+	return graph
+}
+
+func evidenceNodeByID(graph *store.EvidenceChainGraph, id string) (store.EvidenceChainNode, bool) {
+	if graph == nil {
+		return store.EvidenceChainNode{}, false
+	}
+	for _, node := range graph.Nodes {
+		if node.ID == id {
+			return node, true
+		}
+	}
+	return store.EvidenceChainNode{}, false
+}
+
+func evidenceEdgeByID(graph *store.EvidenceChainGraph, id string) (store.EvidenceChainEdge, bool) {
+	if graph == nil {
+		return store.EvidenceChainEdge{}, false
+	}
+	for _, edge := range graph.Edges {
+		if edge.ID == id {
+			return edge, true
+		}
+	}
+	return store.EvidenceChainEdge{}, false
+}
+
+func validEvidenceNodeTypeForCLI(t string) bool {
+	switch t {
+	case store.EvidenceNodeRun, store.EvidenceNodeHypothesis, store.EvidenceNodeExperiment, store.EvidenceNodePlan, store.EvidenceNodeConclusion, store.EvidenceNodeNote:
+		return true
+	default:
+		return false
+	}
+}
+
+func validEvidenceEdgeTypeForCLI(t string) bool {
+	switch t {
+	case store.EvidenceEdgeSupports, store.EvidenceEdgeDoesNotProve, store.EvidenceEdgeNextStep, store.EvidenceEdgeCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+func evidenceNodeExists(nodes []store.EvidenceChainNode, id string) bool {
+	for _, node := range nodes {
+		if node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func nextEvidenceNodePosition(nodes []store.EvidenceChainNode) (float64, float64) {
+	const (
+		startX = 80.0
+		startY = 80.0
+		stepX  = 320.0
+		stepY  = 220.0
+		cols   = 4
+	)
+	occupied := map[string]bool{}
+	for _, node := range nodes {
+		col := int((node.X - startX + stepX/2) / stepX)
+		row := int((node.Y - startY + stepY/2) / stepY)
+		if col >= 0 && row >= 0 {
+			occupied[fmt.Sprintf("%d:%d", col, row)] = true
+		}
+	}
+	for idx := 0; ; idx++ {
+		col := idx % cols
+		row := idx / cols
+		key := fmt.Sprintf("%d:%d", col, row)
+		if !occupied[key] {
+			return startX + float64(col)*stepX, startY + float64(row)*stepY
+		}
+	}
+}
+
+func evidenceDefaultNodeTitle(nodeType string, run *store.Run, card *store.ProjectRunCard) string {
+	if nodeType == store.EvidenceNodeRun {
+		if card != nil {
+			return firstNonEmpty(card.Verdict, card.Question, card.RunID)
+		}
+		if run != nil {
+			return firstNonEmpty(run.Name, run.ID)
+		}
+	}
+	switch nodeType {
+	case store.EvidenceNodeHypothesis:
+		return "Hypothesis"
+	case store.EvidenceNodeExperiment:
+		return "Experiment"
+	case store.EvidenceNodePlan:
+		return "Plan"
+	case store.EvidenceNodeConclusion:
+		return "Conclusion"
+	default:
+		return "Note"
+	}
+}
+
+func evidenceNodeShortIntro(node store.EvidenceChainNode, run *store.Run, card *store.ProjectRunCard) string {
+	if node.Type != store.EvidenceNodeRun {
+		return evidencePreview(firstNonEmpty(node.Body, node.Title), 220)
+	}
+	parts := []string{node.RunID}
+	if run != nil {
+		parts = append(parts, run.Name, run.Kind, run.Status)
+	}
+	if card != nil {
+		parts = append(parts, card.ProjectName, card.EvidenceLevel, card.Verdict, card.Question, firstLine(card.KeyMetrics), card.NextAction)
+	}
+	return evidencePreview(joinNonEmpty(" · ", parts...), 260)
+}
+
+func defaultEvidenceEdgeLabel(edgeType string) string {
+	switch edgeType {
+	case store.EvidenceEdgeSupports:
+		return "supports"
+	case store.EvidenceEdgeDoesNotProve:
+		return "does not prove"
+	case store.EvidenceEdgeNextStep:
+		return "next step"
+	default:
+		return "custom"
+	}
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
+}
+
+func evidencePreview(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 func loadProjectFileConfig(path string) (*projectFileConfig, error) {
@@ -6763,6 +8271,10 @@ func legacyRunMarkBody(reason, evidence string) string {
 
 func openDB() *store.SQLite {
 	dbPath := expandPath("~/.aexp/aexp.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		logger.Error("create database directory", "path", filepath.Dir(dbPath), "error", err)
+		os.Exit(1)
+	}
 	db, err := store.NewSQLite(dbPath)
 	if err != nil {
 		logger.Error("open database", "error", err)

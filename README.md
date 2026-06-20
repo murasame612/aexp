@@ -72,6 +72,21 @@ AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasa
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 
+Update or uninstall later:
+
+```bash
+aexp update
+aexp update --stop-serve
+aexp uninstall --yes
+aexp uninstall --yes --purge-data
+```
+
+`aexp update` downloads the matching GitHub Release asset, verifies
+`checksums.txt`, smoke-tests the new binary, backs up the old binary, and
+recreates the `aexp-event` compatibility entrypoint. `aexp uninstall` removes
+the binary and MCP client config by default; it keeps `~/.aexp` unless
+`--purge-data` is explicitly passed.
+
 ### From Source
 
 ```bash
@@ -426,6 +441,11 @@ The MCP server exposes structured tools for agents:
 - `aexp_cancel_run`
 - `aexp_mark_run`
 - `aexp_list_run_marks`
+- `aexp_list_evidence_chains`
+- `aexp_create_evidence_chain`
+- `aexp_get_evidence_chain`
+- `aexp_add_evidence_node`
+- `aexp_add_evidence_edge`
 - `aexp_exec_history`
 - `aexp_exec_show`
 - `aexp_project_detect`
@@ -446,6 +466,13 @@ For active training, agents should monitor `aexp_get_run_snapshot`,
 `aexp_tail_run_events`, or `aexp_get_run_metrics` first; raw stdout/stderr logs
 are for debugging failures, OOMs, hangs, or missing events. Poll snapshots every
 30-60 seconds, then back off toward 120 seconds when progress has not changed.
+Evidence Chain tools expose the research whiteboard as a semantic graph for
+agents. Use `aexp_get_evidence_chain` to read compact nodes and typed edges
+(`run_id`, short intro, project-card summary, mark titles/statements), then use
+the run tools to inspect any run in detail. Agents may create note,
+hypothesis, experiment, plan, conclusion, or run nodes and link them with typed
+edges, but should not arrange the board: new nodes only receive a simple
+non-overlapping starting position so a human can place the UI later.
 `aexp_cli` is a compatibility escape hatch for the full `aexp` CLI, including
 mutating operations such as `run cancel`, `run submit`, `sync push`, and
 `resource update`. It only blocks commands that would hang the MCP process

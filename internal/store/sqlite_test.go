@@ -611,3 +611,75 @@ func TestEvidenceChainsCRUDGraphAndCandidates(t *testing.T) {
 		t.Fatalf("graph after delete = %#v, want empty", emptyGraph)
 	}
 }
+
+func TestExperimentMatricesCRUDGrid(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_matrix", Name: "matrix-res", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_matrix", ResourceID: "rsrc_matrix", Name: "matrix-run", Status: RunStatusSucceeded, Kind: RunKindAblation, Command: "python train.py"}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	matrix := &ExperimentMatrix{ID: "matrix_ablation", Title: "Ablation matrix", SourceKind: "project", SourceID: "dam", SourceName: "Dam"}
+	if err := s.CreateExperimentMatrix(ctx, matrix); err != nil {
+		t.Fatalf("CreateExperimentMatrix: %v", err)
+	}
+	matrix.Title = "Ablation matrix v2"
+	matrix.DefaultMetricKey = "val_loss"
+	if err := s.UpdateExperimentMatrix(ctx, matrix); err != nil {
+		t.Fatalf("UpdateExperimentMatrix: %v", err)
+	}
+	matrices, err := s.ListExperimentMatrices(ctx, ExperimentMatrixFilter{Query: "ablation", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListExperimentMatrices: %v", err)
+	}
+	if len(matrices) != 1 || matrices[0].Title != "Ablation matrix v2" {
+		t.Fatalf("matrices = %#v, want updated matrix", matrices)
+	}
+
+	grid := ExperimentMatrixGrid{
+		Rows:    []ExperimentMatrixRow{{ID: "row_model", Label: "Model", Position: 0}},
+		Columns: []ExperimentMatrixColumn{{ID: "col_metric", Label: "Metric", Position: 0}},
+		Cells: []ExperimentMatrixCell{{
+			ID:          "cell_metric",
+			RowID:       "row_model",
+			ColumnID:    "col_metric",
+			RunID:       "run_matrix",
+			Title:       "matrix-run",
+			Statement:   "Improves validation loss.",
+			MetricKey:   "val_loss",
+			MetricValue: "0.12",
+		}},
+	}
+	if err := s.SaveExperimentMatrixGrid(ctx, "matrix_ablation", grid); err != nil {
+		t.Fatalf("SaveExperimentMatrixGrid: %v", err)
+	}
+	gotGrid, err := s.GetExperimentMatrixGrid(ctx, "matrix_ablation")
+	if err != nil {
+		t.Fatalf("GetExperimentMatrixGrid: %v", err)
+	}
+	if len(gotGrid.Rows) != 1 || len(gotGrid.Columns) != 1 || len(gotGrid.Cells) != 1 {
+		t.Fatalf("grid = %#v, want 1 row/column/cell", gotGrid)
+	}
+	if gotGrid.Cells[0].RunID != "run_matrix" || gotGrid.Cells[0].MetricValue != "0.12" {
+		t.Fatalf("cell = %#v, want linked run metric", gotGrid.Cells[0])
+	}
+
+	if err := s.DeleteExperimentMatrix(ctx, "matrix_ablation"); err != nil {
+		t.Fatalf("DeleteExperimentMatrix: %v", err)
+	}
+	deleted, err := s.GetExperimentMatrix(ctx, "matrix_ablation")
+	if err != nil || deleted != nil {
+		t.Fatalf("deleted matrix = %#v err=%v, want nil", deleted, err)
+	}
+	emptyGrid, err := s.GetExperimentMatrixGrid(ctx, "matrix_ablation")
+	if err != nil {
+		t.Fatalf("GetExperimentMatrixGrid after delete: %v", err)
+	}
+	if len(emptyGrid.Rows) != 0 || len(emptyGrid.Columns) != 0 || len(emptyGrid.Cells) != 0 {
+		t.Fatalf("grid after delete = %#v, want empty", emptyGrid)
+	}
+}

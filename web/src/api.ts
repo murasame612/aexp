@@ -4,6 +4,11 @@ import type {
   EvidenceChainNode,
   EvidenceChainEdge,
   EvidenceChainRunCandidate,
+  ExperimentMatrix,
+  ExperimentMatrixDetail,
+  ExperimentMatrixRow,
+  ExperimentMatrixColumn,
+  ExperimentMatrixCell,
   Artifact,
   ExecEvent,
   LogsResponse,
@@ -226,6 +231,47 @@ export function assignRunManualProjectCategory(token: string, runId: string, cat
 
 export function unassignRunManualProjectCategory(token: string, runId: string) {
   return apiFetch<void>(`/runs/${encodeURIComponent(runId)}/manual-project-category`, { method: "DELETE", token });
+}
+
+export function getExperimentMatrices(token: string, query = "") {
+  const params = new URLSearchParams({ limit: "200" });
+  if (query) params.set("query", query);
+  return apiFetch<ExperimentMatrix[]>(`/experiment-matrices?${params}`, { token });
+}
+
+export function createExperimentMatrix(
+  token: string,
+  payload: Pick<ExperimentMatrix, "title" | "description" | "source_kind" | "source_id" | "source_name" | "default_metric_key" | "default_metric_goal"> & { seed_from_source?: boolean }
+) {
+  return apiFetch<ExperimentMatrixDetail>("/experiment-matrices", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateExperimentMatrix(token: string, id: string, payload: Pick<ExperimentMatrix, "title" | "description" | "source_kind" | "source_id" | "source_name" | "default_metric_key" | "default_metric_goal" | "data_json">) {
+  return apiFetch<ExperimentMatrix>(`/experiment-matrices/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteExperimentMatrix(token: string, id: string) {
+  return apiFetch<void>(`/experiment-matrices/${encodeURIComponent(id)}`, { method: "DELETE", token });
+}
+
+export function getExperimentMatrix(token: string, id: string) {
+  return apiFetch<ExperimentMatrixDetail>(`/experiment-matrices/${encodeURIComponent(id)}`, { token });
+}
+
+export function saveExperimentMatrixGrid(token: string, id: string, grid: { rows: ExperimentMatrixRow[]; columns: ExperimentMatrixColumn[]; cells: ExperimentMatrixCell[] }) {
+  return apiFetch<ExperimentMatrixDetail>(`/experiment-matrices/${encodeURIComponent(id)}/grid`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(grid)
+  });
 }
 
 export function getEvidenceChains(token: string, query = "") {
