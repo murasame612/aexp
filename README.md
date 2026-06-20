@@ -13,7 +13,7 @@ experiments on remote GPU boxes. It keeps the convenience of SSH, but adds run
 records, tmux-backed execution, live logs, resource monitoring, structured
 metrics, and an audit trail.
 
-![aexp dashboard](doc/imgs/main1_EN.png)
+![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
 ## Why aexp?
 
@@ -115,7 +115,7 @@ aexp serve --port 8080
 
 Open `http://localhost:8080`.
 
-![aexp dashboard](doc/imgs/main1_EN.png)
+![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
 If you use Codex, Claude Code, or Hermes Agent, install the MCP tools:
 
@@ -307,7 +307,16 @@ aexp run metrics run_xxx --latest --json
 aexp run events run_xxx --tail 50 --json
 ```
 
-![metrics](doc/imgs/mertics_card.png)
+![metric grid](doc/imgs/ui-v2-metric-grid.png)
+
+Clicking a metric expands it in place so the full chart remains readable while
+the rest of the grid stays nearby:
+
+![expanded metric chart](doc/imgs/ui-v2-metric-expanded.png)
+
+Run parameters are rendered as dense aligned cards instead of raw JSON:
+
+![parameter cards](doc/imgs/ui-v2-params.png)
 
 Runs that emit the same metric names can be compared on one chart:
 
@@ -328,6 +337,8 @@ It includes:
 - live stdout/stderr/terminal logs
 - virtualized run and exec tables in `/ui-v2`
 - worker-backed UI event parsing and metric charts in `/ui-v2`
+- evidence-chain whiteboards for manual hypothesis, run, plan, note, and
+  conclusion linking
 
 Build the React dashboard when changing frontend code:
 
@@ -446,6 +457,10 @@ The MCP server exposes structured tools for agents:
 - `aexp_get_evidence_chain`
 - `aexp_add_evidence_node`
 - `aexp_add_evidence_edge`
+- `aexp_list_matrices`
+- `aexp_create_matrix`
+- `aexp_get_matrix`
+- `aexp_set_matrix_cell`
 - `aexp_exec_history`
 - `aexp_exec_show`
 - `aexp_project_detect`
@@ -473,6 +488,9 @@ the run tools to inspect any run in detail. Agents may create note,
 hypothesis, experiment, plan, conclusion, or run nodes and link them with typed
 edges, but should not arrange the board: new nodes only receive a simple
 non-overlapping starting position so a human can place the UI later.
+
+![Evidence Chain whiteboard](doc/imgs/ui-v2-evidence-chain.png)
+
 `aexp_cli` is a compatibility escape hatch for the full `aexp` CLI, including
 mutating operations such as `run cancel`, `run submit`, `sync push`, and
 `resource update`. It only blocks commands that would hang the MCP process

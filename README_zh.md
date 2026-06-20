@@ -10,7 +10,7 @@
 
 `aexp` 是一个用 Go 写的单文件工具，用来把远程 SSH 机器上的科研实验跑得更稳、更可追踪。它保留 SSH 的直接感，同时补上 run 记录、tmux 后台执行、资源监控、结构化指标、日志查看、项目配置和 MCP 工具。
 
-![aexp dashboard](doc/imgs/main1_zh.png)
+![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
 ## 为什么需要 aexp？
 
@@ -122,7 +122,7 @@ aexp serve --port 8080
 http://localhost:8080
 ```
 
-![aexp dashboard](doc/imgs/main1_zh.png)
+![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
 如果你使用 Codex、Claude Code 或 Hermes Agent，安装 MCP 工具：
 
@@ -273,7 +273,15 @@ for trial_id, cfg in enumerate(search_space):
 
 前端会把这些事件显示成进度卡、指标卡和图表：
 
-![metrics](doc/imgs/mertics_card.png)
+![指标网格](doc/imgs/ui-v2-metric-grid.png)
+
+点击某个指标后，它会在当前位置展开成大图，其他指标仍然保留在同一组网格里：
+
+![展开的指标曲线](doc/imgs/ui-v2-metric-expanded.png)
+
+参数会显示成高密度、对齐的小卡片，而不是一坨 JSON：
+
+![参数卡片](doc/imgs/ui-v2-params.png)
 
 `aexp run snapshot`、`aexp run events`、MCP 事件工具和 Web UI 只要成功读到
 run 的 UI event 文件，就会把这份 JSONL 镜像到本机
@@ -340,6 +348,11 @@ aexp mcp install --target hermes
 - `aexp_get_run_metrics`
 - `aexp_tail_run_logs`
 - `aexp_mark_run`
+- `aexp_get_evidence_chain`
+- `aexp_add_evidence_node`
+- `aexp_add_evidence_edge`
+- `aexp_get_matrix`
+- `aexp_set_matrix_cell`
 
 建议 Agent 的默认策略：
 
@@ -351,6 +364,10 @@ aexp mcp install --target hermes
 失败诊断：aexp_tail_run_logs
 关键结论：aexp_mark_run
 ```
+
+证据链白板会把假说、实验 run、计划、结论和笔记放成可连线的研究推理图；Agent 可以读写语义节点和边，但具体排版仍然留给人调整：
+
+![证据链白板](doc/imgs/ui-v2-evidence-chain.png)
 
 ## 安全边界
 
