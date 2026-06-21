@@ -506,6 +506,95 @@ func TestProjectViewsIncludesUnassignedRuns(t *testing.T) {
 	}
 }
 
+func TestProjectViewsIncludeManualAssignments(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_manual_project_view",
+		Name:    "mu",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []*store.Run{
+		{ID: "run_manual_override_card", ResourceID: "rsrc_manual_project_view", Name: "carded", Kind: store.RunKindFormal, Status: store.RunStatusSucceeded, Command: "python train.py"},
+		{ID: "run_manual_without_card", ResourceID: "rsrc_manual_project_view", Name: "free", Kind: store.RunKindPilot, Status: store.RunStatusSucceeded, Command: "python pilot.py"},
+		{ID: "run_still_unassigned", ResourceID: "rsrc_manual_project_view", Name: "scratch", Kind: store.RunKindSetup, Status: store.RunStatusRunning, Command: "ls"},
+	} {
+		if err := db.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.SaveProjectRunCard(ctx, &store.ProjectRunCard{
+		ID:            "card_manual_override",
+		ProjectID:     "auto-project",
+		ProjectName:   "Auto Project",
+		RunID:         "run_manual_override_card",
+		Verdict:       "Auto card verdict.",
+		EvidenceLevel: "B",
+		Important:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateManualProjectCategory(ctx, &store.ManualProjectCategory{
+		ID:   "mpc_manual_view",
+		Name: "Auto Project",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AssignRunToManualProjectCategory(ctx, "run_manual_override_card", "mpc_manual_view"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AssignRunToManualProjectCategory(ctx, "run_manual_without_card", "mpc_manual_view"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	projects, err := srv.projectViews(ctx, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var auto, manualCategoryDuplicate, unassigned *projectView
+	for i := range projects {
+		switch projects[i].ProjectID {
+		case "mpc_manual_view":
+			manualCategoryDuplicate = &projects[i]
+		case "auto-project":
+			auto = &projects[i]
+		case unassignedProjectID:
+			unassigned = &projects[i]
+		}
+	}
+	if auto == nil || auto.ProjectName != "Auto Project" || len(auto.Cards) != 2 {
+		t.Fatalf("auto project = %#v, want two cards including manual assignments", auto)
+	}
+	if auto.TotalCards != 2 || auto.ImportantRuns != 1 || auto.FormalRuns != 1 {
+		t.Fatalf("auto aggregates = %#v, want preserved card metadata and run enrichment", auto)
+	}
+	if manualCategoryDuplicate != nil {
+		t.Fatalf("manual category should merge into matching project instead of duplicating: %#v", manualCategoryDuplicate)
+	}
+	if unassigned == nil || len(unassigned.Cards) != 1 || unassigned.Cards[0].Run == nil || unassigned.Cards[0].Run.ID != "run_still_unassigned" {
+		t.Fatalf("unassigned project = %#v, want only still-unassigned run", unassigned)
+	}
+
+	filtered, err := srv.projectViews(ctx, "auto-project", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ProjectID != "auto-project" || len(filtered[0].Cards) != 2 {
+		t.Fatalf("filtered project = %#v, want auto-project with two cards", filtered)
+	}
+}
+
 func TestEvidenceChainAPIAndValidation(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))

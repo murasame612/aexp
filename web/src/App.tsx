@@ -558,6 +558,7 @@ export function App() {
           categories={manualCategoryList}
           projects={projectList}
           assignment={manualAssignmentByRun.get(projectEditorRun.id)}
+          projectMeta={runProjectById.get(projectEditorRun.id)}
           onClose={() => setProjectEditorRun(null)}
           onAssign={async (categoryID) => {
             await assignManualProject(projectEditorRun.id, categoryID);
@@ -1709,6 +1710,7 @@ function ManualProjectModal({
   categories,
   projects,
   assignment,
+  projectMeta,
   onClose,
   onAssign,
   onCreateAndAssign
@@ -1718,6 +1720,7 @@ function ManualProjectModal({
   categories: ManualProjectCategory[];
   projects: ProjectView[];
   assignment?: RunProjectAssignment;
+  projectMeta?: RunProjectMeta;
   onClose: () => void;
   onAssign: (categoryID: string) => Promise<void>;
   onCreateAndAssign: (name: string) => Promise<void>;
@@ -1726,9 +1729,10 @@ function ManualProjectModal({
   const [saving, setSaving] = useState(false);
   const current = assignment?.category_id || "";
   const categoryNames = new Set(categories.map((category) => category.name.trim().toLowerCase()));
+  const inheritedProject = !current && projectMeta?.source !== "manual" && projectMeta?.projectId !== "__unassigned__" ? projectMeta : undefined;
   const projectChoices = projects
     .map((project) => ({ id: project.project_id, name: projectDisplayName(project, t), count: project.total_cards }))
-    .filter((project) => project.id !== "__unassigned__" && project.name.trim() && !categoryNames.has(project.name.trim().toLowerCase()));
+    .filter((project) => project.id !== "__unassigned__" && project.id !== inheritedProject?.projectId && project.name.trim() && !categoryNames.has(project.name.trim().toLowerCase()));
   const choose = async (categoryID: string) => {
     setSaving(true);
     try {
@@ -1761,7 +1765,7 @@ function ManualProjectModal({
         <span className="muted mono">{run.id}</span>
         <strong>{runTitle(run)}</strong>
         <div className="manual-project-choice-list">
-          <button className={!current ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose("")}>
+          <button className={!current && !inheritedProject ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose("")}>
             <span>{t("unassignedRuns")}</span>
           </button>
           {categories.map((category) => (
@@ -1770,7 +1774,16 @@ function ManualProjectModal({
               {category.run_count ? <em>{category.run_count}</em> : null}
             </button>
           ))}
-          {projectChoices.length ? <span className="manual-project-choice-heading">{t("projects")}</span> : null}
+          {inheritedProject ? (
+            <>
+              <span className="manual-project-choice-heading">{t("projects")}</span>
+              <button className="manual-project-choice project-source active" type="button" disabled={saving} onClick={() => void createFromExistingProject(inheritedProject.projectName)}>
+                <span>{inheritedProject.projectName}</span>
+                <em>{inheritedProject.cardTitle}</em>
+              </button>
+            </>
+          ) : null}
+          {projectChoices.length && !inheritedProject ? <span className="manual-project-choice-heading">{t("projects")}</span> : null}
           {projectChoices.map((project) => (
             <button key={project.id} className="manual-project-choice project-source" type="button" disabled={saving} onClick={() => void createFromExistingProject(project.name)}>
               <span>{project.name}</span>
@@ -2022,7 +2035,10 @@ function RunListCard({
   const createdAt = fmtShortTime(run.created_at);
   const bookmarkNote = bookmark?.note?.trim() || "";
   const visibleMarks = compactMarkPreviews(markPreviews);
-  const manualProjectName = manualAssignment?.category_name || t("unassignedRuns");
+  const inheritedProjectName = projectMeta?.source !== "manual" ? projectMeta?.projectName : "";
+  const projectAssignmentName = manualAssignment?.category_name || inheritedProjectName || t("unassignedRuns");
+  const projectAssignmentLabel = manualAssignment ? t("manualProject") : inheritedProjectName ? t("projects") : t("manualProject");
+  const hasProjectAssignment = Boolean(manualAssignment || inheritedProjectName);
   return (
     <article className="run-list-card">
       <div className="run-list-card-head">
@@ -2040,9 +2056,9 @@ function RunListCard({
             {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
           </div>
         ) : null}
-        <button className={manualAssignment ? "run-project-assignment-summary assigned" : "run-project-assignment-summary"} type="button" onClick={onEditManualProject} title={t("manualProject")}>
-          <span>{t("manualProject")}</span>
-          <strong>{manualProjectName}</strong>
+        <button className={hasProjectAssignment ? "run-project-assignment-summary assigned" : "run-project-assignment-summary"} type="button" onClick={onEditManualProject} title={t("manualProject")}>
+          <span>{projectAssignmentLabel}</span>
+          <strong>{projectAssignmentName}</strong>
         </button>
       </div>
       <div className="run-list-facts">

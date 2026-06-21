@@ -1423,6 +1423,11 @@ type projectView struct {
 	Cards         []projectRunCardView `json:"cards"`
 }
 
+type projectCanonical struct {
+	ID   string
+	Name string
+}
+
 const unassignedProjectID = "__unassigned__"
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -1469,9 +1474,47 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 	if err != nil {
 		return nil, err
 	}
+	assignments, err := s.store.ListRunProjectAssignments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	manualByRun := make(map[string]store.RunProjectAssignment, len(assignments))
+	for _, assignment := range assignments {
+		if assignment.RunID != "" {
+			manualByRun[assignment.RunID] = assignment
+		}
+	}
+	allCards := cards
+	if projectID != "" {
+		allCards, err = s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{})
+		if err != nil {
+			return nil, err
+		}
+	}
+	cardsByRun := make(map[string]store.ProjectRunCard, len(allCards))
+	projectAliases := make(map[string]projectCanonical)
+	for _, card := range allCards {
+		if card.RunID != "" {
+			cardsByRun[card.RunID] = card
+		}
+		id := strings.TrimSpace(card.ProjectID)
+		if id == "" {
+			continue
+		}
+		name := strings.TrimSpace(card.ProjectName)
+		if name == "" {
+			name = id
+		}
+		canonical := projectCanonical{ID: id, Name: name}
+		projectAliases[projectAliasKey(id)] = canonical
+		projectAliases[projectAliasKey(name)] = canonical
+	}
 	byProject := map[string]*projectView{}
 	order := make([]string, 0)
 	for _, card := range cards {
+		if _, ok := manualByRun[card.RunID]; ok {
+			continue
+		}
 		id := strings.TrimSpace(card.ProjectID)
 		if id == "" {
 			id = unassignedProjectID
@@ -1494,8 +1537,13 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 			Marks:          marks,
 		})
 	}
+	if projectID == "" || projectID != unassignedProjectID {
+		if err := s.appendManualProjectRuns(ctx, byProject, &order, assignments, cardsByRun, projectAliases, projectID); err != nil {
+			return nil, err
+		}
+	}
 	if projectID == "" || projectID == unassignedProjectID {
-		if err := s.appendUnassignedProjectRuns(ctx, byProject, &order, limit); err != nil {
+		if err := s.appendUnassignedProjectRuns(ctx, byProject, &order, limit, manualByRun); err != nil {
 			return nil, err
 		}
 	}
@@ -1506,7 +1554,64 @@ func (s *Server) projectViews(ctx context.Context, projectID string, limit int) 
 	return views, nil
 }
 
-func (s *Server) appendUnassignedProjectRuns(ctx context.Context, byProject map[string]*projectView, order *[]string, limit int) error {
+func projectAliasKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func manualProjectTarget(assignment store.RunProjectAssignment, aliases map[string]projectCanonical) projectCanonical {
+	id := strings.TrimSpace(assignment.CategoryID)
+	name := strings.TrimSpace(assignment.CategoryName)
+	if name == "" {
+		name = id
+	}
+	for _, key := range []string{id, name} {
+		if canonical, ok := aliases[projectAliasKey(key)]; ok {
+			return canonical
+		}
+	}
+	return projectCanonical{ID: id, Name: name}
+}
+
+func (s *Server) appendManualProjectRuns(ctx context.Context, byProject map[string]*projectView, order *[]string, assignments []store.RunProjectAssignment, cardsByRun map[string]store.ProjectRunCard, projectAliases map[string]projectCanonical, projectID string) error {
+	for _, assignment := range assignments {
+		target := manualProjectTarget(assignment, projectAliases)
+		if target.ID == "" {
+			continue
+		}
+		if projectID != "" && projectID != assignment.CategoryID && projectID != target.ID {
+			continue
+		}
+		view := byProject[target.ID]
+		if view == nil {
+			view = &projectView{ProjectID: target.ID, ProjectName: target.Name}
+			byProject[target.ID] = view
+			*order = append(*order, target.ID)
+		}
+		card := cardsByRun[assignment.RunID]
+		if card.RunID == "" {
+			card = store.ProjectRunCard{
+				ID:        "manual_" + strings.TrimPrefix(assignment.RunID, "run_"),
+				RunID:     assignment.RunID,
+				UpdatedAt: assignment.UpdatedAt,
+			}
+		}
+		card.ProjectID = target.ID
+		card.ProjectName = target.Name
+		if assignment.UpdatedAt.After(card.UpdatedAt) {
+			card.UpdatedAt = assignment.UpdatedAt
+		}
+		run, _ := s.store.GetRun(ctx, assignment.RunID)
+		marks, _ := s.store.ListRunMarks(ctx, store.RunMarkFilter{RunID: assignment.RunID, Limit: 20})
+		appendProjectRunCard(view, projectRunCardView{
+			ProjectRunCard: card,
+			Run:            run,
+			Marks:          marks,
+		})
+	}
+	return nil
+}
+
+func (s *Server) appendUnassignedProjectRuns(ctx context.Context, byProject map[string]*projectView, order *[]string, limit int, manualByRun map[string]store.RunProjectAssignment) error {
 	allCards, err := s.store.ListProjectRunCards(ctx, store.ProjectRunCardFilter{})
 	if err != nil {
 		return err
@@ -1515,6 +1620,11 @@ func (s *Server) appendUnassignedProjectRuns(ctx context.Context, byProject map[
 	for _, card := range allCards {
 		if card.RunID != "" {
 			assigned[card.RunID] = true
+		}
+	}
+	for runID := range manualByRun {
+		if runID != "" {
+			assigned[runID] = true
 		}
 	}
 	runs, err := s.store.ListRuns(ctx, store.RunFilter{Limit: limit})

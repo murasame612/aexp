@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Plus, Save, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Plus, Save, Trash2 } from "lucide-react";
 import {
   createExperimentMatrix,
   deleteExperimentMatrix,
@@ -41,6 +41,7 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
   const [cells, setCells] = useState<ExperimentMatrixCell[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const matrices = useQuery({ queryKey: ["experiment-matrices", token, query], queryFn: () => getExperimentMatrices(token, query), refetchInterval: 12000 });
   const selected = useQuery({ queryKey: ["experiment-matrix", token, selectedID], queryFn: () => getExperimentMatrix(token, selectedID), enabled: Boolean(selectedID) });
@@ -136,26 +137,37 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
   }
 
   return (
-    <div className="matrix-page">
-      <aside className="matrix-sidebar">
+    <div className={sidebarCollapsed ? "matrix-page matrix-page-sidebar-collapsed" : "matrix-page"}>
+      <aside className={sidebarCollapsed ? "matrix-sidebar collapsed" : "matrix-sidebar"}>
         <div className="matrix-sidebar-head">
-          <div>
-            <strong>{t("experimentMatrix")}</strong>
-            <span>{matrixList.length} {t("matrices")}</span>
-          </div>
-          <button className="icon-button" type="button" title={t("newMatrix")} onClick={createMatrix}>
-            <Plus size={16} />
-          </button>
-        </div>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search")} />
-        <div className="matrix-list">
-          {matrixList.map((matrix) => (
-            <button key={matrix.id} className={matrix.id === selectedID ? "matrix-list-item active" : "matrix-list-item"} type="button" onClick={() => setSelectedID(matrix.id)}>
-              <strong>{matrix.title}</strong>
-              <span>{matrix.updated_at ? new Date(matrix.updated_at).toLocaleString() : t("experimentMatrix")}</span>
+          {!sidebarCollapsed ? (
+            <div>
+              <strong>{t("experimentMatrix")}</strong>
+              <span>{matrixList.length} {t("matrices")}</span>
+            </div>
+          ) : null}
+          <div className="matrix-sidebar-controls">
+            <button className="icon-button" type="button" title={sidebarCollapsed ? "展开列表" : "收起列表"} onClick={() => setSidebarCollapsed((value) => !value)}>
+              {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
             </button>
-          ))}
+            <button className="icon-button" type="button" title={t("newMatrix")} onClick={createMatrix}>
+              <Plus size={16} />
+            </button>
+          </div>
         </div>
+        {!sidebarCollapsed ? (
+          <>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search")} />
+            <div className="matrix-list">
+              {matrixList.map((matrix) => (
+                <button key={matrix.id} className={matrix.id === selectedID ? "matrix-list-item active" : "matrix-list-item"} type="button" onClick={() => setSelectedID(matrix.id)}>
+                  <strong>{matrix.title}</strong>
+                  <span>{matrix.updated_at ? new Date(matrix.updated_at).toLocaleString() : t("experimentMatrix")}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
       </aside>
 
       <section className="matrix-main">
@@ -258,7 +270,7 @@ function MatrixTable({
           {rows.map((row) => (
             <tr key={row.id}>
               <th className="matrix-experiment-cell">
-                <input value={row.label} onChange={(event) => setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, label: event.target.value } : item)))} />
+                <MatrixTextCell value={row.label} onChange={(next) => setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, label: next } : item)))} />
               </th>
               {columns.map((column) => {
                 const cell = cellsBySlot.get(slotKey(row.id, column.id))?.[0];
@@ -268,7 +280,7 @@ function MatrixTable({
                     {isRunIDColumn(column.label) ? (
                       <RunPickerCell value={value} runs={runs} onChange={(next) => updateCell(row.id, column, next)} onOpenRun={onOpenRun} />
                     ) : (
-                      <input value={value} onChange={(event) => updateCell(row.id, column, event.target.value)} />
+                      <MatrixTextCell value={value} onChange={(next) => updateCell(row.id, column, next)} />
                     )}
                   </td>
                 );
@@ -278,6 +290,32 @@ function MatrixTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function MatrixTextCell({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const resize = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(46, textarea.scrollHeight)}px`;
+  };
+
+  useEffect(() => {
+    resize();
+  }, [value]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      onChange={(event) => {
+        onChange(event.target.value);
+        window.requestAnimationFrame(resize);
+      }}
+    />
   );
 }
 

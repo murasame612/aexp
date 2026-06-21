@@ -113,7 +113,15 @@ aexp init
 aexp serve --port 8080
 ```
 
-Open `http://localhost:8080`.
+Open the UI you want:
+
+| UI | URL | Use it for |
+|---|---|---|
+| React UI v2 | `http://localhost:8080/ui-v2/` | the main product experience: dense run lists, event dashboards, metric charts, matrices, and Evidence Chain whiteboards |
+| Legacy UI | `http://localhost:8080/` | the embedded compatibility dashboard for older workflows, quick debugging, or installations that still depend on the root path |
+
+The two UIs use the same local `aexp` API and SQLite database. You can switch
+between them without migrating data.
 
 ![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
@@ -322,11 +330,20 @@ Runs that emit the same metric names can be compared on one chart:
 
 ![metric comparison](doc/imgs/metic_compare.png)
 
-### Web Dashboard
+### Web Dashboards
 
-The legacy dashboard is still embedded at `/`. A React/TypeScript dashboard is
-available in parallel at `/ui-v2`, so existing deployments can keep using the
-old entrypoint while validating the new high-volume console.
+`aexp serve` embeds two browser frontends:
+
+- `http://localhost:8080/ui-v2/` is the recommended React/TypeScript UI. It is
+  where new experiment workflows land first: high-density run browsing,
+  structured event dashboards, metric cards, matrices, and Evidence Chain
+  whiteboards.
+- `http://localhost:8080/` is the legacy HTML dashboard. It remains available as
+  a stable compatibility/debug entrypoint for older deployments and scripts that
+  assume the server root opens a UI.
+
+The legacy dashboard includes a visible entry back to React UI v2, and React UI
+v2 keeps a Legacy UI link in its sidebar.
 
 ![runs](doc/imgs/runs.png)
 

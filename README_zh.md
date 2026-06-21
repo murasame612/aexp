@@ -116,11 +116,14 @@ aexp init
 aexp serve --port 8080
 ```
 
-打开：
+打开你需要的 UI：
 
-```text
-http://localhost:8080
-```
+| UI | 地址 | 适合用途 |
+|---|---|---|
+| React UI v2 | `http://localhost:8080/ui-v2/` | 主要使用入口：高密度实验列表、事件面板、指标曲线、实验矩阵、证据链白板 |
+| 旧版 UI | `http://localhost:8080/` | 兼容入口：旧工作流、快速调试、仍然依赖根路径打开面板的部署 |
+
+两个 UI 使用同一个本地 `aexp` API 和 SQLite 数据库，不需要迁移数据，可以随时切换。
 
 ![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
@@ -291,6 +294,15 @@ run 的 UI event 文件，就会把这份 JSONL 镜像到本机
 多个 run 只要写了同名指标，就可以放到同一张图里比较：
 
 ![指标对比](doc/imgs/metic_compare.png)
+
+### 两个 Web 前端
+
+`aexp serve` 内置两个浏览器前端：
+
+- `http://localhost:8080/ui-v2/` 是推荐使用的 React/TypeScript UI。新的实验工作流会优先放在这里，包括高密度实验浏览、结构化事件面板、指标卡片、实验矩阵和证据链白板。
+- `http://localhost:8080/` 是旧版 HTML 面板。它会继续作为兼容和调试入口保留，适合旧部署、旧使用习惯，或者仍然依赖根路径打开 UI 的场景。
+
+旧版 UI 页头有进入 React UI v2 的按钮；React UI v2 侧边栏也保留了回到旧版 UI 的入口。
 
 对 Agent 来说，正常监控应该优先读事件，而不是狂刷日志：
 
