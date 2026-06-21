@@ -341,6 +341,7 @@ export function App() {
                 execs={visibleExecs.slice(0, 8)}
                 resourceById={resourceById}
                 onOpenRun={setDetailRunId}
+                onOpenResources={() => setActiveTab("resources")}
               />
             )}
             {tab === "resources" && (
@@ -593,7 +594,8 @@ function Dashboard({
   marks,
   execs,
   resourceById,
-  onOpenRun
+  onOpenRun,
+  onOpenResources
 }: {
   t: T;
   stats?: { total_resources: number; active_runs: number; total_runs: number };
@@ -603,7 +605,10 @@ function Dashboard({
   execs: ExecEvent[];
   resourceById: Map<string, Resource>;
   onOpenRun: (id: string) => void;
+  onOpenResources: () => void;
 }) {
+  const shownResources = resources.slice(0, 5);
+  const moreResources = resources.slice(5);
   return (
     <div className="stack">
       <div className="stat-grid">
@@ -613,12 +618,13 @@ function Dashboard({
       </div>
       <Section title={t("resources")}>
         <div className="resource-grid">
-          {resources.length ? resources.slice(0, 2).map((r) => <ResourceCard key={r.id} resource={r} />) : <Empty t={t} />}
-          {resources.length > 2 ? (
-            <div className="overview-more">
-              <strong>+{resources.length - 2}</strong>
-              <span>{t("resourceMore")}</span>
-            </div>
+          {resources.length ? shownResources.map((r) => <ResourceCard key={r.id} resource={r} />) : <Empty t={t} />}
+          {moreResources.length ? (
+            <button type="button" className="overview-more" onClick={onOpenResources}>
+              <strong>+{moreResources.length}</strong>
+              <span className="overview-more-names">{moreResources.map((r) => r.name).join("、")}</span>
+              <span className="overview-more-cta">{t("resourceMore")}</span>
+            </button>
           ) : null}
         </div>
       </Section>

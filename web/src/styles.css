@@ -219,6 +219,7 @@ select {
 }
 
 .matrix-page {
+  position: relative;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   gap: 14px;
@@ -226,8 +227,12 @@ select {
 }
 
 .matrix-page-sidebar-collapsed {
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.matrix-page-sidebar-collapsed .matrix-main {
+  grid-column: 1;
 }
 
 .matrix-sidebar {
@@ -238,6 +243,9 @@ select {
 
 .matrix-sidebar {
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 12px;
   display: grid;
   grid-template-rows: auto auto minmax(160px, 1fr);
@@ -245,6 +253,12 @@ select {
 }
 
 .matrix-sidebar.collapsed {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 12;
+  width: 34px;
+  transform: translateX(-44px);
   align-self: start;
   min-height: 0;
   padding: 0;
@@ -335,6 +349,8 @@ select {
 
 .matrix-list-item {
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
   min-height: 42px;
   padding: 7px 9px;
   display: grid;
@@ -2833,15 +2849,23 @@ select {
 
 .overview-more {
   display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 304px;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
+  min-height: 0;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   background: #fbfcfd;
   color: var(--muted);
   text-align: center;
   padding: 16px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.overview-more:hover {
+  border-color: var(--border-strong);
+  background: #f5f8fb;
 }
 
 .overview-more strong {
@@ -2850,9 +2874,19 @@ select {
   line-height: 1;
 }
 
-.overview-more span {
-  max-width: 170px;
-  font-size: 12px;
+.overview-more-names {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.overview-more-cta {
+  max-width: 200px;
+  font-size: 11.5px;
   line-height: 1.35;
 }
 

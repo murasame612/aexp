@@ -174,28 +174,28 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
         {selectedMatrix ? (
           <>
             <div className="matrix-topbar">
-              <div className="matrix-title-fields">
-                <input value={title} onChange={(event) => setTitle(event.target.value)} />
-                <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("matrixDescriptionPlaceholder")} />
+              <div className="matrix-title-row">
+                <input className="matrix-title-input" value={title} placeholder={t("newMatrix")} onChange={(event) => setTitle(event.target.value)} />
+                <div className="matrix-actions">
+                  <button type="button" onClick={addRow}>
+                    <Plus size={15} />
+                    {t("addRow")}
+                  </button>
+                  <button type="button" onClick={addColumn}>
+                    <Plus size={15} />
+                    {t("addColumn")}
+                  </button>
+                  <button type="button" className="primary" disabled={saving} onClick={saveMatrix}>
+                    <Save size={15} />
+                    {saving ? t("saving") : t("save")}
+                  </button>
+                  <button type="button" className="danger" onClick={() => removeMatrix(selectedMatrix)}>
+                    <Trash2 size={15} />
+                    {t("delete")}
+                  </button>
+                </div>
               </div>
-              <div className="matrix-actions">
-                <button type="button" onClick={addRow}>
-                  <Plus size={15} />
-                  {t("addRow")}
-                </button>
-                <button type="button" onClick={addColumn}>
-                  <Plus size={15} />
-                  {t("addColumn")}
-                </button>
-                <button type="button" className="primary" disabled={saving} onClick={saveMatrix}>
-                  <Save size={15} />
-                  {saving ? t("saving") : t("save")}
-                </button>
-                <button type="button" className="danger" onClick={() => removeMatrix(selectedMatrix)}>
-                  <Trash2 size={15} />
-                  {t("delete")}
-                </button>
-              </div>
+              <textarea className="matrix-desc" value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("matrixDescriptionPlaceholder")} />
             </div>
             {error ? <div className="matrix-error">{error}</div> : null}
             <div className="matrix-source-line">
@@ -203,7 +203,7 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
               <span>{columns.length} {t("matrixColumns")}</span>
               <span>{cells.length} {t("matrixCells")}</span>
             </div>
-            <MatrixTable rows={rows} columns={columns} cellsBySlot={cellBySlot} setRows={setRows} setColumns={setColumns} setCells={setCells} runs={runList} onOpenRun={onOpenRun} />
+            <MatrixTable rows={rows} columns={columns} cellsBySlot={cellBySlot} setRows={setRows} setColumns={setColumns} setCells={setCells} runs={runList} onOpenRun={onOpenRun} onAddRow={addRow} onAddColumn={addColumn} t={t} />
           </>
         ) : (
           <div className="matrix-empty-state">{t("matrixNoSelection")}</div>
@@ -221,7 +221,10 @@ function MatrixTable({
   setColumns,
   setCells,
   runs,
-  onOpenRun
+  onOpenRun,
+  onAddRow,
+  onAddColumn,
+  t
 }: {
   rows: ExperimentMatrixRow[];
   columns: ExperimentMatrixColumn[];
@@ -231,6 +234,9 @@ function MatrixTable({
   setCells: Dispatch<SetStateAction<ExperimentMatrixCell[]>>;
   runs: Run[];
   onOpenRun: (id: string) => void;
+  onAddRow: () => void;
+  onAddColumn: () => void;
+  t: T;
 }) {
   const updateCell = (rowID: string, column: ExperimentMatrixColumn, value: string) => {
     setCells((prev) => {
@@ -261,9 +267,24 @@ function MatrixTable({
             <th className="matrix-experiment-header">实验名称</th>
             {columns.map((column) => (
               <th key={column.id}>
-                <input value={column.label} onChange={(event) => setColumns((prev) => prev.map((item) => (item.id === column.id ? { ...item, label: event.target.value } : item)))} />
+                <textarea
+                  className="matrix-col-head"
+                  rows={1}
+                  cols={4}
+                  title={column.label}
+                  value={column.label}
+                  onChange={(event) => setColumns((prev) => prev.map((item) => (item.id === column.id ? { ...item, label: event.target.value.replace(/\n/g, "") } : item)))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.preventDefault();
+                  }}
+                />
               </th>
             ))}
+            <th className="matrix-add-col-head" title={t("addColumn")}>
+              <button type="button" className="matrix-add-btn" onClick={onAddColumn} title={t("addColumn")}>
+                <Plus size={15} />
+              </button>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -285,8 +306,18 @@ function MatrixTable({
                   </td>
                 );
               })}
+              <td className="matrix-add-col-cell" aria-hidden="true" />
             </tr>
           ))}
+          <tr className="matrix-add-row">
+            <th className="matrix-experiment-cell">
+              <button type="button" className="matrix-add-row-btn" onClick={onAddRow}>
+                <Plus size={15} />
+                {t("addRow")}
+              </button>
+            </th>
+            <td colSpan={columns.length + 1} aria-hidden="true" />
+          </tr>
         </tbody>
       </table>
     </div>
