@@ -242,7 +242,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	running := 0
 	for _, run := range runs {
-		if run.Status == store.RunStatusRunning {
+		if store.IsRunRefreshableStatus(run.Status) {
 			running++
 		}
 	}
@@ -759,7 +759,7 @@ func (s *Server) handleArchiveRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
 		return
 	}
-	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+	if store.IsRunRefreshableStatus(run.Status) {
 		writeError(w, http.StatusBadRequest, "RUN_ACTIVE", "running runs cannot be moved to trash")
 		return
 	}
@@ -800,7 +800,7 @@ func (s *Server) handleDeleteRunLogically(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
 		return
 	}
-	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+	if store.IsRunRefreshableStatus(run.Status) {
 		writeError(w, http.StatusBadRequest, "RUN_ACTIVE", "running runs cannot be deleted")
 		return
 	}
@@ -842,7 +842,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
 		return
 	}
-	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+	if store.IsRunRefreshableStatus(run.Status) {
 		if refreshed, err := s.executor.CheckRunStatus(r.Context(), id); err == nil && refreshed != nil {
 			run = refreshed
 		}
@@ -1675,7 +1675,7 @@ func appendProjectRunCard(view *projectView, card projectRunCardView) {
 		if kind == "" || kind == store.RunKindFormal || kind == store.RunKindAblation {
 			view.FormalRuns++
 		}
-		if card.Run.Status == store.RunStatusRunning || card.Run.Status == store.RunStatusStarting {
+		if store.IsRunRefreshableStatus(card.Run.Status) {
 			view.RunningRuns++
 		}
 	}

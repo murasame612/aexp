@@ -218,6 +218,9 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	if boolArg(args, "refresh_env", false) {
 		cli = append(cli, "--refresh-env")
 	}
+	if boolArg(args, "allow_ephemeral_paths", false) {
+		cli = append(cli, "--allow-ephemeral-paths")
+	}
 	if v, ok := optionalIntArg(args, "launch_timeout"); ok {
 		cli = append(cli, "--launch-timeout", strconv.Itoa(v))
 	}
@@ -696,6 +699,7 @@ func (s *Server) toolProjectRun(ctx context.Context, args map[string]interface{}
 	addBoolFlag(&cli, args, "force", "--force")
 	addBoolFlag(&cli, args, "dry_run", "--dry-run")
 	addBoolFlag(&cli, args, "refresh_env", "--refresh-env")
+	addBoolFlag(&cli, args, "allow_ephemeral_paths", "--allow-ephemeral-paths")
 	if v, ok := optionalIntArg(args, "launch_timeout"); ok {
 		cli = append(cli, "--launch-timeout", strconv.Itoa(v))
 	}
@@ -1514,25 +1518,26 @@ func toolRegistry() []toolSpec {
 			Name:        "aexp_submit_run",
 			Description: "Submit a long-running tracked run. Use this for setup, smoke, pilot, formal, and ablation jobs.",
 			InputSchema: objectSchema(map[string]interface{}{
-				"resource":       stringSchema("Resource name."),
-				"command":        stringSchema("Shell command string. Alternative to argv."),
-				"argv":           arrayStringSchema("Structured argv. Alternative to command."),
-				"name":           stringSchema("Run name."),
-				"kind":           stringSchema("Run kind: setup, smoke, pilot, formal, ablation."),
-				"cwd":            stringSchema("Remote working directory."),
-				"project_env":    stringSchema("Optional runtime strategy: auto or raw."),
-				"conda_env":      stringSchema("Optional conda environment."),
-				"gpu_index":      numberSchema("GPU index. -1 means all, -2 means none."),
-				"no_gpu":         boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
-				"shell":          boolSchema("Interpret argv through bash -lc."),
-				"force":          boolSchema("Skip GPU lock."),
-				"refresh_env":    boolSchema("Ignore cached project env detection."),
-				"log_paths":      arrayStringSchema("Log file globs."),
-				"metric_paths":   arrayStringSchema("Metric file globs."),
-				"artifact_paths": arrayStringSchema("Artifact file globs."),
-				"ui_events":      stringSchema("Structured UI event JSONL path, or off."),
-				"launch_timeout": numberSchema("Timeout in seconds for remote launch after the run record is created."),
-				"timeout":        numberSchema("MCP tool timeout in seconds."),
+				"resource":              stringSchema("Resource name."),
+				"command":               stringSchema("Shell command string. Alternative to argv."),
+				"argv":                  arrayStringSchema("Structured argv. Alternative to command."),
+				"name":                  stringSchema("Run name."),
+				"kind":                  stringSchema("Run kind: setup, smoke, pilot, formal, ablation."),
+				"cwd":                   stringSchema("Remote working directory."),
+				"project_env":           stringSchema("Optional runtime strategy: auto or raw."),
+				"conda_env":             stringSchema("Optional conda environment."),
+				"gpu_index":             numberSchema("GPU index. -1 means all, -2 means none."),
+				"no_gpu":                boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
+				"shell":                 boolSchema("Interpret argv through bash -lc."),
+				"force":                 boolSchema("Skip GPU lock."),
+				"refresh_env":           boolSchema("Ignore cached project env detection."),
+				"allow_ephemeral_paths": boolSchema("Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs."),
+				"log_paths":             arrayStringSchema("Log file globs."),
+				"metric_paths":          arrayStringSchema("Metric file globs."),
+				"artifact_paths":        arrayStringSchema("Artifact file globs."),
+				"ui_events":             stringSchema("Structured UI event JSONL path, or off."),
+				"launch_timeout":        numberSchema("Timeout in seconds for remote launch after the run record is created."),
+				"timeout":               numberSchema("MCP tool timeout in seconds."),
 			}, []string{"resource"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolSubmitRun(ctx, args)
@@ -1929,23 +1934,24 @@ func toolRegistry() []toolSpec {
 			Name:        "aexp_project_run",
 			Description: "Submit a configured project recipe from .aexp.yaml.",
 			InputSchema: objectSchema(map[string]interface{}{
-				"recipe":         stringSchema("Project recipe name, defaults to train."),
-				"name":           stringSchema("Alias for recipe."),
-				"run_name":       stringSchema("Override run name."),
-				"config":         stringSchema("Optional project config path."),
-				"resource":       stringSchema("Override resource name."),
-				"cwd":            stringSchema("Override working directory."),
-				"kind":           stringSchema("Override run kind."),
-				"project_env":    stringSchema("Override runtime env strategy: auto or raw."),
-				"conda_env":      stringSchema("Override conda environment."),
-				"ui_events":      stringSchema("Override structured UI event JSONL path; set off to disable."),
-				"gpu_index":      numberSchema("Override GPU index."),
-				"no_gpu":         boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
-				"force":          boolSchema("Skip GPU slot lock."),
-				"dry_run":        boolSchema("Print the resolved submit command without launching."),
-				"refresh_env":    boolSchema("Ignore cached project profile and re-detect the environment."),
-				"launch_timeout": numberSchema("Launch timeout in seconds."),
-				"timeout":        numberSchema("Tool timeout in seconds."),
+				"recipe":                stringSchema("Project recipe name, defaults to train."),
+				"name":                  stringSchema("Alias for recipe."),
+				"run_name":              stringSchema("Override run name."),
+				"config":                stringSchema("Optional project config path."),
+				"resource":              stringSchema("Override resource name."),
+				"cwd":                   stringSchema("Override working directory."),
+				"kind":                  stringSchema("Override run kind."),
+				"project_env":           stringSchema("Override runtime env strategy: auto or raw."),
+				"conda_env":             stringSchema("Override conda environment."),
+				"ui_events":             stringSchema("Override structured UI event JSONL path; set off to disable."),
+				"gpu_index":             numberSchema("Override GPU index."),
+				"no_gpu":                boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
+				"force":                 boolSchema("Skip GPU slot lock."),
+				"dry_run":               boolSchema("Print the resolved submit command without launching."),
+				"refresh_env":           boolSchema("Ignore cached project profile and re-detect the environment."),
+				"allow_ephemeral_paths": boolSchema("Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs."),
+				"launch_timeout":        numberSchema("Launch timeout in seconds."),
+				"timeout":               numberSchema("Tool timeout in seconds."),
 			}, nil),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolProjectRun(ctx, args)

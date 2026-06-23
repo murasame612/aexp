@@ -28,6 +28,18 @@ func Path(runID string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
+func LastSnapshotPath(runID string) (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	name, err := filename(runID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, strings.TrimSuffix(name, ".jsonl")+"_last_snapshot.json"), nil
+}
+
 func Dir() (string, error) {
 	if dir := strings.TrimSpace(os.Getenv(envCacheDir)); dir != "" {
 		return dir, nil

@@ -19,6 +19,20 @@ func newTestStore(t *testing.T) *SQLite {
 	return s
 }
 
+func TestRunStatusHelpers(t *testing.T) {
+	if !IsRunRefreshableStatus(RunStatusSSHUnreachable) {
+		t.Fatal("ssh_unreachable should be refreshable")
+	}
+	if IsRunTerminalStatus(RunStatusSSHUnreachable) {
+		t.Fatal("ssh_unreachable should not be terminal")
+	}
+	for _, status := range []string{RunStatusLost, RunStatusContainerExpired, RunStatusLostButEventsCached} {
+		if !IsRunTerminalStatus(status) {
+			t.Fatalf("%s should be terminal", status)
+		}
+	}
+}
+
 func TestResourceCRUD(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

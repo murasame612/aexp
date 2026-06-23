@@ -14,29 +14,31 @@ import (
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
 
+	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/store"
 )
 
 // SubmitRequest contains the parameters for creating a new run.
 type SubmitRequest struct {
-	ResourceID        string            `json:"resource_id"`
-	Name              string            `json:"name"`
-	Kind              string            `json:"kind"`      // smoke, pilot, formal, ablation
-	GPUIndex          int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
-	Force             bool              `json:"force"`     // skip GPU slot lock
-	Command           string            `json:"command"`
-	Program           string            `json:"program"` // structured: python, bash, etc.
-	Args              []string          `json:"args"`    // structured args
-	Cwd               string            `json:"cwd"`
-	CondaEnv          string            `json:"conda_env"`
-	ProjectEnv        string            `json:"project_env"` // "", raw, auto
-	LogPaths          []string          `json:"log_paths"`
-	ArtifactPaths     []string          `json:"artifact_paths"`
-	MetricPaths       []string          `json:"metric_paths"`
-	UIEventsPath      string            `json:"ui_events_path"`
-	EnvVars           map[string]string `json:"env_vars"`
-	CreatedBy         string            `json:"created_by"`
-	RefreshProjectEnv bool              `json:"refresh_project_env"`
+	ResourceID          string            `json:"resource_id"`
+	Name                string            `json:"name"`
+	Kind                string            `json:"kind"`      // smoke, pilot, formal, ablation
+	GPUIndex            int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
+	Force               bool              `json:"force"`     // skip GPU slot lock
+	Command             string            `json:"command"`
+	Program             string            `json:"program"` // structured: python, bash, etc.
+	Args                []string          `json:"args"`    // structured args
+	Cwd                 string            `json:"cwd"`
+	CondaEnv            string            `json:"conda_env"`
+	ProjectEnv          string            `json:"project_env"` // "", raw, auto
+	LogPaths            []string          `json:"log_paths"`
+	ArtifactPaths       []string          `json:"artifact_paths"`
+	MetricPaths         []string          `json:"metric_paths"`
+	UIEventsPath        string            `json:"ui_events_path"`
+	EnvVars             map[string]string `json:"env_vars"`
+	CreatedBy           string            `json:"created_by"`
+	RefreshProjectEnv   bool              `json:"refresh_project_env"`
+	AllowEphemeralPaths bool              `json:"allow_ephemeral_paths"`
 }
 
 // SubmitOptions controls optional submit behavior.
@@ -122,6 +124,11 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	if req.Cwd != "" {
 		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
 			return nil, cwdSandboxError(err, resource.RootDir)
+		}
+	}
+	if !req.AllowEphemeralPaths {
+		if err := validatePersistentRunPaths(resource.RootDir, req.Cwd); err != nil {
+			return nil, err
 		}
 	}
 
@@ -347,7 +354,7 @@ func usableCachedProjectProfile(profile *store.ProjectProfile) bool {
 		strings.TrimSpace(profile.ResolvedCwd) != ""
 }
 
-// RefreshActiveRuns refreshes starting/running runs for a resource, or all resources if resourceID is empty.
+// RefreshActiveRuns refreshes control-plane-checkable runs for a resource, or all resources if resourceID is empty.
 func (e *Executor) RefreshActiveRuns(ctx context.Context, resourceID string, timeout time.Duration) ([]store.Run, map[string]bool, error) {
 	runs, err := e.listActiveRuns(ctx, resourceID)
 	if err != nil {
@@ -356,14 +363,14 @@ func (e *Executor) RefreshActiveRuns(ctx context.Context, resourceID string, tim
 	return e.RefreshRuns(ctx, runs, timeout)
 }
 
-// RefreshRuns refreshes any starting/running runs in the provided slice.
+// RefreshRuns refreshes any control-plane-checkable runs in the provided slice.
 func (e *Executor) RefreshRuns(ctx context.Context, runs []store.Run, timeout time.Duration) ([]store.Run, map[string]bool, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
 	cached := map[string]bool{}
 	for i := range runs {
-		if runs[i].Status != store.RunStatusRunning && runs[i].Status != store.RunStatusStarting {
+		if !store.IsRunRefreshableStatus(runs[i].Status) {
 			continue
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -380,7 +387,7 @@ func (e *Executor) RefreshRuns(ctx context.Context, runs []store.Run, timeout ti
 
 func (e *Executor) listActiveRuns(ctx context.Context, resourceID string) ([]store.Run, error) {
 	var out []store.Run
-	for _, status := range []string{store.RunStatusStarting, store.RunStatusRunning} {
+	for _, status := range []string{store.RunStatusStarting, store.RunStatusRunning, store.RunStatusSSHUnreachable} {
 		runs, err := e.store.ListRuns(ctx, store.RunFilter{
 			ResourceID: resourceID,
 			Status:     status,
@@ -403,8 +410,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 		return nil, fmt.Errorf("run %s not found", runID)
 	}
 
-	// Only check running/starting runs
-	if run.Status != store.RunStatusRunning && run.Status != store.RunStatusStarting {
+	// Only check runs that may still represent a live process.
+	if !store.IsRunRefreshableStatus(run.Status) {
 		return run, nil
 	}
 
@@ -419,7 +426,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	out, _, err := e.exec(ctx, resource,
 		fmt.Sprintf("if [ -f %s ]; then cat %s; fi", quotedExitCodeFile, quotedExitCodeFile))
 	if err != nil {
-		return run, err
+		e.markRunStatus(ctx, resource, run, store.RunStatusSSHUnreachable, "resource control channel is unreachable: "+err.Error())
+		return run, nil
 	}
 
 	if strings.TrimSpace(out) != "" {
@@ -434,7 +442,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	tmuxOut, _, tmuxErr := e.exec(ctx, resource,
 		fmt.Sprintf("tmux has-session -t %s >/dev/null 2>&1; printf '%%s\\n' \"$?\"", shellQuote(run.TmuxSession)))
 	if tmuxErr != nil {
-		return run, tmuxErr
+		e.markRunStatus(ctx, resource, run, store.RunStatusSSHUnreachable, "tmux status check failed: "+tmuxErr.Error())
+		return run, nil
 	}
 	tmuxStatus, ok := parseRemoteStatusCode(tmuxOut)
 	if !ok {
@@ -446,15 +455,286 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 			e.finishRun(ctx, resource, run, code)
 			return run, nil
 		}
-		// tmux session gone but no exit_code → lost
-		run.Status = store.RunStatusLost
-		now := sql.NullTime{Time: time.Now(), Valid: true}
-		run.FinishedAt = now
-		e.store.UpdateRun(ctx, run)
-		e.checkResourceIdle(ctx, resource)
+		status := store.RunStatusLost
+		reason := "tmux session is gone and no exit_code was written"
+		if ok, err := e.remoteDirExists(ctx, resource, run.RemoteRunDir); err == nil && !ok {
+			status = store.RunStatusContainerExpired
+			reason = "remote run directory disappeared; the container or temporary mount likely expired"
+		}
+		if status == store.RunStatusLost {
+			if snapshot, err := e.writeLastRunSnapshot(ctx, resource, run, status, reason); err == nil && snapshot.EventsCached {
+				status = store.RunStatusLostButEventsCached
+				reason += "; local structured event cache is available"
+			}
+		}
+		e.markRunStatus(ctx, resource, run, status, reason)
 	}
 
 	return run, nil
+}
+
+func (e *Executor) markRunStatus(ctx context.Context, resource *store.Resource, run *store.Run, status string, reason string) {
+	if run.Status != status {
+		run.Status = status
+	}
+	now := sql.NullTime{Time: time.Now(), Valid: true}
+	if store.IsRunTerminalStatus(status) {
+		run.FinishedAt = now
+	}
+	_, _ = e.writeLastRunSnapshot(ctx, resource, run, status, reason)
+	e.store.UpdateRun(ctx, run)
+	e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": status, "reason": reason})
+	if store.IsRunTerminalStatus(status) && resource != nil {
+		e.checkResourceIdle(ctx, resource)
+	}
+}
+
+func (e *Executor) remoteDirExists(ctx context.Context, resource *store.Resource, dir string) (bool, error) {
+	if strings.TrimSpace(dir) == "" {
+		return false, nil
+	}
+	out, _, err := e.exec(ctx, resource, fmt.Sprintf("test -d %s; printf '%%s\\n' \"$?\"", shellQuote(dir)))
+	if err != nil {
+		return false, err
+	}
+	code, ok := parseRemoteStatusCode(out)
+	if !ok {
+		return false, fmt.Errorf("unexpected directory status output: %q", out)
+	}
+	return code == 0, nil
+}
+
+type LastRunSnapshot struct {
+	RunID           string                 `json:"run_id"`
+	Status          string                 `json:"status"`
+	Reason          string                 `json:"reason,omitempty"`
+	DetectedAt      string                 `json:"detected_at"`
+	ResourceID      string                 `json:"resource_id,omitempty"`
+	RemoteRunDir    string                 `json:"remote_run_dir,omitempty"`
+	UIEventsPath    string                 `json:"ui_events_path,omitempty"`
+	EventCachePath  string                 `json:"event_cache_path,omitempty"`
+	EventsCached    bool                   `json:"events_cached"`
+	EventCount      int                    `json:"event_count"`
+	LastTrial       string                 `json:"last_trial,omitempty"`
+	LastEpoch       *float64               `json:"last_epoch,omitempty"`
+	LastStep        *float64               `json:"last_step,omitempty"`
+	CompletedTrials int                    `json:"completed_trials,omitempty"`
+	BestValMetric   *SnapshotMetric        `json:"best_val_metric,omitempty"`
+	LatestMetrics   []SnapshotMetric       `json:"latest_metrics,omitempty"`
+	StdoutTail      string                 `json:"stdout_tail,omitempty"`
+	StderrTail      string                 `json:"stderr_tail,omitempty"`
+	SummaryWritten  bool                   `json:"summary_written"`
+	SnapshotPath    string                 `json:"snapshot_path,omitempty"`
+	SnapshotWritten bool                   `json:"snapshot_written"`
+	Extra           map[string]interface{} `json:"extra,omitempty"`
+}
+
+type SnapshotMetric struct {
+	Name   string   `json:"name"`
+	Series string   `json:"series,omitempty"`
+	Value  float64  `json:"value"`
+	Epoch  *float64 `json:"epoch,omitempty"`
+	Step   *float64 `json:"step,omitempty"`
+}
+
+func (e *Executor) writeLastRunSnapshot(ctx context.Context, resource *store.Resource, run *store.Run, status string, reason string) (LastRunSnapshot, error) {
+	snapshot := LastRunSnapshot{
+		RunID:        run.ID,
+		Status:       status,
+		Reason:       reason,
+		DetectedAt:   time.Now().Format(time.RFC3339),
+		ResourceID:   run.ResourceID,
+		RemoteRunDir: run.RemoteRunDir,
+		UIEventsPath: run.UIEventsPath,
+	}
+	lines := []LogLine{}
+	if strings.TrimSpace(run.UIEventsPath) != "" && resource != nil {
+		if remoteLines, err := e.GetLogFileSnapshot(ctx, run.ID, run.UIEventsPath, 1000); err == nil {
+			lines = remoteLines
+			if cachePath, cacheErr := eventcache.Write(run.ID, eventCacheLinesFromLogLines(remoteLines)); cacheErr == nil {
+				snapshot.EventCachePath = cachePath
+			}
+		}
+	}
+	if len(lines) == 0 {
+		if cacheLines, cachePath, err := eventcache.Read(run.ID, 1000); err == nil {
+			snapshot.EventCachePath = cachePath
+			lines = logLinesFromEventCache(run.ID, run.UIEventsPath, cacheLines)
+		}
+	}
+	applyEventEvidenceToSnapshot(&snapshot, lines)
+	if resource != nil {
+		snapshot.StdoutTail, snapshot.StderrTail = e.runLogTails(ctx, resource, run)
+	}
+	if path, err := eventcache.LastSnapshotPath(run.ID); err == nil {
+		snapshot.SnapshotPath = path
+		if data, marshalErr := json.MarshalIndent(snapshot, "", "  "); marshalErr == nil {
+			if mkdirErr := os.MkdirAll(pathDir(path), 0755); mkdirErr == nil {
+				if writeErr := os.WriteFile(path, append(data, '\n'), 0644); writeErr == nil {
+					snapshot.SnapshotWritten = true
+					data, _ = json.MarshalIndent(snapshot, "", "  ")
+					_ = os.WriteFile(path, append(data, '\n'), 0644)
+				}
+			}
+		}
+	}
+	return snapshot, nil
+}
+
+func eventCacheLinesFromLogLines(lines []LogLine) []eventcache.Line {
+	out := make([]eventcache.Line, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, eventcache.Line{LineNo: line.LineNo, Content: line.Content})
+	}
+	return out
+}
+
+func logLinesFromEventCache(runID, source string, lines []eventcache.Line) []LogLine {
+	out := make([]LogLine, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, LogLine{RunID: runID, Source: source, LineNo: line.LineNo, Content: line.Content})
+	}
+	return out
+}
+
+func applyEventEvidenceToSnapshot(snapshot *LastRunSnapshot, lines []LogLine) {
+	if len(lines) == 0 {
+		return
+	}
+	snapshot.EventsCached = true
+	snapshot.EventCount = len(lines)
+	completedTrials := map[string]bool{}
+	latestByKey := map[string]SnapshotMetric{}
+	for _, line := range lines {
+		var ev map[string]interface{}
+		if err := json.Unmarshal([]byte(line.Content), &ev); err != nil {
+			continue
+		}
+		if trial := eventStringField(ev, "trial"); trial != "" {
+			snapshot.LastTrial = trial
+			completedTrials[trial] = true
+		}
+		if epoch, ok := eventFloatField(ev, "epoch"); ok {
+			snapshot.LastEpoch = &epoch
+		}
+		if step, ok := eventFloatField(ev, "step"); ok {
+			snapshot.LastStep = &step
+		}
+		typ := strings.ToLower(eventStringField(ev, "type"))
+		name := firstEventString(ev, "name", "metric", "key", "label")
+		value, valueOK := eventFloatField(ev, "value")
+		if valueOK && (typ == "metric" || typ == "metrics" || typ == "eval" || typ == "scalar" || name != "") {
+			metric := SnapshotMetric{
+				Name:   name,
+				Series: eventSeriesLabel(ev),
+				Value:  value,
+			}
+			if epoch, ok := eventFloatField(ev, "epoch"); ok {
+				metric.Epoch = &epoch
+			}
+			if step, ok := eventFloatField(ev, "step"); ok {
+				metric.Step = &step
+			}
+			key := metric.Name + "\x00" + metric.Series
+			latestByKey[key] = metric
+			if looksLikeValidationMetric(metric.Name) && (snapshot.BestValMetric == nil || metric.Value < snapshot.BestValMetric.Value) {
+				m := metric
+				snapshot.BestValMetric = &m
+			}
+		}
+		if strings.Contains(strings.ToLower(typ), "summary") || eventStringField(ev, "summary") != "" {
+			snapshot.SummaryWritten = true
+		}
+	}
+	snapshot.CompletedTrials = len(completedTrials)
+	for _, metric := range latestByKey {
+		snapshot.LatestMetrics = append(snapshot.LatestMetrics, metric)
+	}
+	if len(snapshot.LatestMetrics) > 20 {
+		snapshot.LatestMetrics = snapshot.LatestMetrics[len(snapshot.LatestMetrics)-20:]
+	}
+}
+
+func (e *Executor) runLogTails(ctx context.Context, resource *store.Resource, run *store.Run) (string, string) {
+	if strings.TrimSpace(run.RemoteRunDir) == "" {
+		return "", ""
+	}
+	stdoutPath := path.Join(run.RemoteRunDir, "logs", "stdout.log")
+	stderrPath := path.Join(run.RemoteRunDir, "logs", "stderr.log")
+	stdout, _, _ := e.exec(ctx, resource, fmt.Sprintf("tail -n 80 %s 2>/dev/null || true", shellQuote(stdoutPath)))
+	stderr, _, _ := e.exec(ctx, resource, fmt.Sprintf("tail -n 80 %s 2>/dev/null || true", shellQuote(stderrPath)))
+	return strings.TrimRight(stdout, "\n"), strings.TrimRight(stderr, "\n")
+}
+
+func pathDir(p string) string {
+	idx := strings.LastIndex(p, "/")
+	if idx <= 0 {
+		return "."
+	}
+	return p[:idx]
+}
+
+func eventStringField(ev map[string]interface{}, key string) string {
+	switch v := ev[key].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return ""
+	}
+}
+
+func firstEventString(ev map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := eventStringField(ev, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func eventFloatField(ev map[string]interface{}, key string) (float64, bool) {
+	switch v := ev[key].(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	case string:
+		var f float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &f); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+func eventSeriesLabel(ev map[string]interface{}) string {
+	parts := make([]string, 0, 6)
+	for _, key := range []string{"series", "variant", "split", "stage", "trial", "seed"} {
+		value := eventStringField(ev, key)
+		if value == "" {
+			continue
+		}
+		if key == "series" {
+			parts = append(parts, value)
+		} else {
+			parts = append(parts, key+":"+value)
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+func looksLikeValidationMetric(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(name, "val") || strings.Contains(name, "valid") || strings.Contains(name, "validation")
 }
 
 func parseRemoteStatusCode(out string) (int, bool) {
@@ -766,7 +1046,7 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	if run == nil {
 		return fmt.Errorf("run %s not found", runID)
 	}
-	if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+	if store.IsRunRefreshableStatus(run.Status) {
 		if refreshed, refreshErr := e.CheckRunStatus(ctx, runID); refreshErr == nil && refreshed != nil {
 			run = refreshed
 		}
@@ -830,10 +1110,7 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 }
 
 func isFinishedRunStatus(status string) bool {
-	return status == store.RunStatusSucceeded ||
-		status == store.RunStatusFailed ||
-		status == store.RunStatusCancelled ||
-		status == store.RunStatusLost
+	return store.IsRunTerminalStatus(status)
 }
 
 // ExecRequest is a one-shot remote command (not a Run).
@@ -1090,7 +1367,7 @@ func (e *Executor) checkResourceIdle(ctx context.Context, r *store.Resource) {
 	runs, _, _ := e.RefreshActiveRuns(ctx, r.ID, 2*time.Second)
 	active := 0
 	for _, run := range runs {
-		if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+		if store.IsRunRefreshableStatus(run.Status) {
 			active++
 		}
 	}
@@ -1120,6 +1397,38 @@ func validateCwd(rootDir, cwd string) error {
 		return fmt.Errorf("cwd %q escapes root_dir %q", cwd, rootDir)
 	}
 	return nil
+}
+
+func validatePersistentRunPaths(rootDir, cwd string) error {
+	if reason := ephemeralRemotePathReason(rootDir); reason != "" {
+		return fmt.Errorf("persistent path check failed: resource root_dir %q %s; set root_dir to a durable workspace/bucket path or pass allow_ephemeral_paths only for disposable smoke/setup work", rootDir, reason)
+	}
+	effectiveCwd := cwd
+	if strings.TrimSpace(effectiveCwd) == "" {
+		effectiveCwd = rootDir
+	} else if !strings.HasPrefix(effectiveCwd, "/") && strings.TrimSpace(rootDir) != "" {
+		effectiveCwd = strings.TrimRight(rootDir, "/") + "/" + effectiveCwd
+	}
+	if reason := ephemeralRemotePathReason(effectiveCwd); reason != "" {
+		return fmt.Errorf("persistent path check failed: cwd %q %s; choose a durable project directory under the resource root_dir", effectiveCwd, reason)
+	}
+	return nil
+}
+
+func ephemeralRemotePathReason(p string) string {
+	clean := cleanPath(strings.TrimSpace(p))
+	if clean == "" || clean == "/" {
+		return ""
+	}
+	for _, prefix := range []string{"/tmp", "/var/tmp", "/run", "/dev/shm"} {
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			return "looks like an ephemeral mount"
+		}
+	}
+	if strings.HasPrefix(clean, "/mnt/") && strings.Contains(strings.ToLower(clean), "tmp") {
+		return "looks like an ephemeral /mnt temporary mount"
+	}
+	return ""
 }
 
 // validateCommand blocks obviously dangerous commands.

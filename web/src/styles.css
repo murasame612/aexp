@@ -34,6 +34,12 @@ body {
   background: var(--bg);
 }
 
+html.modal-open,
+body.modal-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 button,
 input,
 select {
@@ -253,22 +259,7 @@ select {
 }
 
 .matrix-sidebar.collapsed {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 12;
-  width: 34px;
-  transform: translateX(-44px);
-  align-self: start;
-  min-height: 0;
-  padding: 0;
-  display: grid;
-  grid-template-rows: auto;
-  justify-items: center;
-  border-color: transparent;
-  background: transparent;
-  border-radius: 0;
-  overflow: visible;
+  display: none;
 }
 
 .matrix-sidebar-head,
@@ -285,41 +276,14 @@ select {
   justify-content: space-between;
 }
 
-.matrix-sidebar.collapsed .matrix-sidebar-head {
-  justify-content: center;
-  position: sticky;
-  top: 8px;
-  z-index: 4;
-}
-
 .matrix-sidebar-controls {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.matrix-sidebar.collapsed .matrix-sidebar-controls {
-  flex-direction: column;
-  gap: 5px;
-  padding: 4px;
-  border: 1px solid #dfe4ea;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 6px 18px rgba(28, 38, 48, 0.08);
-}
-
-.matrix-sidebar.collapsed .icon-button {
-  width: 28px;
-  min-height: 28px;
-  border-radius: 10px;
-  border-color: transparent;
-  background: transparent;
-  color: #4f6376;
-}
-
-.matrix-sidebar.collapsed .icon-button:hover:not(:disabled) {
-  background: #eef3f7;
-  border-color: transparent;
+.matrix-page-sidebar-collapsed .matrix-topbar {
+  padding-left: 0;
 }
 
 .matrix-sidebar.collapsed .icon-button:focus-visible {
@@ -415,6 +379,23 @@ select {
   align-items: stretch;
 }
 
+.matrix-title-picker {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.matrix-inline-list-button {
+  flex: 0 0 auto;
+  width: 34px;
+  min-height: 38px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
 .matrix-title-fields input {
   min-height: 32px;
   font-size: 17px;
@@ -434,6 +415,85 @@ select {
 .matrix-title-fields textarea {
   min-height: 32px;
   resize: none;
+}
+
+.matrix-title-picker .matrix-title-input {
+  width: 100%;
+  padding-right: 42px;
+}
+
+.matrix-title-menu-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 30px;
+  min-height: calc(100% - 8px);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.matrix-title-menu-button:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.matrix-title-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(520px, 100%);
+  max-height: 320px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+}
+
+.matrix-title-menu button {
+  display: grid;
+  justify-content: stretch;
+  gap: 2px;
+  width: 100%;
+  min-height: auto;
+  padding: 8px 9px;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+}
+
+.matrix-title-menu .matrix-title-menu-create {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.matrix-title-menu button:hover:not(:disabled),
+.matrix-title-menu button.active {
+  background: var(--surface-2);
+}
+
+.matrix-title-menu strong,
+.matrix-title-menu span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.matrix-title-menu span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .matrix-actions {
@@ -4767,19 +4827,28 @@ select {
 .modal-backdrop {
   position: fixed;
   inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
   background: rgba(20, 18, 15, 0.42);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
   padding: 20px;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 .modal {
   width: min(760px, 100%);
-  max-height: min(880px, calc(100vh - 40px));
+  max-height: min(880px, calc(100dvh - 40px));
   overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   background: var(--surface);
+  background-clip: padding-box;
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px;

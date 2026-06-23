@@ -38,7 +38,7 @@ type Run struct {
 	ID                string        `json:"id"`
 	ResourceID        string        `json:"resource_id"`
 	Name              string        `json:"name"`
-	Status            string        `json:"status"`    // created,queued,starting,running,succeeded,failed,cancelled,lost
+	Status            string        `json:"status"`    // created,queued,starting,running,succeeded,failed,cancelled,lost,ssh_unreachable,container_expired,run_lost_but_events_cached
 	Kind              string        `json:"kind"`      // setup, smoke, pilot, formal, ablation
 	GPUIndex          int           `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
 	Cwd               string        `json:"cwd"`
@@ -446,15 +446,40 @@ type ExecEventFilter struct {
 
 // RunStatus constants
 const (
-	RunStatusCreated   = "created"
-	RunStatusQueued    = "queued"
-	RunStatusStarting  = "starting"
-	RunStatusRunning   = "running"
-	RunStatusSucceeded = "succeeded"
-	RunStatusFailed    = "failed"
-	RunStatusCancelled = "cancelled"
-	RunStatusLost      = "lost"
+	RunStatusCreated             = "created"
+	RunStatusQueued              = "queued"
+	RunStatusStarting            = "starting"
+	RunStatusRunning             = "running"
+	RunStatusSucceeded           = "succeeded"
+	RunStatusFailed              = "failed"
+	RunStatusCancelled           = "cancelled"
+	RunStatusLost                = "lost"
+	RunStatusSSHUnreachable      = "ssh_unreachable"
+	RunStatusContainerExpired    = "container_expired"
+	RunStatusLostButEventsCached = "run_lost_but_events_cached"
 )
+
+// IsRunRefreshableStatus returns true when a status may still represent a live
+// process and should be checked again against the resource control plane.
+func IsRunRefreshableStatus(status string) bool {
+	switch status {
+	case RunStatusStarting, RunStatusRunning, RunStatusSSHUnreachable:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRunTerminalStatus returns true when a run should not be resumed by passive
+// status refresh. It may still be used as provenance for a manual rerun.
+func IsRunTerminalStatus(status string) bool {
+	switch status {
+	case RunStatusSucceeded, RunStatusFailed, RunStatusCancelled, RunStatusLost, RunStatusContainerExpired, RunStatusLostButEventsCached:
+		return true
+	default:
+		return false
+	}
+}
 
 // RunKind constants
 const (

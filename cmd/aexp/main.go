@@ -2111,7 +2111,7 @@ func firstExistingGlob(baseDir string, pattern string) string {
 func projectRunCmd() *cobra.Command {
 	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv, uiEventsPath string
 	var gpuIndex int
-	var noGPU, force, dryRun, refreshEnv bool
+	var noGPU, force, dryRun, refreshEnv, allowEphemeralPaths bool
 	var launchTimeoutSec int
 
 	cmd := &cobra.Command{
@@ -2197,21 +2197,22 @@ Then run:
 				uiEventsPath = cfg.UIEvents
 			}
 			submitReq := executor.SubmitRequest{
-				ResourceID:        resourceName,
-				Name:              name,
-				Kind:              kind,
-				GPUIndex:          effectiveGPU,
-				Force:             force,
-				Cwd:               cwd,
-				CondaEnv:          condaEnv,
-				ProjectEnv:        projectEnv,
-				LogPaths:          logPaths,
-				MetricPaths:       metricPaths,
-				ArtifactPaths:     artifactPaths,
-				UIEventsPath:      uiEventsPath,
-				Program:           "bash",
-				Args:              []string{"-lc", entry.Command},
-				RefreshProjectEnv: refreshEnv,
+				ResourceID:          resourceName,
+				Name:                name,
+				Kind:                kind,
+				GPUIndex:            effectiveGPU,
+				Force:               force,
+				Cwd:                 cwd,
+				CondaEnv:            condaEnv,
+				ProjectEnv:          projectEnv,
+				LogPaths:            logPaths,
+				MetricPaths:         metricPaths,
+				ArtifactPaths:       artifactPaths,
+				UIEventsPath:        uiEventsPath,
+				Program:             "bash",
+				Args:                []string{"-lc", entry.Command},
+				RefreshProjectEnv:   refreshEnv,
+				AllowEphemeralPaths: allowEphemeralPaths,
 			}
 			if dryRun {
 				printProjectConfigWarnings(cfg)
@@ -2233,6 +2234,7 @@ Then run:
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Override conda environment")
 	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Override structured UI event JSONL path; set off to disable")
 	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
+	cmd.Flags().BoolVar(&allowEphemeralPaths, "allow-ephemeral-paths", false, "Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the resolved submit command without launching")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created")
 	return cmd
@@ -3924,6 +3926,9 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	}
 	if req.RefreshProjectEnv {
 		args = append(args, "--refresh-env")
+	}
+	if req.AllowEphemeralPaths {
+		args = append(args, "--allow-ephemeral-paths")
 	}
 	if req.GPUIndex == store.GPUIndexNone {
 		args = append(args, "--no-gpu")
@@ -6027,6 +6032,7 @@ func runSubmitCmd() *cobra.Command {
 	var shellMode, force, noGPU, refreshEnv bool
 	var logPaths, artifactPaths, metricPaths []string
 	var launchTimeoutSec int
+	var allowEphemeralPaths bool
 
 	cmd := &cobra.Command{
 		Use:   "submit [flags] -- <program> [args...]",
@@ -6083,6 +6089,7 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.MetricPaths = metricPaths
 			submitReq.UIEventsPath = uiEventsPath
 			submitReq.RefreshProjectEnv = refreshEnv
+			submitReq.AllowEphemeralPaths = allowEphemeralPaths
 
 			db := openDB()
 			defer db.Close()
@@ -6145,6 +6152,7 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
 	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (default .aexp/events/<run_id>.jsonl; set off to disable)")
+	cmd.Flags().BoolVar(&allowEphemeralPaths, "allow-ephemeral-paths", false, "Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
 
 	return cmd
@@ -6249,7 +6257,7 @@ func runStatusCmd() *cobra.Command {
 			}
 
 			// Auto-refresh running/starting runs from remote
-			if run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting {
+			if store.IsRunRefreshableStatus(run.Status) {
 				sshPool := executor.NewSSHPool(10 * time.Second)
 				loadSSHKeys(sshPool)
 				exec := executor.NewExecutor(sshPool, db)
@@ -6400,6 +6408,9 @@ func shortRunStatus(db store.Store, ctx context.Context, run *store.Run) map[str
 		"stderr":          strings.TrimRight(run.RemoteRunDir, "/") + "/logs/stderr.log",
 		"metrics":         tryJSONStringSlice(run.MetricPathsJSON),
 		"ui_events":       run.UIEventsPath,
+	}
+	if snapshotPath, err := eventcache.LastSnapshotPath(run.ID); err == nil {
+		out["last_snapshot"] = snapshotPath
 	}
 	if run.ExitCode.Valid {
 		out["exit_code"] = run.ExitCode.Int64
@@ -7051,7 +7062,7 @@ an explicit remote status check.`,
 			if err != nil || run == nil {
 				return fmt.Errorf("run %s not found", args[0])
 			}
-			if refresh && (run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting) {
+			if refresh && store.IsRunRefreshableStatus(run.Status) {
 				sshPool := executor.NewSSHPool(10 * time.Second)
 				loadSSHKeys(sshPool)
 				exec := executor.NewExecutor(sshPool, db)
@@ -7578,7 +7589,7 @@ func runDeleteCmd() *cobra.Command {
 }
 
 func runIsActive(run *store.Run) bool {
-	return run.Status == store.RunStatusRunning || run.Status == store.RunStatusStarting
+	return store.IsRunRefreshableStatus(run.Status)
 }
 
 func runMarkCmd() *cobra.Command {

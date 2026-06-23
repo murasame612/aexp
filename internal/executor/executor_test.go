@@ -74,6 +74,18 @@ func TestParseRemoteStatusCode(t *testing.T) {
 	}
 }
 
+func TestValidatePersistentRunPathsRejectsEphemeralCwd(t *testing.T) {
+	if err := validatePersistentRunPaths("/workspace", "/tmp/project"); err == nil || !strings.Contains(err.Error(), "ephemeral") {
+		t.Fatalf("expected ephemeral cwd rejection, got %v", err)
+	}
+	if err := validatePersistentRunPaths("/tmp/workspace", "project"); err == nil || !strings.Contains(err.Error(), "root_dir") {
+		t.Fatalf("expected ephemeral root_dir rejection, got %v", err)
+	}
+	if err := validatePersistentRunPaths("/workspace", "project"); err != nil {
+		t.Fatalf("durable relative cwd rejected: %v", err)
+	}
+}
+
 func TestWithResourceRemotePath(t *testing.T) {
 	cmd := WithResourceRemotePath(&store.Resource{
 		OSType:     "macos",

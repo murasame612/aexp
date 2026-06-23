@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, ExternalLink, Plus, Save, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, ExternalLink, Plus, Save, Trash2 } from "lucide-react";
 import {
   createExperimentMatrix,
   deleteExperimentMatrix,
@@ -42,6 +42,8 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [titleMenuOpen, setTitleMenuOpen] = useState(false);
+  const [copiedMarkdown, setCopiedMarkdown] = useState(false);
 
   const matrices = useQuery({ queryKey: ["experiment-matrices", token, query], queryFn: () => getExperimentMatrices(token, query), refetchInterval: 12000 });
   const selected = useQuery({ queryKey: ["experiment-matrix", token, selectedID], queryFn: () => getExperimentMatrix(token, selectedID), enabled: Boolean(selectedID) });
@@ -116,6 +118,24 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
     }
   }
 
+  async function copyMarkdown() {
+    if (!selectedMatrix) return;
+    const markdown = buildMatrixMarkdown({
+      title: title.trim() || selectedMatrix.title,
+      description,
+      rows,
+      columns,
+      cells
+    });
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopiedMarkdown(true);
+      window.setTimeout(() => setCopiedMarkdown(false), 1400);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function applyDetail(detail: ExperimentMatrixDetail) {
     setRows(detail.rows || []);
     setColumns(detail.columns || []);
@@ -140,20 +160,20 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
     <div className={sidebarCollapsed ? "matrix-page matrix-page-sidebar-collapsed" : "matrix-page"}>
       <aside className={sidebarCollapsed ? "matrix-sidebar collapsed" : "matrix-sidebar"}>
         <div className="matrix-sidebar-head">
+          <div>
+            <strong>{t("experimentMatrix")}</strong>
+            <span>{matrixList.length} {t("matrices")}</span>
+          </div>
           {!sidebarCollapsed ? (
-            <div>
-              <strong>{t("experimentMatrix")}</strong>
-              <span>{matrixList.length} {t("matrices")}</span>
+            <div className="matrix-sidebar-controls">
+              <button className="icon-button" type="button" title="收起列表" onClick={() => setSidebarCollapsed(true)}>
+                <ChevronLeft size={16} />
+              </button>
+              <button className="icon-button" type="button" title={t("newMatrix")} onClick={createMatrix}>
+                <Plus size={16} />
+              </button>
             </div>
           ) : null}
-          <div className="matrix-sidebar-controls">
-            <button className="icon-button" type="button" title={sidebarCollapsed ? "展开列表" : "收起列表"} onClick={() => setSidebarCollapsed((value) => !value)}>
-              {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-            </button>
-            <button className="icon-button" type="button" title={t("newMatrix")} onClick={createMatrix}>
-              <Plus size={16} />
-            </button>
-          </div>
         </div>
         {!sidebarCollapsed ? (
           <>
@@ -175,7 +195,45 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
           <>
             <div className="matrix-topbar">
               <div className="matrix-title-row">
-                <input className="matrix-title-input" value={title} placeholder={t("newMatrix")} onChange={(event) => setTitle(event.target.value)} />
+                {sidebarCollapsed ? (
+                  <button className="matrix-inline-list-button" type="button" title="打开矩阵列表" onClick={() => setSidebarCollapsed(false)}>
+                    <ChevronRight size={15} />
+                  </button>
+                ) : null}
+                <div className="matrix-title-picker">
+                  <input className="matrix-title-input" value={title} placeholder={t("newMatrix")} onChange={(event) => setTitle(event.target.value)} />
+                  <button
+                    type="button"
+                    className="matrix-title-menu-button"
+                    aria-expanded={titleMenuOpen}
+                    title="切换矩阵"
+                    onClick={() => setTitleMenuOpen((value) => !value)}
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                  {titleMenuOpen ? (
+                    <div className="matrix-title-menu">
+                      {matrixList.map((matrix) => (
+                        <button
+                          key={matrix.id}
+                          type="button"
+                          className={matrix.id === selectedID ? "active" : ""}
+                          onClick={() => {
+                            setSelectedID(matrix.id);
+                            setTitleMenuOpen(false);
+                          }}
+                        >
+                          <strong>{matrix.title || t("newMatrix")}</strong>
+                          <span>{matrix.updated_at ? new Date(matrix.updated_at).toLocaleString() : t("experimentMatrix")}</span>
+                        </button>
+                      ))}
+                      <button type="button" className="matrix-title-menu-create" onClick={createMatrix}>
+                        <Plus size={14} />
+                        <strong>{t("newMatrix")}</strong>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <div className="matrix-actions">
                   <button type="button" onClick={addRow}>
                     <Plus size={15} />
@@ -188,6 +246,10 @@ export function ExperimentMatrixPage({ token, t, onOpenRun }: Props) {
                   <button type="button" className="primary" disabled={saving} onClick={saveMatrix}>
                     <Save size={15} />
                     {saving ? t("saving") : t("save")}
+                  </button>
+                  <button type="button" onClick={copyMarkdown}>
+                    {copiedMarkdown ? <Check size={15} /> : <Clipboard size={15} />}
+                    {copiedMarkdown ? "已复制" : "复制 MD"}
                   </button>
                   <button type="button" className="danger" onClick={() => removeMatrix(selectedMatrix)}>
                     <Trash2 size={15} />
@@ -448,6 +510,42 @@ function matrixCellValue(cell: ExperimentMatrixCell | undefined, column: Experim
   if (!cell) return "";
   if (isRunIDColumn(column.label)) return cell.metric_value || cell.run_id || "";
   return cell.metric_value || cell.statement || cell.title || cell.note || "";
+}
+
+function buildMatrixMarkdown({
+  title,
+  description,
+  rows,
+  columns,
+  cells
+}: {
+  title: string;
+  description: string;
+  rows: ExperimentMatrixRow[];
+  columns: ExperimentMatrixColumn[];
+  cells: ExperimentMatrixCell[];
+}) {
+  const headers = ["实验名称", ...columns.map((column) => column.label || "未命名列")];
+  const lines = [`# ${title || "实验矩阵"}`];
+  if (description.trim()) lines.push("", description.trim());
+  lines.push("", `> ${rows.length} 行 · ${columns.length} 列 · ${cells.length} 格子`, "");
+  lines.push(`| ${headers.map(escapeMarkdownCell).join(" | ")} |`);
+  lines.push(`| ${headers.map(() => "---").join(" | ")} |`);
+  for (const row of rows) {
+    const values = columns.map((column) => {
+      const slotCells = cells.filter((cell) => cell.row_id === row.id && cell.column_id === column.id);
+      return slotCells.map((cell) => matrixCellValue(cell, column)).filter(Boolean).join("<br>");
+    });
+    lines.push(`| ${[row.label || "未命名实验", ...values].map(escapeMarkdownCell).join(" | ")} |`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function escapeMarkdownCell(value: string) {
+  return String(value || "")
+    .replace(/\r?\n/g, "<br>")
+    .replace(/\|/g, "\\|")
+    .trim();
 }
 
 function makeID(prefix: string) {

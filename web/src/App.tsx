@@ -795,7 +795,7 @@ function RunsTab(props: {
           ]}
           onChange={(value) => props.setTrash(value === "trash")}
         />
-        <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"]]} />
+        <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"], ["ssh_unreachable", "ssh_unreachable"], ["container_expired", "container_expired"], ["run_lost_but_events_cached", "lost + cached"]]} />
         <Select value={props.resource} onChange={props.setResource} options={[["", props.t("allResources")], ...props.resources.map((r) => [r.id, r.name] as [string, string])]} />
         <Select value={props.project} onChange={props.setProject} options={props.projectOptions} />
         <Select value={props.kind} onChange={props.setKind} options={[["experiments", props.t("experiments")], ["tools", props.t("toolTasks")], ["all", props.t("allKinds")]]} />
@@ -1915,7 +1915,22 @@ function LogPanel({ title, state, hiddenWhenEmpty }: { title: string; state: Ret
   );
 }
 
+let openModalCount = 0;
+
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  useEffect(() => {
+    openModalCount += 1;
+    document.documentElement.classList.add("modal-open");
+    document.body.classList.add("modal-open");
+    return () => {
+      openModalCount = Math.max(0, openModalCount - 1);
+      if (openModalCount === 0) {
+        document.documentElement.classList.remove("modal-open");
+        document.body.classList.remove("modal-open");
+      }
+    };
+  }, []);
+
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <motion.div className={wide ? "modal wide" : "modal"} initial={{ opacity: 0, scale: 0.98, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98, y: 12 }}>
@@ -2597,8 +2612,8 @@ function defaultResource(): Partial<Resource> {
 function statusTone(status?: string): "good" | "bad" | "warn" | "neutral" | "accent" {
   const s = (status || "").toLowerCase();
   if (["running", "idle", "ok", "succeeded"].includes(s)) return "good";
-  if (["failed", "lost", "unreachable"].includes(s)) return "bad";
-  if (["starting", "queued", "busy", "created", "unknown"].includes(s)) return "warn";
+  if (["failed", "lost", "unreachable", "container_expired"].includes(s)) return "bad";
+  if (["starting", "queued", "busy", "created", "unknown", "ssh_unreachable", "run_lost_but_events_cached"].includes(s)) return "warn";
   if (["formal", "ablation"].includes(s)) return "accent";
   return "neutral";
 }

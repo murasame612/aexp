@@ -80,3 +80,19 @@ func TestPathSanitizesRunID(t *testing.T) {
 		t.Fatalf("Path should not create file, stat err = %v", err)
 	}
 }
+
+func TestLastSnapshotPathUsesCacheDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(envCacheDir, dir)
+
+	path, err := LastSnapshotPath("../run bad")
+	if err != nil {
+		t.Fatalf("LastSnapshotPath: %v", err)
+	}
+	if got, want := filepath.Dir(path), dir; got != want {
+		t.Fatalf("dir = %q, want %q", got, want)
+	}
+	if got := filepath.Base(path); got != ".._run_bad_last_snapshot.json" {
+		t.Fatalf("snapshot base = %q", got)
+	}
+}
