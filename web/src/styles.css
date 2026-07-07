@@ -1313,9 +1313,10 @@ select {
 }
 
 .run-command-line {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
   max-width: 100%;
+  height: calc(12px * 1.45 + 12px);
   overflow: hidden;
   border-radius: 10px;
   background: #f6f8fa;
@@ -1324,9 +1325,9 @@ select {
   font-family: Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
 }
 
 .dashboard-runs {
@@ -1390,7 +1391,11 @@ select {
 .dashboard-runs .run-command-line {
   grid-area: command;
   align-self: stretch;
-  -webkit-line-clamp: 2;
+  height: calc(12px * 1.45 + 12px);
+}
+
+.run-card-grid:not(.dashboard-runs) .run-command-line {
+  height: calc(12px * 1.45 + 12px);
 }
 
 .split {
@@ -3519,6 +3524,17 @@ select {
   -webkit-line-clamp: 2;
 }
 
+.evidence-node-git {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #68747f;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .evidence-node .action-button {
   justify-self: start;
   min-height: 28px;
@@ -3737,6 +3753,32 @@ select {
   max-width: 100%;
 }
 
+.detail-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #f6f4ef;
+  padding: 3px;
+}
+
+.detail-tabs button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 14px;
+  font-weight: 750;
+}
+
+.detail-tabs button.active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(28, 31, 34, 0.08);
+}
+
 .command-card {
   border: 1px solid var(--border);
   background: #fff;
@@ -3771,6 +3813,12 @@ select {
   grid-column: 1 / -1;
 }
 
+.detail-facts .detail-failure-reason {
+  grid-column: 1 / -1;
+  background: #fff7ed;
+  border: 1px solid #f2d3b9;
+}
+
 .detail-facts em {
   color: var(--muted);
   font-size: 11px;
@@ -3786,6 +3834,11 @@ select {
   font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.detail-facts .detail-failure-reason strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .detail-summary-panel {
@@ -3933,6 +3986,48 @@ select {
 .log-section {
   display: grid;
   gap: 8px;
+}
+
+.raw-log-section {
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.raw-log-section .section-head {
+  margin-bottom: 2px;
+}
+
+.raw-log-section .section-head .muted {
+  font-size: 12px;
+}
+
+.log-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.log-source-actions button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.log-source-actions button.active {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+  color: var(--accent-strong);
+}
+
+.raw-log-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
 }
 
 .metric-strip {

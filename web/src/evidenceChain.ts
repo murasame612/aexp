@@ -17,6 +17,11 @@ export interface EvidenceNodeData extends Record<string, unknown> {
   runKind?: string;
   keyMetrics?: string;
   evidenceLevel?: string;
+  gitBranch?: string;
+  gitCommit?: string;
+  gitDirty?: boolean;
+  gitDiffHash?: string;
+  gitDiffPath?: string;
   onOpenRun?: (runId: string) => void;
   onUpdateNode?: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
   onResizeNode?: (nodeId: string, size: { width: number; height: number }) => void;
@@ -153,7 +158,12 @@ export function candidateToNode(candidate: EvidenceChainRunCandidate, position: 
       status: candidate.run?.status || "",
       runKind: candidate.run?.kind || "",
       keyMetrics: candidate.key_metrics || "",
-      evidenceLevel: candidate.evidence_level || ""
+      evidenceLevel: candidate.evidence_level || "",
+      gitBranch: candidate.run?.git_branch || "",
+      gitCommit: candidate.run?.git_commit || "",
+      gitDirty: candidate.run?.git_dirty === true,
+      gitDiffHash: candidate.run?.git_diff_hash || "",
+      gitDiffPath: candidate.run?.git_diff_path || ""
     }
   };
 }
@@ -221,25 +231,33 @@ export function apiEdgeToFlowEdge(edge: EvidenceChainEdge): EvidenceFlowEdge {
 
 export function serializeEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[]) {
   return {
-    nodes: nodes.map((node): EvidenceChainNode => ({
-      id: node.id,
-      type: node.data.type,
-      title: node.data.title,
-      body: node.data.body,
-      run_id: node.data.runId || "",
-      project_card_id: node.data.projectCardId || "",
-      x: node.position.x,
-      y: node.position.y,
-      width: typeof node.width === "number" ? node.width : typeof node.measured?.width === "number" ? node.measured.width : 286,
-      height: typeof node.height === "number" ? node.height : typeof node.measured?.height === "number" ? node.measured.height : 184,
-      data_json: JSON.stringify({
-        runTitle: node.data.runTitle || "",
-        status: node.data.status || "",
-        runKind: node.data.runKind || "",
-        keyMetrics: node.data.keyMetrics || "",
-        evidenceLevel: node.data.evidenceLevel || ""
-      })
-    })),
+    nodes: nodes.map((node): EvidenceChainNode => {
+      const {
+        type: _type,
+        title: _title,
+        body: _body,
+        runId: _runId,
+        projectCardId: _projectCardId,
+        onOpenRun: _onOpenRun,
+        onUpdateNode: _onUpdateNode,
+        onResizeNode: _onResizeNode,
+        labels: _labels,
+        ...dataJSON
+      } = node.data;
+      return {
+        id: node.id,
+        type: node.data.type,
+        title: node.data.title,
+        body: node.data.body,
+        run_id: node.data.runId || "",
+        project_card_id: node.data.projectCardId || "",
+        x: node.position.x,
+        y: node.position.y,
+        width: typeof node.width === "number" ? node.width : typeof node.measured?.width === "number" ? node.measured.width : 286,
+        height: typeof node.height === "number" ? node.height : typeof node.measured?.height === "number" ? node.measured.height : 184,
+        data_json: JSON.stringify(dataJSON)
+      };
+    }),
     edges: edges.map((edge): EvidenceChainEdge => {
       const type = edge.data?.type || "next_step";
       return {

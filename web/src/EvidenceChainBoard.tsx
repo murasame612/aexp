@@ -12,7 +12,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  getBezierPath,
+  getSmoothStepPath,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -719,6 +719,7 @@ function EvidenceNode({ id, data, selected, width, height }: NodeProps<EvidenceF
     setDraft((current) => ({ ...current, [field]: value }));
     data.onUpdateNode?.(id, { [field]: value });
   };
+  const gitLabel = gitNodeLabel(data);
 
   return (
     <div
@@ -777,6 +778,7 @@ function EvidenceNode({ id, data, selected, width, height }: NodeProps<EvidenceF
         placeholder={data.labels?.nodeBodyPlaceholder || "写下假说、计划、结果或笔记..."}
       />
       {data.keyMetrics ? <em>{data.keyMetrics}</em> : null}
+      {gitLabel ? <span className="evidence-node-git">{gitLabel}</span> : null}
       {data.type === "run" && data.runId ? (
         <button className="nodrag action-button" onClick={() => data.onOpenRun?.(data.runId!)}>
           {data.labels?.openRun || "打开实验"}
@@ -799,12 +801,28 @@ function EvidenceNodeHandles() {
   );
 }
 
+function gitNodeLabel(data: EvidenceNodeData) {
+  if (!data.gitCommit) return "";
+  const commit = data.gitCommit.length > 12 ? data.gitCommit.slice(0, 12) : data.gitCommit;
+  const ref = data.gitBranch ? `${data.gitBranch}@${commit}` : commit;
+  return data.gitDirty ? `${ref} dirty` : ref;
+}
+
 function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, label }: EdgeProps<EvidenceFlowEdge>) {
   const type = data?.type || "next_step";
   const [editing, setEditing] = useState(false);
   const composingRef = useRef(false);
   const [draft, setDraft] = useState({ label: text(label), rationale: data?.rationale || "" });
-  const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, curvature: 0.28 });
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    borderRadius: 18,
+    offset: 34
+  });
   const displayLabel = text(label) || edgeTypeLabel(type);
 
   useEffect(() => {

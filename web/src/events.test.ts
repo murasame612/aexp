@@ -185,6 +185,39 @@ describe("event parsing", () => {
     expect(summary[0].latest.current).toBe(9);
   });
 
+  it("treats explicit early-stopped training progress as terminal without forcing current to total", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "progress", name: "epoch", current: 62, total: 100, status: "early_stopped", best_epoch: 32, stage: "train" })
+    ]);
+    const summary = summarizeProgress(parsed.progress);
+    expect(summary).toHaveLength(1);
+    expect(summary[0].done).toBe(true);
+    expect(summary[0].latest).toMatchObject({
+      name: "epoch",
+      current: 62,
+      total: 100,
+      status: "early_stopped",
+      best_epoch: 32
+    });
+  });
+
+  it("keeps optuna trial-local epoch progress isolated by trial context", () => {
+    const parsed = parseEventLines([
+      JSON.stringify({ type: "progress", name: "trial", current: 2, total: 12 }),
+      JSON.stringify({ type: "progress", name: "epoch", current: 7, total: 30, status: "early_stopped", best_epoch: 4, trial: "trial001", variant: "lr=1e-3" }),
+      JSON.stringify({ type: "progress", name: "epoch", current: 11, total: 30, status: "running", trial: "trial002", variant: "lr=3e-4" })
+    ]);
+    const summary = summarizeProgress(parsed.progress);
+    const trialOne = summary.find((row) => row.series === "lr=1e-3/trial:trial001");
+    const trialTwo = summary.find((row) => row.series === "lr=3e-4/trial:trial002");
+    const sweep = summary.find((row) => row.name === "trial");
+    expect(trialOne?.done).toBe(true);
+    expect(trialOne?.latest.current).toBe(7);
+    expect(trialTwo?.done).toBe(false);
+    expect(trialTwo?.latest.current).toBe(11);
+    expect(sweep?.done).toBe(false);
+  });
+
   it("summarizes metric families by metric name, unit, and series", () => {
     const families = summarizeMetricFamilies([
       { name: "loss", value: 10, step: 1, series: "raw", unit: "mse" },

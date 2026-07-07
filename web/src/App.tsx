@@ -168,7 +168,8 @@ export function App() {
         offset: runPage * pageSize,
         status: runStatus,
         resource: runResource,
-        trash: runTrash
+        trash: runTrash,
+        refresh: false
       }),
     refetchInterval: 5000
   });
@@ -1023,16 +1024,27 @@ function RunDetail({
   const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 5000 });
   const marks = useQuery({ queryKey: ["run-marks", token, runId], queryFn: () => getRunMarks(token, runId) });
   const artifacts = useQuery({ queryKey: ["artifacts", token, runId], queryFn: () => getArtifacts(token, runId) });
-  const terminal = useLiveLog(token, runId, { source: "terminal" });
-  const stdout = useLiveLog(token, runId, { source: "stdout" });
-  const stderr = useLiveLog(token, runId, { source: "stderr" });
+  const logsLive = run.data ? isActiveRun(run.data) : true;
+  const [selectedLogSource, setSelectedLogSource] = useState<"terminal" | "stdout" | "stderr" | null>(null);
+  const terminal = useLiveLog(token, runId, selectedLogSource === "terminal" ? { source: "terminal" } : null, logsLive);
+  const stdout = useLiveLog(token, runId, selectedLogSource === "stdout" ? { source: "stdout" } : null, logsLive);
+  const stderr = useLiveLog(token, runId, selectedLogSource === "stderr" ? { source: "stderr" } : null, logsLive);
   const eventsPath = run.data ? uiEventsPath(run.data) : "";
-  const eventLog = useLiveLog(token, runId, eventsPath ? { path: eventsPath } : null);
-  const parsedEvents = useParsedEvents(eventLog.lines.map((line) => line.content));
+  const eventLog = useLiveLog(token, runId, eventsPath ? { path: eventsPath } : null, logsLive);
+  const eventLines = useMemo(() => eventLog.lines.map((line) => line.content), [eventLog.lines]);
+  const parsedEvents = useParsedEvents(eventLines);
   const [selectedMark, setSelectedMark] = useState<RunMark | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "raw">("overview");
+  const activeRawLogSource = selectedLogSource || "terminal";
+  const selectedLog = activeRawLogSource === "terminal" ? terminal : activeRawLogSource === "stdout" ? stdout : stderr;
 
   useEffect(() => {
     history.replaceState(null, "", `/ui-v2/runs/${encodeURIComponent(runId)}`);
+  }, [runId]);
+
+  useEffect(() => {
+    setSelectedLogSource(null);
+    setDetailTab("overview");
   }, [runId]);
 
   return (
@@ -1069,6 +1081,36 @@ function RunDetail({
                 <em>{t("condaEnv")}</em>
                 <strong>{run.data.resolved_env || run.data.conda_env || "-"}</strong>
               </span>
+              {run.data.target_env ? (
+                <span>
+                  <em>{t("targetEnv")}</em>
+                  <strong>{run.data.target_env}</strong>
+                </span>
+              ) : null}
+              {run.data.preempt_run_id ? (
+                <span>
+                  <em>{t("preemptRun")}</em>
+                  <strong>{run.data.preempt_run_id}</strong>
+                </span>
+              ) : null}
+              {run.data.force_reason ? (
+                <span className="detail-failure-reason">
+                  <em>{t("forceReason")}</em>
+                  <strong>{run.data.force_reason}</strong>
+                </span>
+              ) : null}
+              {run.data.failure_kind ? (
+                <span>
+                  <em>{t("failureKind")}</em>
+                  <strong>{run.data.failure_kind}</strong>
+                </span>
+              ) : null}
+              {run.data.failure_reason ? (
+                <span className="detail-failure-reason">
+                  <em>{t("failureReason")}</em>
+                  <strong>{run.data.failure_reason}</strong>
+                </span>
+              ) : null}
             </div>
             <div className="detail-side-actions">
               <button onClick={() => void onStatusCheck(run.data!)}>
@@ -1082,45 +1124,87 @@ function RunDetail({
               ) : null}
             </div>
           </section>
-          <div className="detail-context-grid">
-            <section className="detail-summary-panel">
-              <span className="panel-kicker">{t("runtime")}</span>
-              <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
-              <Info label="tmux" value={run.data.tmux_session || "-"} />
-              <Info label="run dir" value={run.data.remote_run_dir || "-"} />
-            </section>
-            <Section title={t("artifacts")} className="artifact-panel">
-              <ArtifactList artifacts={artifacts.data || []} t={t} />
-            </Section>
-            <Section title={t("manualProject")} className="manual-project-panel">
-              <ProjectAssignmentControl
-                t={t}
-                categories={manualCategories}
-                assignment={manualAssignment}
-                onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
-                onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
-              />
-            </Section>
+          <div className="detail-tabs" role="tablist" aria-label={t("runDetail")}>
+            <button className={detailTab === "overview" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "overview"} onClick={() => setDetailTab("overview")}>
+              {t("overview")}
+            </button>
+            <button
+              className={detailTab === "raw" ? "active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={detailTab === "raw"}
+              onClick={() => {
+                setDetailTab("raw");
+                setSelectedLogSource((current) => current || "terminal");
+              }}
+            >
+              {t("raw")}
+            </button>
           </div>
-          <div className="detail-grid">
-            <div className="detail-main">
-              <section className="command-card">
-                <div className="section-head command-head">
-                  <h2>{t("command")}</h2>
-                  <span className="muted mono">{run.data.resolved_cwd || run.data.cwd || "-"}</span>
+          {detailTab === "overview" ? (
+            <>
+              <div className="detail-context-grid">
+                <section className="detail-summary-panel">
+                  <span className="panel-kicker">{t("runtime")}</span>
+                  <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
+                  <Info label="tmux" value={run.data.tmux_session || "-"} />
+                  <Info label="run dir" value={run.data.remote_run_dir || "-"} />
+                </section>
+                <Section title={t("artifacts")} className="artifact-panel">
+                  <ArtifactList artifacts={artifacts.data || []} t={t} />
+                </Section>
+                <Section title={t("manualProject")} className="manual-project-panel">
+                  <ProjectAssignmentControl
+                    t={t}
+                    categories={manualCategories}
+                    assignment={manualAssignment}
+                    onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
+                    onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
+                  />
+                </Section>
+              </div>
+              <div className="detail-grid">
+                <div className="detail-main">
+                  {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} run={run.data} /> : null}
+                  <Section title={t("agentFindings")} className="findings-section">
+                    {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}</div> : <Empty t={t} />}
+                  </Section>
                 </div>
-                <pre className="command-box">{run.data.command}</pre>
-              </section>
-              {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} run={run.data} /> : null}
-              <Section title={t("agentFindings")} className="findings-section">
-                {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}</div> : <Empty t={t} />}
-              </Section>
-              <LogPanel title="terminal" state={terminal} />
-              <LogPanel title="stdout" state={stdout} />
-              <LogPanel title="stderr" state={stderr} hiddenWhenEmpty />
-              {eventsPath ? <LogPanel title={t("events")} state={eventLog} /> : null}
+              </div>
+            </>
+          ) : (
+            <div className="detail-grid raw-detail-grid">
+              <div className="detail-main">
+                <section className="command-card">
+                  <div className="section-head command-head">
+                    <h2>{t("command")}</h2>
+                    <span className="muted mono">{run.data.resolved_cwd || run.data.cwd || "-"}</span>
+                  </div>
+                  <pre className="command-box">{run.data.command}</pre>
+                </section>
+                <section className="log-section raw-log-section">
+                  <div className="section-head">
+                    <h2>{t("rawLogs")}</h2>
+                    <span className="muted">{t("rawLogHint")}</span>
+                  </div>
+                  <div className="log-source-actions">
+                    {(["terminal", "stdout", "stderr"] as const).map((source) => (
+                      <button
+                        key={source}
+                        className={activeRawLogSource === source ? "active" : ""}
+                        type="button"
+                        onClick={() => setSelectedLogSource(source)}
+                      >
+                        {source}
+                      </button>
+                    ))}
+                  </div>
+                  <LogPanel title={activeRawLogSource} state={selectedLog} />
+                </section>
+                {eventsPath ? <LogPanel title={t("rawEventJson")} state={eventLog} /> : null}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : (
         <Empty t={t} />
@@ -1302,6 +1386,7 @@ function ProgressStatusRow({ row, run, t }: { row: ProgressSummary; run: Run; t:
   const latest = row.latest;
   const percent = progressPercent(latest);
   const state = progressState(row, run, t);
+  const details = progressDetails(latest, t);
   return (
     <div className={`progress-row progress-row-${state.tone}`}>
       <div className="progress-row-title">
@@ -1317,7 +1402,7 @@ function ProgressStatusRow({ row, run, t }: { row: ProgressSummary; run: Run; t:
       </div>
       <div className="progress-row-foot">
         <span>{latest.total ? `${formatMetric(latest.current)}/${formatMetric(latest.total)}` : formatMetric(latest.current)}</span>
-        <span>{row.count} {t("updates")}</span>
+        <span>{details || `${row.count} ${t("updates")}`}</span>
       </div>
     </div>
   );
@@ -1342,6 +1427,10 @@ function progressPercent(point: ProgressPoint): number | undefined {
 }
 
 function progressState(row: ProgressSummary, run: Run, t: T): { label: string; tone: "active" | "done" | "incomplete" | "stopped" } {
+  const progressStatus = String(row.latest.status || "").toLowerCase();
+  if (progressStatus === "early_stopped") return { label: t("earlyStopped"), tone: "done" };
+  if (progressStatus === "completed" || progressStatus === "complete" || progressStatus === "done") return { label: t("complete"), tone: "done" };
+  if ((progressStatus === "running" || progressStatus === "active") && isActiveRun(run)) return { label: t("active"), tone: "active" };
   if (row.done) return { label: t("complete"), tone: "done" };
   if (isActiveRun(run)) return { label: t("active"), tone: "active" };
   const status = (run.status || "").toLowerCase();
@@ -1352,6 +1441,12 @@ function progressState(row: ProgressSummary, run: Run, t: T): { label: string; t
     return { label: t("stopped"), tone: "stopped" };
   }
   return { label: t("finished"), tone: "incomplete" };
+}
+
+function progressDetails(point: ProgressPoint, t: T): string {
+  const parts = [];
+  if (point.best_epoch != null) parts.push(`${t("bestEpoch")} ${formatMetric(point.best_epoch)}`);
+  return parts.join(" · ");
 }
 
 function latestMetricContext(metric: MetricPoint, t: T) {
@@ -1809,7 +1904,7 @@ function ManualProjectModal({
   );
 }
 
-function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null) {
+function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null, live = true) {
   const [lines, setLines] = useState<{ content: string; line_no?: number; source?: string }[]>([]);
   const [state, setState] = useState<"idle" | "live" | "reconnecting" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -1819,7 +1914,10 @@ function useLiveLog(token: string, runId: string, query: { source?: string; path
     let retryTimer: number | undefined;
     setLines([]);
     setError(null);
-    if (!query) return;
+    if (!query) {
+      setState("idle");
+      return;
+    }
     const fetchSnapshot = (attempt = 0) => {
       getLogs(token, runId, { ...query, limit: query.path ? 5000 : 500, tail: true })
         .then((logs: LogsResponse) => {
@@ -1845,6 +1943,13 @@ function useLiveLog(token: string, runId: string, query: { source?: string; path
         });
     };
     fetchSnapshot();
+    if (!live) {
+      setState("idle");
+      return () => {
+        closed = true;
+        window.clearTimeout(retryTimer);
+      };
+    }
     const connect = () => {
       if (closed) return;
       setState("reconnecting");
@@ -1871,12 +1976,13 @@ function useLiveLog(token: string, runId: string, query: { source?: string; path
       window.clearTimeout(retryTimer);
       ws?.close();
     };
-  }, [token, runId, query?.source, query?.path]);
+  }, [token, runId, query?.source, query?.path, live]);
   return { lines, state, error };
 }
 
 function useParsedEvents(lines: string[]): ParsedEvents {
   const [parsed, setParsed] = useState<ParsedEvents>(() => parseEventLines([]));
+  const linesKey = useMemo(() => lines.join("\n"), [lines]);
   useEffect(() => {
     if (!lines.length) {
       setParsed(parseEventLines([]));
@@ -1897,7 +2003,7 @@ function useParsedEvents(lines: string[]): ParsedEvents {
       done = true;
       worker.terminate();
     };
-  }, [lines.join("\n")]);
+  }, [linesKey]);
   return parsed;
 }
 

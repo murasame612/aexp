@@ -47,13 +47,15 @@ describe("evidenceChain helpers", () => {
         verdict: "Agent note title should not replace the run name",
         question: "Does the note explain this experiment?",
         key_metrics: "loss=0.12",
-        run: { id: "run_abc", resource_id: "mu", name: "dx formal ablation", status: "succeeded", command: "python train.py" }
+        run: { id: "run_abc", resource_id: "mu", name: "dx formal ablation", status: "succeeded", command: "python train.py", git_branch: "main", git_commit: "abcdef1234567890", git_dirty: true }
       },
       { x: 10, y: 20 }
     );
 
     expect(node.data.title).toBe("dx formal ablation");
     expect(node.data.runTitle).toBe("dx formal ablation");
+    expect(node.data.gitBranch).toBe("main");
+    expect(node.data.gitDirty).toBe(true);
     expect(node.data.body).toContain("Agent note title should not replace the run name");
     expect(node.data.body).toContain("Does the note explain this experiment?");
   });
@@ -76,7 +78,11 @@ describe("evidenceChain helpers", () => {
           status: "succeeded",
           runKind: "formal",
           keyMetrics: "mAP=0.6",
-          evidenceLevel: "B"
+          evidenceLevel: "B",
+          gitBranch: "main",
+          gitCommit: "abcdef1234567890",
+          gitDirty: true,
+          gitDiffHash: "hash123"
         }
       }
     ];
@@ -101,7 +107,7 @@ describe("evidenceChain helpers", () => {
       x: 10,
       y: 20
     });
-    expect(JSON.parse(payload.nodes[0].data_json || "{}")).toMatchObject({ runTitle: "formal run", status: "succeeded", keyMetrics: "mAP=0.6" });
+    expect(JSON.parse(payload.nodes[0].data_json || "{}")).toMatchObject({ runTitle: "formal run", status: "succeeded", keyMetrics: "mAP=0.6", gitBranch: "main", gitDirty: true, gitDiffHash: "hash123" });
     expect(payload.edges[0]).toMatchObject({
       id: "edge_1",
       source_node_id: "node_run",

@@ -195,7 +195,9 @@ export function parseEventLines(lines: string[]): ParsedEvents {
         percent: total ? (current / total) * 100 : undefined,
         time: asNumber(ev.time),
         series: identity.series,
-        label: eventLabel(ev)
+        label: eventLabel(ev),
+        status: String(ev.status || ev.state || "").trim() || undefined,
+        best_epoch: asNumber(ev.best_epoch ?? ev.bestEpoch)
       });
       continue;
     }
@@ -241,13 +243,20 @@ export function summarizeProgress(points: ProgressPoint[]): ProgressSummary[] {
         label: latest.label,
         latest,
         count: rows.length,
-        done: latest.total != null && latest.current >= latest.total
+        done: progressIsDone(latest)
       };
     })
     .sort((a, b) => {
       if (a.done !== b.done) return a.done ? 1 : -1;
       return (b.latest.time || 0) - (a.latest.time || 0);
     });
+}
+
+function progressIsDone(point: ProgressPoint): boolean {
+  const status = String(point.status || "").toLowerCase();
+  if (status === "completed" || status === "complete" || status === "done" || status === "early_stopped") return true;
+  if (status === "running" || status === "active") return false;
+  return point.total != null && point.current >= point.total;
 }
 
 function uniqueFiniteValues(values: Array<number | undefined>): number[] {

@@ -67,6 +67,19 @@ export interface Run {
   args_json?: string;
   conda_env?: string;
   project_env?: string;
+  target_env?: string;
+  force_reason?: string;
+  preempt_run_id?: string;
+  preempt_save?: boolean;
+  git_repo_root?: string;
+  git_remote_url?: string;
+  git_branch?: string;
+  git_commit?: string;
+  git_dirty?: boolean;
+  git_status?: string;
+  git_diff_hash?: string;
+  git_diff_path?: string;
+  git_allow_dirty?: boolean;
   resolved_env?: string;
   resolved_python?: string;
   resolved_cwd?: string;
@@ -78,6 +91,8 @@ export interface Run {
   tmux_session?: string;
   remote_run_dir?: string;
   exit_code?: number | null | { Int64?: number; Valid?: boolean };
+  failure_kind?: string;
+  failure_reason?: string;
   created_by?: string;
   created_at?: string;
   started_at?: NullableTime;
@@ -400,6 +415,8 @@ export interface ProgressPoint {
   time?: number;
   series?: string;
   label?: string;
+  status?: string;
+  best_epoch?: number;
 }
 
 export interface ConfirmState {
