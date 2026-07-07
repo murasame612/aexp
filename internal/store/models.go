@@ -47,6 +47,19 @@ type Run struct {
 	ArgsJSON          string        `json:"args_json"`
 	CondaEnv          string        `json:"conda_env"`
 	ProjectEnv        string        `json:"project_env"`
+	TargetEnv         string        `json:"target_env"`
+	ForceReason       string        `json:"force_reason,omitempty"`
+	PreemptRunID      string        `json:"preempt_run_id,omitempty"`
+	PreemptSave       bool          `json:"preempt_save,omitempty"`
+	GitRepoRoot       string        `json:"git_repo_root,omitempty"`
+	GitRemoteURL      string        `json:"git_remote_url,omitempty"`
+	GitBranch         string        `json:"git_branch,omitempty"`
+	GitCommit         string        `json:"git_commit,omitempty"`
+	GitDirty          bool          `json:"git_dirty,omitempty"`
+	GitStatus         string        `json:"git_status,omitempty"`
+	GitDiffHash       string        `json:"git_diff_hash,omitempty"`
+	GitDiffPath       string        `json:"git_diff_path,omitempty"`
+	GitAllowDirty     bool          `json:"git_allow_dirty,omitempty"`
 	ResolvedEnv       string        `json:"resolved_env"`
 	ResolvedPython    string        `json:"resolved_python"`
 	ResolvedCwd       string        `json:"resolved_cwd"`
@@ -58,6 +71,8 @@ type Run struct {
 	TmuxSession       string        `json:"tmux_session"`
 	RemoteRunDir      string        `json:"remote_run_dir"`
 	ExitCode          sql.NullInt64 `json:"exit_code"`
+	FailureKind       string        `json:"failure_kind,omitempty"`
+	FailureReason     string        `json:"failure_reason,omitempty"`
 	CreatedBy         string        `json:"created_by"`
 	CreatedAt         time.Time     `json:"created_at"`
 	StartedAt         sql.NullTime  `json:"started_at"`
@@ -457,6 +472,20 @@ const (
 	RunStatusSSHUnreachable      = "ssh_unreachable"
 	RunStatusContainerExpired    = "container_expired"
 	RunStatusLostButEventsCached = "run_lost_but_events_cached"
+)
+
+// Run failure classification constants. These are intentionally coarse: they
+// make the first UI answer useful without pretending to replace log reading.
+const (
+	RunFailureDependencyError = "dependency_error"
+	RunFailureImportError     = "import_error"
+	RunFailureGPUBusy         = "gpu_busy"
+	RunFailureNetworkReset    = "network_reset"
+	RunFailureDataMissing     = "data_missing"
+	RunFailureDiskFull        = "disk_full"
+	RunFailureKilled137       = "killed_137"
+	RunFailureEnvMismatch     = "env_mismatch"
+	RunFailureUnknown         = "unknown"
 )
 
 // IsRunRefreshableStatus returns true when a status may still represent a live

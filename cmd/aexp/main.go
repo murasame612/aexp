@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net"
@@ -367,7 +368,7 @@ func serveCmd() *cobra.Command {
 			loadSSHKeys(monitorPool)
 
 			exec := executor.NewExecutor(sshPool, db)
-			mon := monitor.NewManager(db, monitorPool, 3*time.Second, logger)
+			mon := monitor.NewManager(db, monitorPool, 30*time.Second, logger)
 
 			if err := mon.Start(); err != nil {
 				return fmt.Errorf("start monitor: %w", err)
@@ -1284,7 +1285,7 @@ func defaultDoctorEvents(projectHelper string) doctorEvents {
 		Ready:              true,
 		UIEvents:           ".aexp/events/<run_id>.jsonl (default unless --ui-events off)",
 		Helper:             "run submit injects aexp_events.py into $AEXP_RUN_DIR and exports PYTHONPATH",
-		RecommendedImports: []string{"from aexp_events import metric, progress, param, note"},
+		RecommendedImports: []string{"from aexp_events import metric, training_epoch, training_done, progress, param, note"},
 		Monitor:            []string{"aexp run snapshot <run_id> --json", "aexp run events <run_id> --tail 50 --json", "aexp run metrics <run_id> --latest --json"},
 	}
 	if projectHelper != "" {
@@ -1686,20 +1687,22 @@ resource + cwd + environment strategy + result/log globs.`,
 }
 
 type projectFileConfig struct {
-	Path       string
-	Project    projectFileMeta
-	Resource   string
-	Cwd        string
-	Env        string
-	CondaEnv   string
-	DefaultGPU *int
-	UIEvents   string
-	Logs       []string
-	Metrics    []string
-	Artifacts  []string
-	Commands   map[string]projectFileCommand
-	Sync       projectFileSync
-	Warnings   []string
+	Path             string
+	Project          projectFileMeta
+	Resource         string
+	Cwd              string
+	Env              string
+	CondaEnv         string
+	TargetEnv        string
+	DefaultGPU       *int
+	UIEvents         string
+	Logs             []string
+	Metrics          []string
+	Artifacts        []string
+	Commands         map[string]projectFileCommand
+	ResourceProfiles map[string]projectResourceProfile
+	Sync             projectFileSync
+	Warnings         []string
 }
 
 type projectFileMeta struct {
@@ -1717,10 +1720,23 @@ type projectFileCommand struct {
 	Kind      string
 	GPUIndex  *int
 	NoGPU     bool
+	TargetEnv string
 	UIEvents  string
 	Logs      []string
 	Metrics   []string
 	Artifacts []string
+}
+
+type projectResourceProfile struct {
+	Name       string
+	Resource   string
+	Cwd        string
+	Env        string
+	CondaEnv   string
+	TargetEnv  string
+	DefaultGPU *int
+	UIEvents   string
+	EnvVars    map[string]string
 }
 
 type projectFileSync struct {
@@ -1973,6 +1989,17 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 		fmt.Fprintf(&b, "conda_env: %s\n", cfg.CondaEnv)
 	}
 	fmt.Fprintf(&b, "default_gpu: %d\n\n", cfg.DefaultGPU)
+	fmt.Fprintf(&b, "# Optional: override only runtime shell details per resource while keeping recipes shared.\n")
+	fmt.Fprintf(&b, "# resource_profiles:\n")
+	fmt.Fprintf(&b, "#   mu:\n")
+	fmt.Fprintf(&b, "#     cwd: /home/murasame/pythonproject/%s\n", filepath.Base(cfg.Cwd))
+	fmt.Fprintf(&b, "#     project_env: auto\n")
+	fmt.Fprintf(&b, "#     conda_env: my-mu-env\n")
+	fmt.Fprintf(&b, "#     target_env: my-training-env\n")
+	fmt.Fprintf(&b, "#     default_gpu: 0\n")
+	fmt.Fprintf(&b, "#     env_vars:\n")
+	fmt.Fprintf(&b, "#       DATA_ROOT: /home/murasame/datasets\n")
+	fmt.Fprintf(&b, "#       OUTPUT_ROOT: /home/murasame/outputs\n\n")
 	writeYAMLList(&b, "logs", cfg.Logs)
 	writeYAMLList(&b, "metrics", cfg.Metrics)
 	fmt.Fprintf(&b, "\nsync:\n")
@@ -1987,11 +2014,12 @@ func renderProjectInitConfig(cfg projectInitConfig) string {
 	fmt.Fprintf(&b, "  kind: smoke\n")
 	fmt.Fprintf(&b, "  no_gpu: true\n\n")
 	fmt.Fprintf(&b, "# Structured UI events belong in training/eval code, not post-hoc CLI calls:\n")
-	fmt.Fprintf(&b, "#   from aexp_events import metric, progress, param, note\n")
+	fmt.Fprintf(&b, "#   from aexp_events import metric, training_epoch, training_done, progress, param, note\n")
 	fmt.Fprintf(&b, "#   param(\"model\", \"iTransformer\", trial=trial_id)\n")
-	fmt.Fprintf(&b, "#   progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, variant=\"sl192_pl96\", stage=\"train\")\n")
+	fmt.Fprintf(&b, "#   training_epoch(epoch, total=max_epochs, trial=trial_id, variant=\"sl192_pl96\")\n")
 	fmt.Fprintf(&b, "#   metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=\"sl192_pl96\")\n")
 	fmt.Fprintf(&b, "#   metric(\"val/observed_mse\", mse, epoch=epoch, trial=trial_id, variant=\"sl192_pl96\", split=\"val\")\n")
+	fmt.Fprintf(&b, "#   training_done(epoch=last_epoch, total=max_epochs, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id, variant=\"sl192_pl96\")\n")
 	appendProjectTrainConfig(&b, cfg)
 	return b.String()
 }
@@ -2109,9 +2137,9 @@ func firstExistingGlob(baseDir string, pattern string) string {
 }
 
 func projectRunCmd() *cobra.Command {
-	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv, uiEventsPath string
+	var configPath, resourceName, cwd, name, kind, projectEnv, condaEnv, targetEnv, uiEventsPath, forceReason, preemptRunID string
 	var gpuIndex int
-	var noGPU, force, dryRun, refreshEnv, allowEphemeralPaths bool
+	var noGPU, force, dryRun, refreshEnv, allowEphemeralPaths, preemptSave, allowDirtyGit, recordGitDiff bool
 	var launchTimeoutSec int
 
 	cmd := &cobra.Command{
@@ -2140,11 +2168,31 @@ Then run:
 				return fmt.Errorf("project command %q not found in %s", commandName, cfg.Path)
 			}
 
+			resourceFlagChanged := cmd.Flags().Changed("resource")
+			cwdFlagChanged := cmd.Flags().Changed("cwd")
+			projectEnvFlagChanged := cmd.Flags().Changed("project-env")
+			condaEnvFlagChanged := cmd.Flags().Changed("conda-env")
+
+			requestedResource := resourceName
+			if !resourceFlagChanged && requestedResource == "" {
+				requestedResource = cfg.Resource
+			}
+			resourceProfile, hasResourceProfile := selectProjectResourceProfile(cfg, requestedResource)
 			if resourceName == "" {
 				resourceName = cfg.Resource
 			}
+			if hasResourceProfile {
+				if resourceProfile.Resource != "" {
+					resourceName = resourceProfile.Resource
+				} else if resourceName == "" {
+					resourceName = resourceProfile.Name
+				}
+			}
 			if resourceName == "" {
 				return fmt.Errorf("resource is required: set resource: in %s or pass --resource", cfg.Path)
+			}
+			if !cwdFlagChanged && hasResourceProfile && resourceProfile.Cwd != "" {
+				cwd = resourceProfile.Cwd
 			}
 			if cwd == "" {
 				cwd = cfg.Cwd
@@ -2158,14 +2206,30 @@ Then run:
 			if kind == "" {
 				kind = store.RunKindFormal
 			}
+			if !projectEnvFlagChanged && hasResourceProfile && resourceProfile.Env != "" {
+				projectEnv = resourceProfile.Env
+			}
 			if projectEnv == "" {
 				projectEnv = cfg.Env
 			}
 			if projectEnv == "" {
 				projectEnv = executor.ProjectEnvAuto
 			}
+			if !condaEnvFlagChanged && hasResourceProfile && resourceProfile.CondaEnv != "" {
+				condaEnv = resourceProfile.CondaEnv
+			}
 			if condaEnv == "" {
 				condaEnv = cfg.CondaEnv
+			}
+			effectiveTargetEnv := cfg.TargetEnv
+			if hasResourceProfile && resourceProfile.TargetEnv != "" {
+				effectiveTargetEnv = resourceProfile.TargetEnv
+			}
+			if entry.TargetEnv != "" {
+				effectiveTargetEnv = entry.TargetEnv
+			}
+			if cmd.Flags().Changed("target-env") {
+				effectiveTargetEnv = targetEnv
 			}
 			if name == "" {
 				name = entry.Name
@@ -2176,6 +2240,9 @@ Then run:
 			effectiveGPU := store.GPUIndexAll
 			if cfg.DefaultGPU != nil {
 				effectiveGPU = *cfg.DefaultGPU
+			}
+			if hasResourceProfile && resourceProfile.DefaultGPU != nil {
+				effectiveGPU = *resourceProfile.DefaultGPU
 			}
 			if entry.GPUIndex != nil {
 				effectiveGPU = *entry.GPUIndex
@@ -2193,8 +2260,19 @@ Then run:
 			if uiEventsPath == "" {
 				uiEventsPath = entry.UIEvents
 			}
+			if uiEventsPath == "" && hasResourceProfile {
+				uiEventsPath = resourceProfile.UIEvents
+			}
 			if uiEventsPath == "" {
 				uiEventsPath = cfg.UIEvents
+			}
+			envVars := map[string]string(nil)
+			if hasResourceProfile {
+				envVars = copyStringMap(resourceProfile.EnvVars)
+				if envVars == nil {
+					envVars = map[string]string{}
+				}
+				envVars["AEXP_RESOURCE_PROFILE"] = resourceProfile.Name
 			}
 			submitReq := executor.SubmitRequest{
 				ResourceID:          resourceName,
@@ -2202,17 +2280,25 @@ Then run:
 				Kind:                kind,
 				GPUIndex:            effectiveGPU,
 				Force:               force,
+				ForceReason:         forceReason,
+				PreemptRunID:        preemptRunID,
+				PreemptSave:         preemptSave,
 				Cwd:                 cwd,
 				CondaEnv:            condaEnv,
 				ProjectEnv:          projectEnv,
+				TargetEnv:           effectiveTargetEnv,
 				LogPaths:            logPaths,
 				MetricPaths:         metricPaths,
 				ArtifactPaths:       artifactPaths,
 				UIEventsPath:        uiEventsPath,
+				EnvVars:             envVars,
 				Program:             "bash",
 				Args:                []string{"-lc", entry.Command},
 				RefreshProjectEnv:   refreshEnv,
 				AllowEphemeralPaths: allowEphemeralPaths,
+				GitSourceDir:        filepath.Dir(cfg.Path),
+				AllowDirtyGit:       allowDirtyGit,
+				RecordGitDiff:       recordGitDiff,
 			}
 			if dryRun {
 				printProjectConfigWarnings(cfg)
@@ -2230,11 +2316,21 @@ Then run:
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", store.GPUIndexAll, "Override GPU index (-1 for all)")
 	cmd.Flags().BoolVar(&noGPU, "no-gpu", false, "Do not reserve GPUs or set CUDA_VISIBLE_DEVICES")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock")
+	cmd.Flags().StringVar(&forceReason, "force-reason", "", "Required with --force or --preempt-run; records why GPU safety was overridden")
+	cmd.Flags().StringVar(&preemptRunID, "preempt-run", "", "Cancel this active run before submitting the new run")
+	cmd.Flags().BoolVar(&preemptSave, "preempt-save", true, "Record that the preempted run should be preserved for evidence review")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Override runtime env strategy: auto or raw")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Override conda environment")
+	cmd.Flags().StringVar(&targetEnv, "target-env", "", "Override intended target environment recorded on the run")
 	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Override structured UI event JSONL path; set off to disable")
 	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().BoolVar(&allowEphemeralPaths, "allow-ephemeral-paths", false, "Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs")
+	cmd.Flags().BoolVar(&allowDirtyGit, "allow-dirty-git", false, "Allow a formal/ablation run from a dirty Git worktree")
+	cmd.Flags().BoolVar(&recordGitDiff, "record-git-diff", false, "When allowing dirty Git, save a local patch under ~/.aexp/git-diffs")
+	cmd.Flags().BoolVar(&allowDirtyGit, "allow-dirty", false, "Alias for --allow-dirty-git")
+	cmd.Flags().BoolVar(&recordGitDiff, "record-diff", false, "Alias for --record-git-diff")
+	_ = cmd.Flags().MarkHidden("allow-dirty")
+	_ = cmd.Flags().MarkHidden("record-diff")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the resolved submit command without launching")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created")
 	return cmd
@@ -2562,6 +2658,9 @@ type evidenceChainRunSummary struct {
 	ResourceID string `json:"resource_id,omitempty"`
 	Command    string `json:"command,omitempty"`
 	Cwd        string `json:"cwd,omitempty"`
+	GitBranch  string `json:"git_branch,omitempty"`
+	GitCommit  string `json:"git_commit,omitempty"`
+	GitDirty   bool   `json:"git_dirty,omitempty"`
 }
 
 type evidenceChainProjectSummary struct {
@@ -3304,6 +3403,9 @@ func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chai
 					ResourceID: run.ResourceID,
 					Command:    evidencePreview(run.Command, 220),
 					Cwd:        firstNonEmpty(run.ResolvedCwd, run.Cwd),
+					GitBranch:  run.GitBranch,
+					GitCommit:  shortGitCommit(run.GitCommit),
+					GitDirty:   run.GitDirty,
 				}
 			}
 			card, _ = db.GetProjectRunCard(ctx, node.RunID)
@@ -3511,12 +3613,34 @@ func evidenceNodeShortIntro(node store.EvidenceChainNode, run *store.Run, card *
 	}
 	parts := []string{node.RunID}
 	if run != nil {
-		parts = append(parts, run.Name, run.Kind, run.Status)
+		parts = append(parts, run.Name, run.Kind, run.Status, runGitLabel(run))
 	}
 	if card != nil {
 		parts = append(parts, card.ProjectName, card.EvidenceLevel, card.Verdict, card.Question, firstLine(card.KeyMetrics), card.NextAction)
 	}
 	return evidencePreview(joinNonEmpty(" · ", parts...), 260)
+}
+
+func runGitLabel(run *store.Run) string {
+	if run == nil || run.GitCommit == "" {
+		return ""
+	}
+	label := shortGitCommit(run.GitCommit)
+	if run.GitBranch != "" {
+		label = run.GitBranch + "@" + label
+	}
+	if run.GitDirty {
+		label += " dirty"
+	}
+	return "git " + label
+}
+
+func shortGitCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }
 
 func defaultEvidenceEdgeLabel(edgeType string) string {
@@ -3558,11 +3682,14 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
 	cfg := &projectFileConfig{
-		Path:     resolved,
-		Commands: map[string]projectFileCommand{},
+		Path:             resolved,
+		Commands:         map[string]projectFileCommand{},
+		ResourceProfiles: map[string]projectResourceProfile{},
 	}
 	section := ""
 	listKey := ""
+	resourceProfileName := ""
+	resourceProfileSubsection := ""
 	lines := strings.Split(string(data), "\n")
 	for i := 0; i < len(lines); i++ {
 		lineNo := i + 1
@@ -3590,11 +3717,13 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 		if indent == 0 {
 			section = ""
 			listKey = ""
+			resourceProfileName = ""
+			resourceProfileSubsection = ""
 			if value == "" {
 				switch normalizeProjectKey(key) {
 				case "logs", "logpaths", "metrics", "metricpaths", "artifacts", "artifactpaths":
 					listKey = key
-				case "sync", "project":
+				case "sync", "project", "resourceprofiles":
 					section = key
 				default:
 					section = key
@@ -3611,6 +3740,39 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 			return nil, fmt.Errorf("%s:%d: nested field without a section", resolved, lineNo)
 		}
 		listKey = ""
+		if normalizeProjectKey(section) == "resourceprofiles" {
+			if indent <= 2 {
+				resourceProfileName = key
+				resourceProfileSubsection = ""
+				ensureProjectResourceProfile(cfg, resourceProfileName)
+				if value != "" {
+					cfg.Warnings = append(cfg.Warnings, "resource profile shorthand ignored: "+key)
+				}
+				continue
+			}
+			if resourceProfileName == "" {
+				return nil, fmt.Errorf("%s:%d: resource profile field without a profile name", resolved, lineNo)
+			}
+			if resourceProfileSubsection == "env" && indent >= 6 && value != "" {
+				setProjectResourceProfileEnv(cfg, resourceProfileName, key, value)
+				continue
+			}
+			if value == "" {
+				switch normalizeProjectKey(key) {
+				case "env", "envvars", "environment":
+					resourceProfileSubsection = "env"
+				default:
+					cfg.Warnings = append(cfg.Warnings, "unknown resource profile block ignored: "+resourceProfileName+"."+key)
+					resourceProfileSubsection = ""
+				}
+				continue
+			}
+			resourceProfileSubsection = ""
+			if err := setProjectResourceProfileScalar(cfg, resourceProfileName, key, value); err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", resolved, lineNo, err)
+			}
+			continue
+		}
 		if value == "" {
 			listKey = key
 			continue
@@ -3667,6 +3829,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 			cfg.Env = value
 		case "condaenv":
 			cfg.CondaEnv = value
+		case "targetenv":
+			cfg.TargetEnv = value
 		case "defaultgpu", "gpu":
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -3733,6 +3897,8 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 			entry.GPUIndex = &n
 		case "nogpu":
 			entry.NoGPU = parseProjectBool(value)
+		case "targetenv":
+			entry.TargetEnv = value
 		case "uievents":
 			entry.UIEvents = value
 		default:
@@ -3790,6 +3956,92 @@ func ensureProjectCommand(cfg *projectFileConfig, name string) projectFileComman
 		cfg.Commands[name] = entry
 	}
 	return entry
+}
+
+func ensureProjectResourceProfile(cfg *projectFileConfig, name string) projectResourceProfile {
+	if cfg.ResourceProfiles == nil {
+		cfg.ResourceProfiles = map[string]projectResourceProfile{}
+	}
+	profile, ok := cfg.ResourceProfiles[name]
+	if !ok {
+		profile = projectResourceProfile{Name: name, EnvVars: map[string]string{}}
+		cfg.ResourceProfiles[name] = profile
+	}
+	if profile.EnvVars == nil {
+		profile.EnvVars = map[string]string{}
+	}
+	return profile
+}
+
+func setProjectResourceProfileScalar(cfg *projectFileConfig, profileName, key, value string) error {
+	profile := ensureProjectResourceProfile(cfg, profileName)
+	switch normalizeProjectKey(key) {
+	case "resource":
+		profile.Resource = value
+	case "cwd":
+		profile.Cwd = value
+	case "env", "projectenv":
+		profile.Env = value
+	case "condaenv":
+		profile.CondaEnv = value
+	case "targetenv":
+		profile.TargetEnv = value
+	case "defaultgpu", "gpu":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("%s must be an integer", key)
+		}
+		profile.DefaultGPU = &n
+	case "uievents":
+		profile.UIEvents = value
+	default:
+		cfg.Warnings = append(cfg.Warnings, "unknown resource profile field ignored: "+profileName+"."+key)
+	}
+	cfg.ResourceProfiles[profileName] = profile
+	return nil
+}
+
+func setProjectResourceProfileEnv(cfg *projectFileConfig, profileName, key, value string) {
+	profile := ensureProjectResourceProfile(cfg, profileName)
+	profile.EnvVars[key] = value
+	cfg.ResourceProfiles[profileName] = profile
+}
+
+func selectProjectResourceProfile(cfg *projectFileConfig, requestedResource string) (*projectResourceProfile, bool) {
+	if cfg == nil || len(cfg.ResourceProfiles) == 0 {
+		return nil, false
+	}
+	try := strings.TrimSpace(requestedResource)
+	if try == "" {
+		try = strings.TrimSpace(cfg.Resource)
+	}
+	if try != "" {
+		if profile, ok := cfg.ResourceProfiles[try]; ok {
+			return &profile, true
+		}
+		for _, profile := range cfg.ResourceProfiles {
+			if strings.TrimSpace(profile.Resource) == try {
+				return &profile, true
+			}
+		}
+	}
+	if cfg.Resource == "" && len(cfg.ResourceProfiles) == 1 {
+		for _, profile := range cfg.ResourceProfiles {
+			return &profile, true
+		}
+	}
+	return nil, false
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func stripProjectConfigComment(line string) string {
@@ -3924,11 +4176,29 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	if req.CondaEnv != "" {
 		args = append(args, "--conda-env", req.CondaEnv)
 	}
+	if req.TargetEnv != "" {
+		args = append(args, "--target-env", req.TargetEnv)
+	}
 	if req.RefreshProjectEnv {
 		args = append(args, "--refresh-env")
 	}
 	if req.AllowEphemeralPaths {
 		args = append(args, "--allow-ephemeral-paths")
+	}
+	if req.AllowDirtyGit {
+		args = append(args, "--allow-dirty-git")
+	}
+	if req.RecordGitDiff {
+		args = append(args, "--record-git-diff")
+	}
+	if req.Force {
+		args = append(args, "--force", "--force-reason", req.ForceReason)
+	}
+	if req.PreemptRunID != "" {
+		args = append(args, "--preempt-run", req.PreemptRunID, "--force-reason", req.ForceReason)
+		if !req.PreemptSave {
+			args = append(args, "--preempt-save=false")
+		}
 	}
 	if req.GPUIndex == store.GPUIndexNone {
 		args = append(args, "--no-gpu")
@@ -3959,7 +4229,19 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	if req.CondaEnv != "" {
 		fmt.Printf("conda:    %s\n", req.CondaEnv)
 	}
+	if req.TargetEnv != "" {
+		fmt.Printf("target_env:%s\n", req.TargetEnv)
+	}
 	fmt.Printf("gpu:      %s\n", runGPULabelText(req.GPUIndex))
+	if req.Force {
+		fmt.Printf("force:    yes\n")
+	}
+	if req.ForceReason != "" {
+		fmt.Printf("reason:   %s\n", req.ForceReason)
+	}
+	if req.PreemptRunID != "" {
+		fmt.Printf("preempt:  %s (preserve=%v)\n", req.PreemptRunID, req.PreemptSave)
+	}
 	printStringList("logs", req.LogPaths)
 	printStringList("metrics", req.MetricPaths)
 	printStringList("artifacts", req.ArtifactPaths)
@@ -3967,6 +4249,17 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 		fmt.Printf("ui_events: %s\n", req.UIEventsPath)
 	} else {
 		fmt.Println("ui_events: .aexp/events/<run_id>.jsonl (default)")
+	}
+	if len(req.EnvVars) > 0 {
+		keys := make([]string, 0, len(req.EnvVars))
+		for key := range req.EnvVars {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		fmt.Println("env_vars:")
+		for _, key := range keys {
+			fmt.Printf("  %s=%s\n", key, req.EnvVars[key])
+		}
 	}
 	fmt.Println("command:")
 	printIndentedBlock(req.Args[len(req.Args)-1], "  ")
@@ -4066,9 +4359,10 @@ func printRunEventGuidance(run *store.Run) {
 	fmt.Println("Structured events:")
 	fmt.Printf("  AEXP_UI_EVENTS=%s\n", run.UIEventsPath)
 	fmt.Println("  Instrument training/eval code before launch:")
-	fmt.Println("    from aexp_events import metric, progress, param, note")
+	fmt.Println("    from aexp_events import metric, training_epoch, training_done, progress, param, note")
 	fmt.Println("    metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=variant)")
-	fmt.Println("    progress(\"epoch\", epoch, total=max_epochs, trial=trial_id, variant=variant, stage=\"train\")")
+	fmt.Println("    training_epoch(epoch, total=max_epochs, trial=trial_id, variant=variant)")
+	fmt.Println("    training_done(epoch=last_epoch, total=max_epochs, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id, variant=variant)")
 	fmt.Println("  Do not reconstruct loss/metric/progress events after the run; use run marks for interpretation notes.")
 	fmt.Printf("  Monitor: aexp run snapshot %s --json\n", run.ID)
 	fmt.Printf("  Events:  aexp run events %s --tail 50 --json\n", run.ID)
@@ -4196,11 +4490,32 @@ func projectDoctorCmd() *cobra.Command {
 				return cfgErr
 			}
 			if cfg != nil {
+				resourceFlagChanged := cmd.Flags().Changed("resource")
+				cwdFlagChanged := cmd.Flags().Changed("cwd")
+				condaEnvFlagChanged := cmd.Flags().Changed("conda-env")
+				requestedResource := resourceName
+				if !resourceFlagChanged && requestedResource == "" {
+					requestedResource = cfg.Resource
+				}
+				resourceProfile, hasResourceProfile := selectProjectResourceProfile(cfg, requestedResource)
 				if resourceName == "" {
 					resourceName = cfg.Resource
 				}
+				if hasResourceProfile {
+					if resourceProfile.Resource != "" {
+						resourceName = resourceProfile.Resource
+					} else if resourceName == "" {
+						resourceName = resourceProfile.Name
+					}
+				}
+				if !cwdFlagChanged && hasResourceProfile && resourceProfile.Cwd != "" {
+					cwd = resourceProfile.Cwd
+				}
 				if cwd == "" {
 					cwd = cfg.Cwd
+				}
+				if !condaEnvFlagChanged && hasResourceProfile && resourceProfile.CondaEnv != "" {
+					condaEnv = resourceProfile.CondaEnv
 				}
 				if condaEnv == "" {
 					condaEnv = cfg.CondaEnv
@@ -4208,6 +4523,9 @@ func projectDoctorCmd() *cobra.Command {
 				if !cmd.Flags().Changed("gpu-index") {
 					if cfg.DefaultGPU != nil {
 						gpuIndex = *cfg.DefaultGPU
+					}
+					if hasResourceProfile && resourceProfile.DefaultGPU != nil {
+						gpuIndex = *resourceProfile.DefaultGPU
 					}
 					if recipeName != "" {
 						if entry, ok := cfg.Commands[recipeName]; ok && entry.GPUIndex != nil {
@@ -4345,6 +4663,7 @@ use remote-pull:
 	cmd.AddCommand(syncPushCmd())
 	cmd.AddCommand(syncPullCmd())
 	cmd.AddCommand(syncRemotePullCmd())
+	cmd.AddCommand(syncDatasetCmd())
 	return cmd
 }
 
@@ -4402,58 +4721,18 @@ func syncPushCmd() *cobra.Command {
 		Short: "Push local files to a resource with rsync or ssh tar fallback",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, exec, cleanup, err := syncResourceExecutor(resourceName)
-			if err != nil {
-				return err
-			}
-			defer cleanup()
-			source := expandPath(args[0])
-			target := resolveSyncRemotePath(res, args[1])
-			resolvedExcludes, excludeSources, err := resolveSyncExcludes(source, profile, noDefaultExcludes, excludes)
-			if err != nil {
-				return err
-			}
-			useTarFallback := false
-			var localRsyncErr, remoteRsyncErr error
-			if !dryRun {
-				_, localRsyncErr = osexec.LookPath("rsync")
-				remoteRsyncErr = checkRemoteRsyncViaExec(cmd.Context(), exec, res, 20)
-				if localRsyncErr != nil || remoteRsyncErr != nil {
-					useTarFallback = true
-				}
-			}
-			rsyncArgs := buildRsyncArgs(res, dryRun, deleteExtra, resolvedExcludes, extraArgs)
-			rsyncArgs = append(rsyncArgs, source, remoteRsyncSpec(res, target))
-			if dryRun {
-				printSyncDryRunExcludes(profile, resolvedExcludes, excludeSources)
-				fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
-				return nil
-			}
-			if useTarFallback {
-				if deleteExtra {
-					return fmt.Errorf("remote rsync unavailable and tar fallback cannot preserve --delete semantics")
-				}
-				if len(extraArgs) > 0 {
-					return fmt.Errorf("remote rsync unavailable and tar fallback cannot apply --rsync-arg")
-				}
-				if _, err := osexec.LookPath("tar"); err != nil {
-					return fmt.Errorf("rsync unavailable and local tar not found: %w", err)
-				}
-				if err := checkRemoteTarViaExec(cmd.Context(), exec, res, 20); err != nil {
-					return fmt.Errorf("rsync unavailable and remote tar missing on %s: %w", res.Name, err)
-				}
-				if localRsyncErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: local rsync unavailable; falling back to ssh tar stream\n")
-				}
-				if remoteRsyncErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: remote rsync unavailable on %s; falling back to ssh tar stream\n", res.Name)
-				}
-				return runLocalTarPush(cmd.Context(), res, source, target, resolvedExcludes, timeoutSec)
-			}
-			if err := ensureRemoteDir(cmd.Context(), exec, res, target); err != nil {
-				return err
-			}
-			return runLocalRsync(cmd.Context(), timeoutSec, rsyncArgs)
+			return runSyncPushWithOptions(cmd.Context(), syncPushOptions{
+				ResourceName:      resourceName,
+				Source:            args[0],
+				Target:            args[1],
+				DryRun:            dryRun,
+				DeleteExtra:       deleteExtra,
+				NoDefaultExcludes: noDefaultExcludes,
+				Profile:           profile,
+				Excludes:          excludes,
+				ExtraArgs:         extraArgs,
+				TimeoutSec:        timeoutSec,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
@@ -4466,6 +4745,93 @@ func syncPushCmd() *cobra.Command {
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
 	_ = cmd.MarkFlagRequired("resource")
 	return cmd
+}
+
+type syncPushOptions struct {
+	ResourceName      string
+	Source            string
+	Target            string
+	DryRun            bool
+	DeleteExtra       bool
+	NoDefaultExcludes bool
+	Profile           string
+	Excludes          []string
+	ExtraArgs         []string
+	TimeoutSec        int
+	Retries           int
+}
+
+func runSyncPushWithOptions(ctx context.Context, opts syncPushOptions) error {
+	res, exec, cleanup, err := syncResourceExecutor(opts.ResourceName)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	source := expandPath(opts.Source)
+	target := resolveSyncRemotePath(res, opts.Target)
+	resolvedExcludes, excludeSources, err := resolveSyncExcludes(source, opts.Profile, opts.NoDefaultExcludes, opts.Excludes)
+	if err != nil {
+		return err
+	}
+	useTarFallback := false
+	var localRsyncErr, remoteRsyncErr error
+	if !opts.DryRun {
+		_, localRsyncErr = osexec.LookPath("rsync")
+		remoteRsyncErr = checkRemoteRsyncViaExec(ctx, exec, res, 20)
+		if localRsyncErr != nil || remoteRsyncErr != nil {
+			useTarFallback = true
+		}
+	}
+	rsyncArgs := buildRsyncArgs(res, opts.DryRun, opts.DeleteExtra, resolvedExcludes, opts.ExtraArgs)
+	rsyncArgs = append(rsyncArgs, source, remoteRsyncSpec(res, target))
+	if opts.DryRun {
+		printSyncDryRunExcludes(opts.Profile, resolvedExcludes, excludeSources)
+		fmt.Println(joinShellArgs(append([]string{"rsync"}, rsyncArgs...)))
+		return nil
+	}
+	if useTarFallback {
+		if opts.DeleteExtra {
+			return fmt.Errorf("remote rsync unavailable and tar fallback cannot preserve --delete semantics")
+		}
+		if len(opts.ExtraArgs) > 0 {
+			return fmt.Errorf("remote rsync unavailable and tar fallback cannot apply --rsync-arg")
+		}
+		if _, err := osexec.LookPath("tar"); err != nil {
+			return fmt.Errorf("rsync unavailable and local tar not found: %w", err)
+		}
+		if err := checkRemoteTarViaExec(ctx, exec, res, 20); err != nil {
+			return fmt.Errorf("rsync unavailable and remote tar missing on %s: %w", res.Name, err)
+		}
+		if localRsyncErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: local rsync unavailable; falling back to ssh tar stream\n")
+		}
+		if remoteRsyncErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: remote rsync unavailable on %s; falling back to ssh tar stream\n", res.Name)
+		}
+		return runLocalTarPush(ctx, res, source, target, resolvedExcludes, opts.TimeoutSec)
+	}
+	if err := ensureRemoteDir(ctx, exec, res, target); err != nil {
+		return err
+	}
+	return runLocalRsyncWithRetries(ctx, opts.TimeoutSec, rsyncArgs, opts.Retries)
+}
+
+func runLocalRsyncWithRetries(ctx context.Context, timeoutSec int, args []string, retries int) error {
+	if retries < 0 {
+		retries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			fmt.Fprintf(os.Stderr, "retrying rsync (%d/%d)...\n", attempt, retries)
+		}
+		if err := runLocalRsync(ctx, timeoutSec, args); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func syncPullCmd() *cobra.Command {
@@ -4589,6 +4955,128 @@ func syncRemotePullCmd() *cobra.Command {
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = default exec timeout)")
 	_ = cmd.MarkFlagRequired("resource")
 	return cmd
+}
+
+func syncDatasetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "dataset",
+		Short: "First-class dataset sync with data-safe defaults",
+		Long: `Sync datasets with data-safe defaults.
+
+Dataset sync keeps data files by default, uses resumable rsync partials, supports
+checksum verification, and can retry transient transfer failures. It is intended
+for durable dataset directories, not source-code-only project sync.`,
+	}
+	cmd.AddCommand(syncDatasetPushCmd())
+	return cmd
+}
+
+func syncDatasetPushCmd() *cobra.Command {
+	var resourceName string
+	var dryRun, deleteExtra, noVerify bool
+	var excludes []string
+	var timeoutSec int
+	var retries int
+
+	cmd := &cobra.Command{
+		Use:   "push [flags] <local-dataset-dir> <remote-dataset-dir>",
+		Short: "Push a dataset directory with resumable, verifiable rsync defaults",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			source := expandPath(args[0])
+			stats, statErr := localDatasetStats(source)
+			if statErr != nil {
+				return statErr
+			}
+			extraArgs := datasetSyncExtraArgs(!noVerify)
+			if dryRun {
+				fmt.Printf("dataset: %d files, %s\n", stats.Files, byteSize(stats.Bytes))
+			}
+			return runSyncPushWithOptions(cmd.Context(), syncPushOptions{
+				ResourceName:      resourceName,
+				Source:            source,
+				Target:            args[1],
+				DryRun:            dryRun,
+				DeleteExtra:       deleteExtra,
+				NoDefaultExcludes: false,
+				Profile:           "code-data",
+				Excludes:          excludes,
+				ExtraArgs:         extraArgs,
+				TimeoutSec:        timeoutSec,
+				Retries:           retries,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Resource name (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the dataset rsync command without running it")
+	cmd.Flags().BoolVar(&deleteExtra, "delete", false, "Delete remote dataset files not present locally")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "Disable rsync checksum verification")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Exclude pattern, repeatable")
+	cmd.Flags().IntVar(&timeoutSec, "timeout", 0, "Timeout in seconds (0 = no timeout)")
+	cmd.Flags().IntVar(&retries, "retries", 2, "Retry failed rsync transfers")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
+}
+
+type datasetStats struct {
+	Files int64
+	Bytes int64
+}
+
+func localDatasetStats(source string) (datasetStats, error) {
+	var stats datasetStats
+	info, err := os.Stat(source)
+	if err != nil {
+		return stats, fmt.Errorf("dataset source not accessible: %w", err)
+	}
+	if !info.IsDir() {
+		return stats, fmt.Errorf("dataset source must be a directory: %s", source)
+	}
+	err = filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		stats.Files++
+		stats.Bytes += info.Size()
+		return nil
+	})
+	if err != nil {
+		return stats, fmt.Errorf("scan dataset source: %w", err)
+	}
+	return stats, nil
+}
+
+func datasetSyncExtraArgs(verify bool) []string {
+	args := []string{
+		"--partial",
+		"--partial-dir=.aexp-rsync-partial",
+		"--human-readable",
+		"--info=progress2",
+	}
+	if verify {
+		args = append(args, "--checksum")
+	}
+	return args
+}
+
+func byteSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func syncResourcePool(resourceName string) (*store.Resource, *executor.SSHPool, func(), error) {
@@ -5152,7 +5640,7 @@ reconstruct training metrics, progress, or parameters. Loss curves, validation
 metrics, progress, params, trial ids, and variant context should be emitted by
 the training script while the experiment is executing via:
 
-  from aexp_events import metric, progress, param, note
+  from aexp_events import metric, training_epoch, training_done, progress, param, note
 
 The command remains available for shell wrappers and legacy scripts running
 inside an aexp run:
@@ -6027,9 +6515,9 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 }
 
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv, projectEnv, kind, uiEventsPath string
+	var resource, name, cwd, condaEnv, projectEnv, targetEnv, kind, uiEventsPath, forceReason, preemptRunID string
 	var gpuIndex int
-	var shellMode, force, noGPU, refreshEnv bool
+	var shellMode, force, noGPU, refreshEnv, preemptSave, allowDirtyGit, recordGitDiff bool
 	var logPaths, artifactPaths, metricPaths []string
 	var launchTimeoutSec int
 	var allowEphemeralPaths bool
@@ -6081,15 +6569,21 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.Kind = kind
 			submitReq.GPUIndex = gpuIndex
 			submitReq.Force = force
+			submitReq.ForceReason = forceReason
+			submitReq.PreemptRunID = preemptRunID
+			submitReq.PreemptSave = preemptSave
 			submitReq.Cwd = cwd
 			submitReq.CondaEnv = condaEnv
 			submitReq.ProjectEnv = projectEnv
+			submitReq.TargetEnv = targetEnv
 			submitReq.LogPaths = logPaths
 			submitReq.ArtifactPaths = artifactPaths
 			submitReq.MetricPaths = metricPaths
 			submitReq.UIEventsPath = uiEventsPath
 			submitReq.RefreshProjectEnv = refreshEnv
 			submitReq.AllowEphemeralPaths = allowEphemeralPaths
+			submitReq.AllowDirtyGit = allowDirtyGit
+			submitReq.RecordGitDiff = recordGitDiff
 
 			db := openDB()
 			defer db.Close()
@@ -6143,16 +6637,26 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", store.GPUIndexAll, "GPU index to use (-1 for all)")
 	cmd.Flags().BoolVar(&noGPU, "no-gpu", false, "Do not reserve GPUs or set CUDA_VISIBLE_DEVICES")
 	cmd.Flags().BoolVar(&shellMode, "shell", false, "Shell mode: interpret command via bash -lc")
-	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock, allow concurrent runs on same resource/GPU")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip GPU slot lock, allow concurrent runs on same resource/GPU; requires --force-reason")
+	cmd.Flags().StringVar(&forceReason, "force-reason", "", "Required with --force or --preempt-run; records why GPU safety was overridden")
+	cmd.Flags().StringVar(&preemptRunID, "preempt-run", "", "Cancel this active run before submitting the new run")
+	cmd.Flags().BoolVar(&preemptSave, "preempt-save", true, "Record that the preempted run should be preserved for evidence review")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
 	cmd.Flags().StringVar(&condaEnv, "conda-env", "", "Conda environment")
 	cmd.Flags().StringVar(&projectEnv, "project-env", "", "Runtime env strategy: auto or raw")
+	cmd.Flags().StringVar(&targetEnv, "target-env", "", "Intended target environment for setup/repair runs (records semantics; does not wrap the command)")
 	cmd.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Ignore cached project profile and re-detect the environment")
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
 	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (default .aexp/events/<run_id>.jsonl; set off to disable)")
 	cmd.Flags().BoolVar(&allowEphemeralPaths, "allow-ephemeral-paths", false, "Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs")
+	cmd.Flags().BoolVar(&allowDirtyGit, "allow-dirty-git", false, "Allow a formal/ablation run from a dirty Git worktree")
+	cmd.Flags().BoolVar(&recordGitDiff, "record-git-diff", false, "When allowing dirty Git, save a local patch under ~/.aexp/git-diffs")
+	cmd.Flags().BoolVar(&allowDirtyGit, "allow-dirty", false, "Alias for --allow-dirty-git")
+	cmd.Flags().BoolVar(&recordGitDiff, "record-diff", false, "Alias for --record-git-diff")
+	_ = cmd.Flags().MarkHidden("allow-dirty")
+	_ = cmd.Flags().MarkHidden("record-diff")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
 
 	return cmd
@@ -6289,6 +6793,15 @@ func runStatusCmd() *cobra.Command {
 			if run.ProjectEnv != "" {
 				fmt.Printf("ProjectEnv:%s\n", run.ProjectEnv)
 			}
+			if run.TargetEnv != "" {
+				fmt.Printf("TargetEnv: %s\n", run.TargetEnv)
+			}
+			if run.ForceReason != "" {
+				fmt.Printf("Force:     %s\n", run.ForceReason)
+			}
+			if run.PreemptRunID != "" {
+				fmt.Printf("Preempted: %s (preserve=%v)\n", run.PreemptRunID, run.PreemptSave)
+			}
 			if run.ResolvedEnv != "" {
 				fmt.Printf("Resolved:  %s\n", run.ResolvedEnv)
 			}
@@ -6399,6 +6912,19 @@ func shortRunStatus(db store.Store, ctx context.Context, run *store.Run) map[str
 		"cwd":             run.Cwd,
 		"conda_env":       run.CondaEnv,
 		"project_env":     run.ProjectEnv,
+		"target_env":      run.TargetEnv,
+		"force_reason":    run.ForceReason,
+		"preempt_run_id":  run.PreemptRunID,
+		"preempt_save":    run.PreemptSave,
+		"git_repo_root":   run.GitRepoRoot,
+		"git_remote_url":  run.GitRemoteURL,
+		"git_branch":      run.GitBranch,
+		"git_commit":      run.GitCommit,
+		"git_dirty":       run.GitDirty,
+		"git_status":      run.GitStatus,
+		"git_diff_hash":   run.GitDiffHash,
+		"git_diff_path":   run.GitDiffPath,
+		"git_allow_dirty": run.GitAllowDirty,
 		"resolved_env":    run.ResolvedEnv,
 		"resolved_python": run.ResolvedPython,
 		"resolved_cwd":    run.ResolvedCwd,
@@ -6414,6 +6940,12 @@ func shortRunStatus(db store.Store, ctx context.Context, run *store.Run) map[str
 	}
 	if run.ExitCode.Valid {
 		out["exit_code"] = run.ExitCode.Int64
+	}
+	if run.FailureKind != "" {
+		out["failure_kind"] = run.FailureKind
+	}
+	if run.FailureReason != "" {
+		out["failure_reason"] = run.FailureReason
 	}
 	if run.StartedAt.Valid {
 		out["started_at"] = run.StartedAt.Time.Format(time.RFC3339)
@@ -6445,8 +6977,33 @@ func printShortRunStatus(db store.Store, ctx context.Context, run *store.Run) {
 	if run.CondaEnv != "" {
 		fmt.Printf("env:    %s\n", run.CondaEnv)
 	}
+	if run.TargetEnv != "" {
+		fmt.Printf("target_env:      %s\n", run.TargetEnv)
+	}
+	if run.ForceReason != "" {
+		fmt.Printf("force_reason:    %s\n", run.ForceReason)
+	}
+	if run.PreemptRunID != "" {
+		fmt.Printf("preempt_run_id:  %s\n", run.PreemptRunID)
+		fmt.Printf("preempt_save:    %v\n", run.PreemptSave)
+	}
+	if git := runGitLabel(run); git != "" {
+		fmt.Printf("git:    %s\n", git)
+		if run.GitDirty {
+			fmt.Printf("git_dirty:       true\n")
+		}
+		if run.GitDiffPath != "" {
+			fmt.Printf("git_diff:        %s\n", run.GitDiffPath)
+		}
+	}
 	if run.ResolvedEnv != "" {
 		fmt.Printf("resolved_env:    %s\n", run.ResolvedEnv)
+	}
+	if run.FailureKind != "" {
+		fmt.Printf("failure_kind:    %s\n", run.FailureKind)
+	}
+	if run.FailureReason != "" {
+		fmt.Printf("failure_reason:  %s\n", run.FailureReason)
 	}
 	if run.ResolvedPython != "" {
 		fmt.Printf("resolved_python: %s\n", run.ResolvedPython)
@@ -7197,6 +7754,14 @@ func getRunEventSnapshot(ctx context.Context, runID string, tailN int, includeLi
 	}
 	if run.UIEventsPath == "" {
 		return RunEventSnapshot{RunID: run.ID}, fmt.Errorf("run %s has no ui events path", run.ID)
+	}
+	if store.IsRunTerminalStatus(run.Status) {
+		if cacheLines, cachePath, cacheErr := eventcache.Read(run.ID, tailN); cacheErr == nil && len(cacheLines) > 0 {
+			lines := executorLinesFromEventCache(run.ID, run.UIEventsPath, cacheLines)
+			snapshot := eventSnapshotFromLines(run.ID, run.UIEventsPath, "cache", lines, includeLines)
+			snapshot.CachePath = cachePath
+			return snapshot, nil
+		}
 	}
 	sshPool := executor.NewSSHPool(10 * time.Second)
 	loadSSHKeys(sshPool)

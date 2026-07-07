@@ -190,6 +190,9 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	if v := stringArg(args, "conda_env", ""); v != "" {
 		cli = append(cli, "--conda-env", v)
 	}
+	if v := stringArg(args, "target_env", ""); v != "" {
+		cli = append(cli, "--target-env", v)
+	}
 	if v, ok := optionalIntArg(args, "gpu_index"); ok {
 		cli = append(cli, "--gpu-index", strconv.Itoa(v))
 	}
@@ -212,6 +215,15 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	if boolArg(args, "force", false) {
 		cli = append(cli, "--force")
 	}
+	if v := stringArg(args, "force_reason", ""); v != "" {
+		cli = append(cli, "--force-reason", v)
+	}
+	if v := stringArg(args, "preempt_run", ""); v != "" {
+		cli = append(cli, "--preempt-run", v)
+	}
+	if v, ok := optionalBoolArg(args, "preempt_save"); ok && !v {
+		cli = append(cli, "--preempt-save=false")
+	}
 	if boolArg(args, "no_gpu", false) {
 		cli = append(cli, "--no-gpu")
 	}
@@ -220,6 +232,12 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	}
 	if boolArg(args, "allow_ephemeral_paths", false) {
 		cli = append(cli, "--allow-ephemeral-paths")
+	}
+	if boolArg(args, "allow_dirty_git", false) {
+		cli = append(cli, "--allow-dirty-git")
+	}
+	if boolArg(args, "record_git_diff", false) {
+		cli = append(cli, "--record-git-diff")
 	}
 	if v, ok := optionalIntArg(args, "launch_timeout"); ok {
 		cli = append(cli, "--launch-timeout", strconv.Itoa(v))
@@ -691,15 +709,23 @@ func (s *Server) toolProjectRun(ctx context.Context, args map[string]interface{}
 	addOptionalStringFlag(&cli, args, "kind", "--kind")
 	addOptionalStringFlag(&cli, args, "project_env", "--project-env")
 	addOptionalStringFlag(&cli, args, "conda_env", "--conda-env")
+	addOptionalStringFlag(&cli, args, "target_env", "--target-env")
 	addOptionalStringFlag(&cli, args, "ui_events", "--ui-events")
 	if v, ok := optionalIntArg(args, "gpu_index"); ok {
 		cli = append(cli, "--gpu-index", strconv.Itoa(v))
 	}
 	addBoolFlag(&cli, args, "no_gpu", "--no-gpu")
 	addBoolFlag(&cli, args, "force", "--force")
+	addOptionalStringFlag(&cli, args, "force_reason", "--force-reason")
+	addOptionalStringFlag(&cli, args, "preempt_run", "--preempt-run")
+	if v, ok := optionalBoolArg(args, "preempt_save"); ok && !v {
+		cli = append(cli, "--preempt-save=false")
+	}
 	addBoolFlag(&cli, args, "dry_run", "--dry-run")
 	addBoolFlag(&cli, args, "refresh_env", "--refresh-env")
 	addBoolFlag(&cli, args, "allow_ephemeral_paths", "--allow-ephemeral-paths")
+	addBoolFlag(&cli, args, "allow_dirty_git", "--allow-dirty-git")
+	addBoolFlag(&cli, args, "record_git_diff", "--record-git-diff")
 	if v, ok := optionalIntArg(args, "launch_timeout"); ok {
 		cli = append(cli, "--launch-timeout", strconv.Itoa(v))
 	}
@@ -895,6 +921,30 @@ func (s *Server) toolSyncPush(ctx context.Context, args map[string]interface{}) 
 	addSyncFlags(&cli, args, true)
 	cli = append(cli, source, target)
 	return s.runAexp(ctx, timeoutFromArgs(args, 120), cli...)
+}
+
+func (s *Server) toolSyncDatasetPush(ctx context.Context, args map[string]interface{}) (string, error) {
+	resource, source, target, err := syncEndpointArgs(args, "source", "target")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"sync", "dataset", "push", "--resource", resource}
+	addBoolFlag(&cli, args, "dry_run", "--dry-run")
+	addBoolFlag(&cli, args, "delete", "--delete")
+	if v, ok := optionalBoolArg(args, "verify"); ok && !v {
+		cli = append(cli, "--no-verify")
+	}
+	for _, p := range stringSliceArg(args, "exclude") {
+		cli = append(cli, "--exclude", p)
+	}
+	if v, ok := optionalIntArg(args, "sync_timeout"); ok {
+		cli = append(cli, "--timeout", strconv.Itoa(v))
+	}
+	if v, ok := optionalIntArg(args, "retries"); ok {
+		cli = append(cli, "--retries", strconv.Itoa(v))
+	}
+	cli = append(cli, source, target)
+	return s.runAexp(ctx, timeoutFromArgs(args, 300), cli...)
 }
 
 func (s *Server) toolSyncPull(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -1120,16 +1170,18 @@ func mcpRunEventGuidance(runID, statusJSON string) map[string]interface{} {
 		},
 		"purpose": "Training telemetry must be produced by the training/eval code while the run is executing. Do not reconstruct loss, metric, progress, or parameter events after the run.",
 		"python": []string{
-			"from aexp_events import metric, progress, param, note",
+			"from aexp_events import metric, training_epoch, training_done, progress, param, note",
 			"param(\"model\", model_name, trial=trial_id, variant=variant)",
 			"metric(\"train/loss\", loss, epoch=local_epoch, trial=trial_id, variant=variant, stage=\"train\")",
 			"metric(\"val/loss\", val_loss, epoch=local_epoch, trial=trial_id, variant=variant, split=\"val\", stage=\"eval\")",
-			"progress(\"epoch\", local_epoch, total=max_epochs, trial=trial_id, variant=variant, stage=\"train\")",
+			"training_epoch(local_epoch, total=max_epochs, trial=trial_id, variant=variant)",
+			"training_done(epoch=last_epoch, total=max_epochs, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id, variant=variant)",
 		},
 		"rules": []string{
 			"Add aexp_events instrumentation to the training/eval script before submitting the run; do not use manual event tools for post-hoc telemetry.",
 			"Keep metric/progress names short and stable, e.g. train/loss, val/loss, val/mse, epoch, trial.",
 			"Put model, dataset, split, stage, seed, fold, and hyperparameter-trial context in series/run/variant/split/stage/trial fields.",
+			"Use training_epoch/training_done for training-loop progress; on early stop, keep the actual last epoch and set early_stopped=true instead of forcing epoch to total.",
 			"For sweeps, epoch is the local epoch inside that trial; use trial/variant/series for global sweep identity so loss curves do not start halfway across the chart.",
 			"Do not embed a full experiment config or trial id in the metric name; the UI uses context fields to draw one chart with multiple series.",
 			"After the run, use aexp_mark_run for interpretation, findings, images, and Markdown notes; marks are not training telemetry.",
@@ -1267,6 +1319,18 @@ func boolArg(args map[string]interface{}, key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+func optionalBoolArg(args map[string]interface{}, key string) (bool, bool) {
+	if args == nil {
+		return false, false
+	}
+	if v, ok := args[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b, true
+		}
+	}
+	return false, false
 }
 
 func intArg(args map[string]interface{}, key string, def int) int {
@@ -1526,12 +1590,18 @@ func toolRegistry() []toolSpec {
 				"cwd":                   stringSchema("Remote working directory."),
 				"project_env":           stringSchema("Optional runtime strategy: auto or raw."),
 				"conda_env":             stringSchema("Optional conda environment."),
+				"target_env":            stringSchema("Semantic target environment, e.g. defect-yolo. Use when setup/repair commands activate or repair a different env than the wrapper env."),
 				"gpu_index":             numberSchema("GPU index. -1 means all, -2 means none."),
 				"no_gpu":                boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
 				"shell":                 boolSchema("Interpret argv through bash -lc."),
-				"force":                 boolSchema("Skip GPU lock."),
+				"force":                 boolSchema("Skip GPU lock. Requires force_reason."),
+				"force_reason":          stringSchema("Required when force or preempt_run is used; explain who/what is being overridden."),
+				"preempt_run":           stringSchema("Cancel this active run on the same resource before submitting the new run."),
+				"preempt_save":          boolSchema("Whether the preempted run should be treated as needing saved evidence; defaults to true."),
 				"refresh_env":           boolSchema("Ignore cached project env detection."),
 				"allow_ephemeral_paths": boolSchema("Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs."),
+				"allow_dirty_git":       boolSchema("Allow a formal/ablation run from a dirty Git worktree."),
+				"record_git_diff":       boolSchema("When allowing dirty Git, save a local patch under ~/.aexp/git-diffs."),
 				"log_paths":             arrayStringSchema("Log file globs."),
 				"metric_paths":          arrayStringSchema("Metric file globs."),
 				"artifact_paths":        arrayStringSchema("Artifact file globs."),
@@ -1943,13 +2013,19 @@ func toolRegistry() []toolSpec {
 				"kind":                  stringSchema("Override run kind."),
 				"project_env":           stringSchema("Override runtime env strategy: auto or raw."),
 				"conda_env":             stringSchema("Override conda environment."),
+				"target_env":            stringSchema("Override semantic target environment, e.g. the env a setup recipe creates or repairs."),
 				"ui_events":             stringSchema("Override structured UI event JSONL path; set off to disable."),
 				"gpu_index":             numberSchema("Override GPU index."),
 				"no_gpu":                boolSchema("Do not reserve GPUs or set CUDA_VISIBLE_DEVICES."),
-				"force":                 boolSchema("Skip GPU slot lock."),
+				"force":                 boolSchema("Skip GPU slot lock. Requires force_reason."),
+				"force_reason":          stringSchema("Required when force or preempt_run is used; explain why the GPU lock was bypassed or who is being preempted."),
+				"preempt_run":           stringSchema("Cancel this active run on the same resource before submitting the recipe."),
+				"preempt_save":          boolSchema("Whether the preempted run should be treated as needing saved evidence; defaults to true."),
 				"dry_run":               boolSchema("Print the resolved submit command without launching."),
 				"refresh_env":           boolSchema("Ignore cached project profile and re-detect the environment."),
 				"allow_ephemeral_paths": boolSchema("Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs."),
+				"allow_dirty_git":       boolSchema("Allow a formal/ablation recipe from a dirty Git worktree."),
+				"record_git_diff":       boolSchema("When allowing dirty Git, save a local patch under ~/.aexp/git-diffs."),
 				"launch_timeout":        numberSchema("Launch timeout in seconds."),
 				"timeout":               numberSchema("Tool timeout in seconds."),
 			}, nil),
@@ -2053,6 +2129,25 @@ func toolRegistry() []toolSpec {
 			}), []string{"resource", "source", "target"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolSyncPush(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_sync_dataset_push",
+			Description: "Push dataset/output directories with data-safe rsync defaults: partial transfers, progress, retries, and checksum verification. Use this instead of ad-hoc rsync for first-class experiment data sync.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"resource":     stringSchema("Resource name."),
+				"source":       stringSchema("Local dataset/output directory."),
+				"target":       stringSchema("Remote target directory."),
+				"dry_run":      boolSchema("Print the rsync command without running it."),
+				"delete":       boolSchema("Delete target files that no longer exist on source."),
+				"verify":       boolSchema("Use checksum verification; defaults to true."),
+				"exclude":      arrayStringSchema("Extra exclude patterns."),
+				"sync_timeout": numberSchema("Rsync timeout in seconds."),
+				"retries":      numberSchema("Retry count for transient rsync failures."),
+				"timeout":      numberSchema("Tool timeout in seconds."),
+			}, []string{"resource", "source", "target"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolSyncDatasetPush(ctx, args)
 			},
 		},
 		{

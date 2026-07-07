@@ -270,13 +270,14 @@ Inside a submitted run, `aexp` sets `AEXP_RUN_ID`, `AEXP_RUN_DIR`, and
 events during execution with the generated helper:
 
 ```python
-from aexp_events import metric, progress, param, note
+from aexp_events import metric, training_epoch, training_done, progress, param, note
 
 param("model", "iTransformer", trial=trial_id, variant="raw")
-progress("epoch", current=local_epoch, total=20, trial=trial_id, variant="raw", stage="train")
+training_epoch(local_epoch, total=20, trial=trial_id, variant="raw")
 metric("train/loss", train_loss, epoch=local_epoch, trial=trial_id, variant="raw", stage="train")
 metric("val/loss", val_loss, epoch=local_epoch, trial=trial_id, variant="raw", split="val", stage="eval")
 note("first checkpoint written")
+training_done(epoch=last_epoch, total=20, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id, variant="raw")
 ```
 
 Use short, stable `name` values for the quantity itself (`train/loss`,
@@ -284,7 +285,10 @@ Use short, stable `name` values for the quantity itself (`train/loss`,
 fields such as `series`, `variant`, `split`, and `stage`. For hyperparameter
 search, keep the metric name the same across trials, keep `epoch` local to each
 trial, and identify the trial with `trial` plus a stable `variant` or `series`
-label. Do not reconstruct telemetry after the run; use run marks for post-hoc
+label. Use `training_epoch` and `training_done(..., early_stopped=True)` for
+training progress so early stopping displays as "early stopped at 62/100" rather
+than pretending the configured epoch budget was fully consumed. Do not
+reconstruct telemetry after the run; use run marks for post-hoc
 interpretation notes.
 
 ```python
@@ -292,10 +296,16 @@ for trial_id, cfg in enumerate(search_space):
     param("learning_rate", cfg.lr, trial=trial_id)
     progress("trial", current=trial_id + 1, total=len(search_space))
     for epoch in range(max_epochs):
-        progress("epoch", current=epoch + 1, total=max_epochs, trial=trial_id, stage="train")
+        training_epoch(epoch + 1, total=max_epochs, trial=trial_id)
         metric("train/loss", train_loss, epoch=epoch + 1, trial=trial_id)
         metric("val/loss", val_loss, epoch=epoch + 1, trial=trial_id, split="val")
+    training_done(epoch=last_epoch, total=max_epochs, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id)
 ```
+
+For Optuna-style searches, `progress("trial", ...)` is the search-level
+progress. `training_epoch(..., trial=trial_id)` is only the local epoch inside
+that trial, so early stopping one trial does not complete or shift the whole
+search.
 
 Do not encode full model, dataset, or trial config in the metric name. The
 dashboard groups repeated progress updates by context and renders metrics with

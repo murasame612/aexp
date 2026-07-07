@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ziwu/aexp/internal/eventcache"
@@ -93,6 +94,67 @@ func TestGetUIEventLogsFallsBackToLocalCacheWhenResourceOffline(t *testing.T) {
 		t.Fatalf("error_kind = %q, want empty when cache lines are usable", body.ErrorKind)
 	}
 	if len(body.Lines) != 1 || body.Lines[0].Content == "" {
+		t.Fatalf("cached lines missing: %#v", body.Lines)
+	}
+}
+
+func TestGetUIEventLogsPrefersLocalCacheForTerminalRuns(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("AEXP_EVENT_CACHE_DIR", t.TempDir())
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_event_cache_online",
+		Name:    "online-resource",
+		Type:    "ssh",
+		Host:    "localhost",
+		RootDir: "/ws",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:           "run_event_cache_online",
+		ResourceID:   "rsrc_event_cache_online",
+		Name:         "cached-events-online",
+		Status:       store.RunStatusSucceeded,
+		Command:      "python train.py",
+		UIEventsPath: ".aexp/events/run_event_cache_online.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eventcache.Write("run_event_cache_online", []eventcache.Line{
+		{LineNo: 4, Content: `{"type":"metric","name":"train/loss","value":0.1}`},
+	}); err != nil {
+		t.Fatalf("cache event: %v", err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run_event_cache_online/logs?path=.aexp/events/run_event_cache_online.jsonl&limit=50&tail=true", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Remote    bool            `json:"remote"`
+		ErrorKind string          `json:"error_kind"`
+		Lines     []store.LogLine `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if body.Remote {
+		t.Fatalf("remote = true, want local cache")
+	}
+	if body.ErrorKind != "" {
+		t.Fatalf("error_kind = %q, want empty for terminal cache-first event logs", body.ErrorKind)
+	}
+	if len(body.Lines) != 1 || !strings.Contains(body.Lines[0].Content, "train/loss") {
 		t.Fatalf("cached lines missing: %#v", body.Lines)
 	}
 }

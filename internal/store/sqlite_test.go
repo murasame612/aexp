@@ -108,14 +108,29 @@ func TestRunCRUD(t *testing.T) {
 	s.CreateResource(ctx, &Resource{ID: "rsrc_r01", Name: "res1", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: ResourceStatusIdle})
 
 	run := &Run{
-		ID:           "run_test001",
-		ResourceID:   "rsrc_r01",
-		Name:         "test-run",
-		Status:       RunStatusCreated,
-		Command:      "python train.py",
-		Cwd:          "/ws/project",
-		CondaEnv:     "tslib",
-		UIEventsPath: "aexp-events.jsonl",
+		ID:            "run_test001",
+		ResourceID:    "rsrc_r01",
+		Name:          "test-run",
+		Status:        RunStatusCreated,
+		Command:       "python train.py",
+		Cwd:           "/ws/project",
+		CondaEnv:      "tslib",
+		TargetEnv:     "defect-yolo",
+		ForceReason:   "preempt stale smoke run before formal rerun",
+		PreemptRunID:  "run_old001",
+		PreemptSave:   true,
+		GitRepoRoot:   "/repo",
+		GitRemoteURL:  "https://github.com/example/project.git",
+		GitBranch:     "main",
+		GitCommit:     "abcdef1234567890",
+		GitDirty:      true,
+		GitStatus:     " M train.py",
+		GitDiffHash:   "sha256:abc",
+		GitDiffPath:   "/tmp/run.patch",
+		GitAllowDirty: true,
+		FailureKind:   RunFailureImportError,
+		FailureReason: "libxcb.so.1 missing",
+		UIEventsPath:  "aexp-events.jsonl",
 	}
 
 	if err := s.CreateRun(ctx, run); err != nil {
@@ -128,6 +143,12 @@ func TestRunCRUD(t *testing.T) {
 	}
 	if got.UIEventsPath != "aexp-events.jsonl" {
 		t.Errorf("ui_events_path = %q, want %q", got.UIEventsPath, "aexp-events.jsonl")
+	}
+	if got.TargetEnv != "defect-yolo" || got.ForceReason == "" || got.PreemptRunID != "run_old001" || !got.PreemptSave || got.FailureKind != RunFailureImportError || got.FailureReason != "libxcb.so.1 missing" {
+		t.Errorf("run semantic fields not persisted: %#v", got)
+	}
+	if got.GitRepoRoot != "/repo" || got.GitRemoteURL != "https://github.com/example/project.git" || got.GitBranch != "main" || got.GitCommit != "abcdef1234567890" || !got.GitDirty || got.GitStatus != " M train.py" || got.GitDiffHash != "sha256:abc" || got.GitDiffPath != "/tmp/run.patch" || !got.GitAllowDirty {
+		t.Errorf("run git fields not persisted: %#v", got)
 	}
 
 	runs, _ := s.ListRuns(ctx, RunFilter{ResourceID: "rsrc_r01"})
@@ -144,6 +165,8 @@ func TestRunCRUD(t *testing.T) {
 
 	run.Status = RunStatusRunning
 	run.UIEventsPath = "events/train.jsonl"
+	run.FailureKind = ""
+	run.FailureReason = ""
 	run.StartedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	s.UpdateRun(ctx, run)
 	got2, _ := s.GetRun(ctx, "run_test001")
@@ -152,6 +175,9 @@ func TestRunCRUD(t *testing.T) {
 	}
 	if got2.UIEventsPath != "events/train.jsonl" {
 		t.Errorf("updated ui_events_path = %q, want %q", got2.UIEventsPath, "events/train.jsonl")
+	}
+	if got2.TargetEnv != "defect-yolo" || got2.ForceReason == "" || got2.PreemptRunID != "run_old001" || !got2.PreemptSave || got2.FailureKind != "" || got2.FailureReason != "" {
+		t.Errorf("updated run semantic fields = target %q force %q preempt %q/%v failure %q/%q", got2.TargetEnv, got2.ForceReason, got2.PreemptRunID, got2.PreemptSave, got2.FailureKind, got2.FailureReason)
 	}
 }
 

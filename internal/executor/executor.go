@@ -2,12 +2,17 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	osexec "os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,12 +30,16 @@ type SubmitRequest struct {
 	Kind                string            `json:"kind"`      // smoke, pilot, formal, ablation
 	GPUIndex            int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
 	Force               bool              `json:"force"`     // skip GPU slot lock
+	ForceReason         string            `json:"force_reason"`
+	PreemptRunID        string            `json:"preempt_run_id"`
+	PreemptSave         bool              `json:"preempt_save"`
 	Command             string            `json:"command"`
 	Program             string            `json:"program"` // structured: python, bash, etc.
 	Args                []string          `json:"args"`    // structured args
 	Cwd                 string            `json:"cwd"`
 	CondaEnv            string            `json:"conda_env"`
 	ProjectEnv          string            `json:"project_env"` // "", raw, auto
+	TargetEnv           string            `json:"target_env"`  // intended runtime/app env for setup or repair runs
 	LogPaths            []string          `json:"log_paths"`
 	ArtifactPaths       []string          `json:"artifact_paths"`
 	MetricPaths         []string          `json:"metric_paths"`
@@ -39,6 +48,9 @@ type SubmitRequest struct {
 	CreatedBy           string            `json:"created_by"`
 	RefreshProjectEnv   bool              `json:"refresh_project_env"`
 	AllowEphemeralPaths bool              `json:"allow_ephemeral_paths"`
+	GitSourceDir        string            `json:"git_source_dir"`
+	AllowDirtyGit       bool              `json:"allow_dirty_git"`
+	RecordGitDiff       bool              `json:"record_git_diff"`
 }
 
 // SubmitOptions controls optional submit behavior.
@@ -144,6 +156,19 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	if gpuIndex < store.GPUIndexNone {
 		gpuIndex = store.GPUIndexAll
 	}
+	req.ForceReason = strings.TrimSpace(req.ForceReason)
+	req.PreemptRunID = strings.TrimSpace(req.PreemptRunID)
+	if req.Force && req.ForceReason == "" {
+		return nil, fmt.Errorf("--force requires --force-reason so the run record explains why the GPU lock was bypassed")
+	}
+	if req.PreemptRunID != "" {
+		if req.ForceReason == "" {
+			return nil, fmt.Errorf("--preempt-run requires --force-reason so the run record explains why another run was cancelled")
+		}
+		if err := e.preemptRunBeforeSubmit(ctx, req.PreemptRunID, resource.ID); err != nil {
+			return nil, err
+		}
+	}
 
 	// GPU slot lock (skip if --force, or if this run explicitly needs no GPU).
 	if !req.Force && gpuIndex != store.GPUIndexNone {
@@ -168,10 +193,29 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		}
 	}
 
+	kind := req.Kind
+	if kind == "" {
+		kind = store.RunKindFormal
+	}
+
 	// Generate run ID
 	runID := genID("run_")
 	tmuxSession := "aexp_" + runID
 	remoteRunDir := resource.RootDir + "/.aexp/runs/" + runID
+
+	shouldRecordGitDiff := req.RecordGitDiff && (req.AllowDirtyGit || !runKindRequiresCleanGit(kind))
+	git, err := captureGitProvenance(ctx, req.GitSourceDir, runID, shouldRecordGitDiff)
+	if err != nil {
+		return nil, err
+	}
+	if git.RepoRoot != "" && git.Dirty && runKindRequiresCleanGit(kind) {
+		if !req.AllowDirtyGit {
+			return nil, fmt.Errorf("formal experiment requires a clean Git worktree at %s; commit/stash changes or rerun with --allow-dirty-git --record-git-diff", git.RepoRoot)
+		}
+		if !req.RecordGitDiff {
+			return nil, fmt.Errorf("dirty formal experiment requires --record-git-diff so the run records a patch reference")
+		}
+	}
 
 	// Determine conda env
 	condaEnv := req.CondaEnv
@@ -218,11 +262,6 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	envJSON, _ := json.Marshal(envVars)
 	argsJSON, _ := json.Marshal(req.Args)
 
-	kind := req.Kind
-	if kind == "" {
-		kind = store.RunKindFormal
-	}
-
 	// Create run record
 	run := &store.Run{
 		ID:                runID,
@@ -237,6 +276,19 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		ArgsJSON:          string(argsJSON),
 		CondaEnv:          condaEnv,
 		ProjectEnv:        req.ProjectEnv,
+		TargetEnv:         strings.TrimSpace(req.TargetEnv),
+		ForceReason:       req.ForceReason,
+		PreemptRunID:      req.PreemptRunID,
+		PreemptSave:       req.PreemptSave,
+		GitRepoRoot:       git.RepoRoot,
+		GitRemoteURL:      git.RemoteURL,
+		GitBranch:         git.Branch,
+		GitCommit:         git.Commit,
+		GitDirty:          git.Dirty,
+		GitStatus:         git.Status,
+		GitDiffHash:       git.DiffHash,
+		GitDiffPath:       git.DiffPath,
+		GitAllowDirty:     req.AllowDirtyGit,
 		EnvJSON:           string(envJSON),
 		LogPathsJSON:      string(logPathsJSON),
 		ArtifactPathsJSON: string(artifactPathsJSON),
@@ -313,6 +365,129 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "running"})
 
 	return run, nil
+}
+
+type gitProvenance struct {
+	RepoRoot  string
+	RemoteURL string
+	Branch    string
+	Commit    string
+	Dirty     bool
+	Status    string
+	DiffHash  string
+	DiffPath  string
+}
+
+func captureGitProvenance(ctx context.Context, sourceDir, runID string, recordDiff bool) (gitProvenance, error) {
+	var snap gitProvenance
+	if strings.TrimSpace(sourceDir) == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return snap, nil
+		}
+		sourceDir = wd
+	}
+	absDir, err := filepath.Abs(sourceDir)
+	if err != nil {
+		absDir = sourceDir
+	}
+	gitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	root, err := gitOutput(gitCtx, absDir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return snap, nil
+	}
+	snap.RepoRoot = strings.TrimSpace(root)
+	if snap.RepoRoot == "" {
+		return snap, nil
+	}
+	if branch, err := gitOutput(gitCtx, snap.RepoRoot, "branch", "--show-current"); err == nil {
+		snap.Branch = strings.TrimSpace(branch)
+	}
+	if commit, err := gitOutput(gitCtx, snap.RepoRoot, "rev-parse", "HEAD"); err == nil {
+		snap.Commit = strings.TrimSpace(commit)
+	}
+	if remote, err := gitOutput(gitCtx, snap.RepoRoot, "config", "--get", "remote.origin.url"); err == nil {
+		snap.RemoteURL = sanitizeGitRemoteURL(strings.TrimSpace(remote))
+	}
+	status, err := gitOutput(gitCtx, snap.RepoRoot, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return snap, fmt.Errorf("inspect git status: %w", err)
+	}
+	snap.Status = strings.TrimRight(status, "\n")
+	snap.Dirty = strings.TrimSpace(snap.Status) != ""
+	if !snap.Dirty {
+		return snap, nil
+	}
+	if !recordDiff {
+		sum := sha256.Sum256([]byte(snap.Status))
+		snap.DiffHash = hex.EncodeToString(sum[:])
+		return snap, nil
+	}
+	diff, err := gitOutputBytes(gitCtx, snap.RepoRoot, "diff", "--binary", "HEAD", "--")
+	if err != nil {
+		return snap, fmt.Errorf("record git diff: %w", err)
+	}
+	header := fmt.Sprintf("repo: %s\ncommit: %s\nbranch: %s\nremote: %s\n\nstatus:\n%s\n\ntracked_diff:\n", snap.RepoRoot, snap.Commit, snap.Branch, snap.RemoteURL, snap.Status)
+	patch := append([]byte(header), diff...)
+	sum := sha256.Sum256(patch)
+	snap.DiffHash = hex.EncodeToString(sum[:])
+	path, err := writeGitDiffPatch(runID, patch)
+	if err != nil {
+		return snap, err
+	}
+	snap.DiffPath = path
+	return snap, nil
+}
+
+func runKindRequiresCleanGit(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "", store.RunKindFormal, store.RunKindAblation:
+		return true
+	default:
+		return false
+	}
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := gitOutputBytes(ctx, dir, args...)
+	return string(out), err
+}
+
+func gitOutputBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := osexec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func sanitizeGitRemoteURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
+func writeGitDiffPatch(runID string, patch []byte) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home for git diff patch: %w", err)
+	}
+	dir := filepath.Join(home, ".aexp", "git-diffs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("create git diff directory: %w", err)
+	}
+	path := filepath.Join(dir, runID+".patch")
+	if err := os.WriteFile(path, patch, 0600); err != nil {
+		return "", fmt.Errorf("write git diff patch: %w", err)
+	}
+	return path, nil
 }
 
 func (e *Executor) ResolveProjectProfile(ctx context.Context, resource *store.Resource, cwd, strategy, condaEnv string, refresh bool) (*store.ProjectProfile, error) {
@@ -426,8 +601,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	out, _, err := e.exec(ctx, resource,
 		fmt.Sprintf("if [ -f %s ]; then cat %s; fi", quotedExitCodeFile, quotedExitCodeFile))
 	if err != nil {
-		e.markRunStatus(ctx, resource, run, store.RunStatusSSHUnreachable, "resource control channel is unreachable: "+err.Error())
-		return run, nil
+		e.recordRunStatusProbeFailure(ctx, resource, run, "resource control channel is unreachable: "+err.Error())
+		return run, err
 	}
 
 	if strings.TrimSpace(out) != "" {
@@ -442,8 +617,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	tmuxOut, _, tmuxErr := e.exec(ctx, resource,
 		fmt.Sprintf("tmux has-session -t %s >/dev/null 2>&1; printf '%%s\\n' \"$?\"", shellQuote(run.TmuxSession)))
 	if tmuxErr != nil {
-		e.markRunStatus(ctx, resource, run, store.RunStatusSSHUnreachable, "tmux status check failed: "+tmuxErr.Error())
-		return run, nil
+		e.recordRunStatusProbeFailure(ctx, resource, run, "tmux status check failed: "+tmuxErr.Error())
+		return run, tmuxErr
 	}
 	tmuxStatus, ok := parseRemoteStatusCode(tmuxOut)
 	if !ok {
@@ -468,9 +643,17 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 			}
 		}
 		e.markRunStatus(ctx, resource, run, status, reason)
+	} else if run.Status == store.RunStatusSSHUnreachable {
+		run.Status = store.RunStatusRunning
+		e.store.UpdateRun(ctx, run)
+		e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": run.Status, "reason": "remote control channel recovered and tmux session is alive"})
 	}
 
 	return run, nil
+}
+
+func (e *Executor) recordRunStatusProbeFailure(ctx context.Context, resource *store.Resource, run *store.Run, reason string) {
+	_, _ = e.writeLastRunSnapshot(ctx, resource, run, run.Status, reason)
 }
 
 func (e *Executor) markRunStatus(ctx context.Context, resource *store.Resource, run *store.Run, status string, reason string) {
@@ -759,11 +942,59 @@ func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run 
 	run.FinishedAt = now
 	if code == 0 {
 		run.Status = store.RunStatusSucceeded
+		run.FailureKind = ""
+		run.FailureReason = ""
 	} else {
 		run.Status = store.RunStatusFailed
+		stdoutTail, stderrTail := "", ""
+		if resource != nil {
+			stdoutTail, stderrTail = e.runLogTails(ctx, resource, run)
+		}
+		run.FailureKind, run.FailureReason = classifyRunFailure(code, stdoutTail, stderrTail)
 	}
 	e.store.UpdateRun(ctx, run)
 	e.checkResourceIdle(ctx, resource)
+}
+
+func classifyRunFailure(exitCode int, stdoutTail, stderrTail string) (string, string) {
+	text := strings.TrimSpace(stderrTail + "\n" + stdoutTail)
+	lower := strings.ToLower(text)
+	switch {
+	case exitCode == 137 || strings.Contains(lower, "killed") && strings.Contains(lower, "137"):
+		return store.RunFailureKilled137, "process was killed with exit code 137, usually memory pressure, container eviction, or a hard kill"
+	case strings.Contains(lower, "no space left on device") || strings.Contains(lower, "disk quota exceeded"):
+		return store.RunFailureDiskFull, "disk is full or quota was exceeded"
+	case strings.Contains(lower, "cuda out of memory") || strings.Contains(lower, "cublas_status_alloc_failed") || strings.Contains(lower, "device-side assert"):
+		return store.RunFailureGPUBusy, "GPU memory/runtime failure; inspect GPU occupancy and batch size"
+	case strings.Contains(lower, "modulenotfounderror") || strings.Contains(lower, "no module named"):
+		return store.RunFailureDependencyError, firstFailureLine(text, "missing Python dependency")
+	case strings.Contains(lower, "/opt/conda/lib/python") && strings.Contains(lower, "site-packages") && strings.Contains(lower, "conda"):
+		return store.RunFailureEnvMismatch, "Python packages appear to be loaded from an unexpected conda environment"
+	case strings.Contains(lower, "importerror") || strings.Contains(lower, "cannot import name") || strings.Contains(lower, ".so.") || strings.Contains(lower, "libxcb.so"):
+		return store.RunFailureImportError, firstFailureLine(text, "import/runtime library error")
+	case strings.Contains(lower, "filenotfounderror") || strings.Contains(lower, "no such file or directory") || strings.Contains(lower, "not found:") || strings.Contains(lower, "cannot stat"):
+		return store.RunFailureDataMissing, firstFailureLine(text, "required data or file path is missing")
+	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "broken pipe") || strings.Contains(lower, "network is unreachable") || strings.Contains(lower, "connection timed out"):
+		return store.RunFailureNetworkReset, firstFailureLine(text, "network/control channel failed during run")
+	case strings.TrimSpace(text) != "":
+		return store.RunFailureUnknown, firstFailureLine(text, "run exited non-zero; inspect stderr/stdout")
+	default:
+		return store.RunFailureUnknown, fmt.Sprintf("run exited with code %d but no log tail was available", exitCode)
+	}
+}
+
+func firstFailureLine(text, fallback string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 240 {
+			return line[:237] + "..."
+		}
+		return line
+	}
+	return fallback
 }
 
 func (e *Executor) wrapperExitCodeFromLogs(ctx context.Context, resource *store.Resource, run *store.Run) (int, bool) {
@@ -1035,6 +1266,26 @@ func parseLogSnapshot(runID string, source string, out string) ([]LogLine, error
 		})
 	}
 	return lines, nil
+}
+
+func (e *Executor) preemptRunBeforeSubmit(ctx context.Context, runID, resourceID string) error {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("load preempt target %s: %w", runID, err)
+	}
+	if run == nil {
+		return fmt.Errorf("preempt target run %s not found", runID)
+	}
+	if run.ResourceID != resourceID {
+		return fmt.Errorf("preempt target run %s is on resource %s, not requested resource %s", runID, run.ResourceID, resourceID)
+	}
+	if !store.IsRunRefreshableStatus(run.Status) {
+		return fmt.Errorf("preempt target run %s is not active (status: %s)", runID, run.Status)
+	}
+	if err := e.Cancel(ctx, runID); err != nil {
+		return fmt.Errorf("preempt target run %s: %w", runID, err)
+	}
+	return nil
 }
 
 // Cancel stops a running run.
@@ -1717,6 +1968,32 @@ def metric(name, value, **fields):
 def progress(name, current=None, total=None, **fields):
     """Record live progress such as local epoch, trial, fold, or batch."""
     return emit(type="progress", name=name, current=current, total=total, **fields)
+
+
+def training_epoch(epoch, total=None, **fields):
+    """Record the current training epoch.
+
+    Use this from training loops instead of manually forcing epoch progress to
+    100% when a trainer exits early. If a sweep is running, pass trial/variant
+    fields so the UI keeps each trial's local epoch separate.
+    """
+    fields.setdefault("stage", "train")
+    return progress("epoch", current=epoch, total=total, status="running", **fields)
+
+
+def training_done(epoch=None, total=None, best_epoch=None, early_stopped=False, **fields):
+    """Record the training-loop terminal state without lying about epoch count.
+
+    For early stopping, keep current at the actual last epoch and set
+    early_stopped=True. The UI will show "early stopped" instead of treating the
+    run as unfinished or pretending all configured epochs were consumed.
+    """
+    fields.setdefault("stage", "train")
+    if best_epoch is not None:
+        fields["best_epoch"] = best_epoch
+    status = "early_stopped" if early_stopped else "completed"
+    current = total if epoch is None and not early_stopped else epoch
+    return progress("epoch", current=current, total=total, status=status, **fields)
 
 
 def param(name, value, **fields):

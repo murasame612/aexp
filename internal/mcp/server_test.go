@@ -80,6 +80,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 		!toolListed(listResp.Result.Tools, "aexp_set_matrix_cell") {
 		t.Fatalf("matrix tools should be listed: %#v", listResp.Result.Tools)
 	}
+	if !toolListed(listResp.Result.Tools, "aexp_sync_dataset_push") {
+		t.Fatalf("dataset sync tool should be listed: %#v", listResp.Result.Tools)
+	}
 }
 
 func toolListed(tools []struct {
@@ -167,6 +170,99 @@ func TestExecToolRejectsLongTimeout(t *testing.T) {
 	}
 	if len(resp.Result.Content) == 0 || !strings.Contains(resp.Result.Content[0].Text, "aexp_submit_run") {
 		t.Fatalf("expected submit_run guidance, got %#v", resp.Result.Content)
+	}
+}
+
+func TestSubmitRunToolPassesSafetyMetadata(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+printf 'CALL\n' >> "$AEXP_STUB_ARGS"
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "$AEXP_STUB_ARGS"
+done
+if [ "$1" = "run" ] && [ "$2" = "submit" ]; then
+  printf 'created run_ABC\n'
+else
+  printf '{"id":"run_ABC","status":"running"}\n'
+fi
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_submit_run","arguments":{"resource":"mu","name":"repair-env","kind":"setup","target_env":"defect-yolo","force":true,"force_reason":"preempt stale gpu lock for urgent repair","preempt_run":"run_OLD","preempt_save":false,"command":"python repair.py"}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(rawArgs)), "\nCALL\n")
+	if len(calls) == 0 {
+		t.Fatalf("expected recorded calls, got %q", string(rawArgs))
+	}
+	gotArgs := strings.Split(strings.TrimPrefix(calls[0], "CALL\n"), "\n")
+	wantArgs := []string{
+		"run", "submit", "--resource", "mu",
+		"--name", "repair-env",
+		"--kind", "setup",
+		"--target-env", "defect-yolo",
+		"--force",
+		"--force-reason", "preempt stale gpu lock for urgent repair",
+		"--preempt-run", "run_OLD",
+		"--preempt-save=false",
+		"--shell",
+		"--", "python repair.py",
+	}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v\noutput %s", wantArgs, gotArgs, out.String())
+	}
+}
+
+func TestSyncDatasetPushToolInvokesDataSafeCLI(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"ok":true}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_sync_dataset_push","arguments":{"resource":"mu","source":"dataset","target":"/data/dataset","dry_run":true,"delete":true,"verify":false,"exclude":["*.tmp"],"sync_timeout":600,"retries":3}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{
+		"sync", "dataset", "push", "--resource", "mu",
+		"--dry-run",
+		"--delete",
+		"--no-verify",
+		"--exclude", "*.tmp",
+		"--timeout", "600",
+		"--retries", "3",
+		"dataset", "/data/dataset",
+	}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v\noutput %s", wantArgs, gotArgs, out.String())
 	}
 }
 

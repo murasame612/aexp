@@ -19,6 +19,7 @@ resource: mu
 cwd: /home/ziwu/project
 env: auto
 conda_env: defect-yolo
+target_env: train-env
 default_gpu: 0
 project:
   id: dam-imputation
@@ -34,6 +35,7 @@ train:
 setup:
   command: python -m pip install -r requirements.txt
   kind: setup
+  target_env: defect-yolo
 eval:
   command: |
     mkdir -p logs
@@ -54,7 +56,7 @@ sync:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Resource != "mu" || cfg.Cwd != "/home/ziwu/project" || cfg.Env != "auto" || cfg.CondaEnv != "defect-yolo" {
+	if cfg.Resource != "mu" || cfg.Cwd != "/home/ziwu/project" || cfg.Env != "auto" || cfg.CondaEnv != "defect-yolo" || cfg.TargetEnv != "train-env" {
 		t.Fatalf("unexpected top-level config: %#v", cfg)
 	}
 	if cfg.DefaultGPU == nil || *cfg.DefaultGPU != 0 {
@@ -69,6 +71,9 @@ sync:
 	if got := cfg.Commands["setup"].Kind; got != store.RunKindSetup {
 		t.Fatalf("unexpected setup kind: %q", got)
 	}
+	if got := cfg.Commands["setup"].TargetEnv; got != "defect-yolo" {
+		t.Fatalf("unexpected setup target env: %q", got)
+	}
 	if got := cfg.Commands["eval"].Command; got != "mkdir -p logs\npython eval.py \\\n  --config configs/eval.yaml" {
 		t.Fatalf("unexpected multiline command: %q", got)
 	}
@@ -77,6 +82,60 @@ sync:
 	}
 	if got := cfg.Sync.Excludes; len(got) != 1 || got[0] != "dataset/raw/" {
 		t.Fatalf("unexpected sync excludes: %#v", got)
+	}
+}
+
+func TestLoadProjectFileConfigResourceProfiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(path, []byte(`
+resource: szu
+cwd: /shared/project
+env: auto
+conda_env: shared-conda
+default_gpu: 0
+resource_profiles:
+  mu:
+    resource: mu
+    cwd: /home/murasame/pythonproject/dam-displacement-imputation
+    project_env: auto
+    conda_env: dam-mu
+    target_env: dam-runtime
+    default_gpu: 1
+    ui_events: .aexp/events/mu.jsonl
+    env_vars:
+      DATA_ROOT: /home/murasame/data/dam
+      OUTPUT_ROOT: /home/murasame/outputs/dam
+  szu:
+    cwd: /workspace/dam
+    conda_env: dam-szu
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadProjectFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu, ok := cfg.ResourceProfiles["mu"]
+	if !ok {
+		t.Fatalf("missing mu profile: %#v", cfg.ResourceProfiles)
+	}
+	if mu.Resource != "mu" || mu.Cwd != "/home/murasame/pythonproject/dam-displacement-imputation" || mu.CondaEnv != "dam-mu" || mu.TargetEnv != "dam-runtime" || mu.Env != "auto" {
+		t.Fatalf("unexpected mu profile: %#v", mu)
+	}
+	if mu.DefaultGPU == nil || *mu.DefaultGPU != 1 {
+		t.Fatalf("unexpected mu gpu: %#v", mu.DefaultGPU)
+	}
+	if mu.EnvVars["DATA_ROOT"] != "/home/murasame/data/dam" || mu.EnvVars["OUTPUT_ROOT"] != "/home/murasame/outputs/dam" {
+		t.Fatalf("unexpected mu env vars: %#v", mu.EnvVars)
+	}
+	szu, ok := cfg.ResourceProfiles["szu"]
+	if !ok || szu.Cwd != "/workspace/dam" || szu.CondaEnv != "dam-szu" {
+		t.Fatalf("unexpected szu profile: %#v", szu)
 	}
 }
 
@@ -638,6 +697,52 @@ train:
 	}
 }
 
+func TestProjectRunDryRunUsesResourceProfile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+resource: szu
+cwd: /workspace/wrong-for-mu
+env: raw
+conda_env: shared-conda
+default_gpu: 0
+resource_profiles:
+  mu:
+    cwd: /home/murasame/pythonproject/dam-displacement-imputation
+    project_env: auto
+    conda_env: dam-mu
+    default_gpu: 1
+    env_vars:
+      DATA_ROOT: /home/murasame/data/dam
+      OUTPUT_ROOT: /home/murasame/outputs/dam
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runProjectRunForTest("--config", configPath, "--resource", "mu", "train", "--dry-run")
+	if err != nil {
+		t.Fatalf("project run dry-run failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"resource: mu",
+		"cwd:      /home/murasame/pythonproject/dam-displacement-imputation",
+		"env:      auto",
+		"conda:    dam-mu",
+		"gpu:      1",
+		"env_vars:",
+		"  AEXP_RESOURCE_PROFILE=mu",
+		"  DATA_ROOT=/home/murasame/data/dam",
+		"  OUTPUT_ROOT=/home/murasame/outputs/dam",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("resource profile dry-run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestProjectConfigWarnsUnknownRecipeKeys(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ".aexp.yaml")
@@ -782,6 +887,42 @@ func TestResolveSyncExcludesNoDefaultOnlyKeepsExplicit(t *testing.T) {
 func TestResolveSyncExcludesRejectsUnknownProfile(t *testing.T) {
 	if _, _, err := resolveSyncExcludes(t.TempDir(), "mystery", false, nil); err == nil || !strings.Contains(err.Error(), "unknown sync profile") {
 		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+}
+
+func TestDatasetSyncExtraArgs(t *testing.T) {
+	withVerify := datasetSyncExtraArgs(true)
+	for _, want := range []string{"--partial", "--partial-dir=.aexp-rsync-partial", "--checksum"} {
+		if !containsString(withVerify, want) {
+			t.Fatalf("verified dataset sync args missing %q: %#v", want, withVerify)
+		}
+	}
+	withoutVerify := datasetSyncExtraArgs(false)
+	if containsString(withoutVerify, "--checksum") {
+		t.Fatalf("no-verify dataset sync should not include checksum: %#v", withoutVerify)
+	}
+}
+
+func TestLocalDatasetStats(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("1234"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested", "b.bin"), []byte("123456"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := localDatasetStats(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 2 || stats.Bytes != 10 {
+		t.Fatalf("dataset stats = %#v, want 2 files / 10 bytes", stats)
+	}
+	if _, err := localDatasetStats(filepath.Join(dir, "a.bin")); err == nil || !strings.Contains(err.Error(), "must be a directory") {
+		t.Fatalf("expected file source rejection, got %v", err)
 	}
 }
 

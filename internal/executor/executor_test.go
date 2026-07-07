@@ -105,6 +105,204 @@ func TestWithResourceRemotePath(t *testing.T) {
 	}
 }
 
+func TestSubmitForceRequiresReason(t *testing.T) {
+	db := newExecutorTestStore(t)
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_force", Name: "force", Type: "ssh", Host: "127.0.0.1", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(NewSSHPool(10*time.Millisecond), db)
+	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
+		ResourceID:          "rsrc_force",
+		Name:                "dangerous force",
+		Kind:                store.RunKindFormal,
+		GPUIndex:            0,
+		Force:               true,
+		Cwd:                 "/workspace/project",
+		Program:             "python",
+		Args:                []string{"train.py"},
+		AllowEphemeralPaths: true,
+		RefreshProjectEnv:   false,
+	}, SubmitOptions{})
+	if err == nil || !strings.Contains(err.Error(), "force-reason") {
+		t.Fatalf("expected force reason validation, got %v", err)
+	}
+}
+
+func TestSubmitFormalRejectsDirtyGit(t *testing.T) {
+	db := newExecutorTestStore(t)
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_git_dirty", Name: "git-dirty", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := newDirtyGitRepo(t)
+	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
+		ResourceID:          "rsrc_git_dirty",
+		Name:                "formal dirty",
+		Kind:                store.RunKindFormal,
+		GPUIndex:            store.GPUIndexNone,
+		Cwd:                 "/workspace/project",
+		Program:             "python",
+		Args:                []string{"train.py"},
+		AllowEphemeralPaths: true,
+		GitSourceDir:        repo,
+	}, SubmitOptions{})
+	if err == nil || !strings.Contains(err.Error(), "clean Git worktree") {
+		t.Fatalf("expected dirty git rejection, got %v", err)
+	}
+	runs, listErr := db.ListRuns(ctx, store.RunFilter{ResourceID: "rsrc_git_dirty"})
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("dirty formal rejection should happen before run creation, got %#v", runs)
+	}
+}
+
+func TestSubmitDirtySmokeRecordsGitButDoesNotBlock(t *testing.T) {
+	db := newExecutorTestStore(t)
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_git_smoke", Name: "git-smoke", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := newDirtyGitRepo(t)
+	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
+		ResourceID:          "rsrc_git_smoke",
+		Name:                "dirty smoke",
+		Kind:                store.RunKindSmoke,
+		GPUIndex:            store.GPUIndexNone,
+		Cwd:                 "/workspace/project",
+		Program:             "python",
+		Args:                []string{"smoke.py"},
+		AllowEphemeralPaths: true,
+		GitSourceDir:        repo,
+	}, SubmitOptions{})
+	if err == nil || strings.Contains(err.Error(), "clean Git worktree") {
+		t.Fatalf("dirty smoke should pass git guard and only fail later in launch, got %v", err)
+	}
+	runs, listErr := db.ListRuns(ctx, store.RunFilter{ResourceID: "rsrc_git_smoke"})
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(runs) != 1 || !runs[0].GitDirty || runs[0].GitCommit == "" || runs[0].GitRepoRoot == "" {
+		t.Fatalf("dirty smoke git provenance not recorded: %#v", runs)
+	}
+}
+
+func TestSubmitFormalDirtyOverrideRecordsPatchReference(t *testing.T) {
+	db := newExecutorTestStore(t)
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_git_override", Name: "git-override", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := newDirtyGitRepo(t)
+	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
+		ResourceID:          "rsrc_git_override",
+		Name:                "formal dirty override",
+		Kind:                store.RunKindFormal,
+		GPUIndex:            store.GPUIndexNone,
+		Cwd:                 "/workspace/project",
+		Program:             "python",
+		Args:                []string{"train.py"},
+		AllowEphemeralPaths: true,
+		GitSourceDir:        repo,
+		AllowDirtyGit:       true,
+		RecordGitDiff:       true,
+	}, SubmitOptions{})
+	if err == nil || strings.Contains(err.Error(), "clean Git worktree") {
+		t.Fatalf("dirty override should pass git guard and only fail later in launch, got %v", err)
+	}
+	runs, listErr := db.ListRuns(ctx, store.RunFilter{ResourceID: "rsrc_git_override"})
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %#v, want one created run", runs)
+	}
+	run := runs[0]
+	if !run.GitDirty || !run.GitAllowDirty || run.GitDiffHash == "" || run.GitDiffPath == "" {
+		t.Fatalf("dirty override provenance incomplete: %#v", run)
+	}
+	if _, statErr := os.Stat(run.GitDiffPath); statErr != nil {
+		t.Fatalf("git diff patch not written: %v", statErr)
+	}
+	if !strings.HasPrefix(run.GitDiffPath, filepath.Join(home, ".aexp", "git-diffs")) {
+		t.Fatalf("git diff patch path = %q, want under temp HOME", run.GitDiffPath)
+	}
+}
+
+func newDirtyGitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := osexec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "aexp@example.invalid")
+	runGit(t, dir, "config", "user.name", "AEXP Test")
+	if err := os.WriteFile(filepath.Join(dir, "train.py"), []byte("print('v1')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "train.py")
+	runGit(t, dir, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(dir, "train.py"), []byte("print('dirty')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := osexec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func TestSubmitPreemptRunMustMatchResource(t *testing.T) {
+	db := newExecutorTestStore(t)
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_new", Name: "new", Type: "ssh", Host: "127.0.0.1", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_old", Name: "old", Type: "ssh", Host: "127.0.0.1", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:         "run_old",
+		ResourceID: "rsrc_old",
+		Status:     store.RunStatusRunning,
+		Kind:       store.RunKindFormal,
+		GPUIndex:   0,
+		Command:    "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(NewSSHPool(10*time.Millisecond), db)
+	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
+		ResourceID:          "rsrc_new",
+		Name:                "preempt wrong host",
+		Kind:                store.RunKindFormal,
+		GPUIndex:            0,
+		ForceReason:         "free gpu for formal rerun",
+		PreemptRunID:        "run_old",
+		Cwd:                 "/workspace/project",
+		Program:             "python",
+		Args:                []string{"train.py"},
+		AllowEphemeralPaths: true,
+		RefreshProjectEnv:   false,
+	}, SubmitOptions{})
+	if err == nil || !strings.Contains(err.Error(), "not requested resource") {
+		t.Fatalf("expected preempt resource validation, got %v", err)
+	}
+}
+
 func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 	req := SubmitRequest{
 		Program:      "python",
@@ -124,6 +322,8 @@ func TestBuildCommandScriptInstallsAexpEventsHelper(t *testing.T) {
 		`export PYTHONPATH="$PWD:$AEXP_RUN_DIR${PYTHONPATH:+:$PYTHONPATH}"`,
 		`export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"`,
 		"def metric(name, value, **fields):",
+		"def training_epoch(epoch, total=None, **fields):",
+		"def training_done(epoch=None, total=None, best_epoch=None, early_stopped=False, **fields):",
 		"python 'train.py'",
 	} {
 		if !strings.Contains(script, want) {
@@ -148,6 +348,52 @@ func TestBuildCommandScriptCondaShellModeUsesCondaRun(t *testing.T) {
 	}
 	if !strings.Contains(script, `if ! command -v conda >/dev/null 2>&1; then`) {
 		t.Fatalf("command script missing conda availability check:\n%s", script)
+	}
+}
+
+func TestClassifyRunFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     int
+		stdout   string
+		stderr   string
+		wantKind string
+	}{
+		{
+			name:     "module missing",
+			code:     1,
+			stderr:   "ModuleNotFoundError: No module named 'optuna'",
+			wantKind: store.RunFailureDependencyError,
+		},
+		{
+			name:     "conda mismatch import path",
+			code:     1,
+			stderr:   "ImportError: libxcb.so.1: cannot open shared object file\n  File \"/opt/conda/lib/python3.10/site-packages/cv2/__init__.py\"",
+			wantKind: store.RunFailureEnvMismatch,
+		},
+		{
+			name:     "data missing",
+			code:     1,
+			stderr:   "FileNotFoundError: [Errno 2] No such file or directory: 'dataset/train.csv'",
+			wantKind: store.RunFailureDataMissing,
+		},
+		{
+			name:     "killed 137",
+			code:     137,
+			stderr:   "Killed",
+			wantKind: store.RunFailureKilled137,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotKind, gotReason := classifyRunFailure(tt.code, tt.stdout, tt.stderr)
+			if gotKind != tt.wantKind {
+				t.Fatalf("kind = %q, want %q (reason %q)", gotKind, tt.wantKind, gotReason)
+			}
+			if strings.TrimSpace(gotReason) == "" {
+				t.Fatal("reason is empty")
+			}
+		})
 	}
 }
 
@@ -385,5 +631,45 @@ func TestCancelFinishedRunIsRejected(t *testing.T) {
 	}
 	if got.Status != store.RunStatusSucceeded {
 		t.Fatalf("status changed to %q", got.Status)
+	}
+}
+
+func TestCheckRunStatusDoesNotPersistSSHUnreachableOnProbeFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	db := newExecutorTestStore(t)
+	if err := db.CreateResource(ctx, &store.Resource{
+		ID:      "rsrc_unreachable_probe",
+		Name:    "unreachable-probe-resource",
+		Type:    store.ResourceTypeSSH,
+		Host:    "127.0.0.1",
+		Port:    1,
+		User:    "nobody",
+		RootDir: "/workspace",
+		Status:  store.ResourceStatusIdle,
+	}); err != nil {
+		t.Fatalf("CreateResource: %v", err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{
+		ID:           "run_unreachable_probe",
+		ResourceID:   "rsrc_unreachable_probe",
+		Status:       store.RunStatusRunning,
+		Command:      "python train.py",
+		TmuxSession:  "aexp_run_unreachable_probe",
+		RemoteRunDir: "/workspace/.aexp/runs/run_unreachable_probe",
+	}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	exec := NewExecutor(NewSSHPool(50*time.Millisecond), db)
+	if _, err := exec.CheckRunStatus(ctx, "run_unreachable_probe"); err == nil {
+		t.Fatal("expected probe failure")
+	}
+	got, err := db.GetRun(context.Background(), "run_unreachable_probe")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != store.RunStatusRunning {
+		t.Fatalf("status = %q, want running; transient SSH failure must not overwrite run lifecycle", got.Status)
 	}
 }

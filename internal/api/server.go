@@ -238,7 +238,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resources, _ := s.store.ListResources(ctx)
 	runs, _ := s.store.ListRuns(ctx, store.RunFilter{})
-	runs, _, _ = s.executor.RefreshRuns(ctx, runs, 2*time.Second)
+	if parseBoolQuery(r.URL.Query().Get("refresh")) {
+		runs, _, _ = s.executor.RefreshRuns(ctx, runs, 2*time.Second)
+	}
 
 	running := 0
 	for _, run := range runs {
@@ -719,7 +721,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
 		return
 	}
-	if !isFalseQuery(r.URL.Query().Get("refresh")) {
+	if parseBoolQuery(r.URL.Query().Get("refresh")) {
 		runs, _, _ = s.executor.RefreshRuns(r.Context(), runs, 2*time.Second)
 		if filter.Status != "" {
 			filtered := runs[:0]
@@ -842,7 +844,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found")
 		return
 	}
-	if store.IsRunRefreshableStatus(run.Status) {
+	if parseBoolQuery(r.URL.Query().Get("refresh")) && store.IsRunRefreshableStatus(run.Status) {
 		if refreshed, err := s.executor.CheckRunStatus(r.Context(), id); err == nil && refreshed != nil {
 			run = refreshed
 		}
@@ -930,6 +932,11 @@ func (s *Server) remoteLogFileLines(ctx context.Context, runID string, logPath s
 		return nil, 0, false, fmt.Errorf("resource not found")
 	}
 	isEventLog := isRunUIEventLog(run, logPath)
+	if isEventLog && store.IsRunTerminalStatus(run.Status) {
+		if cached, total, ok := cachedEventLogLines(runID, logPath, limit); ok {
+			return cached, total, false, nil
+		}
+	}
 	if resource.Status == store.ResourceStatusUnreachable {
 		err := fmt.Errorf("resource %s is unreachable; cannot read remote log file %s", resource.Name, logPath)
 		if isEventLog {

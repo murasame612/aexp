@@ -63,10 +63,25 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("runs", "program", "TEXT", "''")
 	addColumn("runs", "args_json", "TEXT", "'[]'")
 	addColumn("runs", "project_env", "TEXT", "''")
+	addColumn("runs", "target_env", "TEXT", "''")
+	addColumn("runs", "force_reason", "TEXT", "''")
+	addColumn("runs", "preempt_run_id", "TEXT", "''")
+	addColumn("runs", "preempt_save", "BOOLEAN NOT NULL", "0")
+	addColumn("runs", "git_repo_root", "TEXT", "''")
+	addColumn("runs", "git_remote_url", "TEXT", "''")
+	addColumn("runs", "git_branch", "TEXT", "''")
+	addColumn("runs", "git_commit", "TEXT", "''")
+	addColumn("runs", "git_dirty", "BOOLEAN NOT NULL", "0")
+	addColumn("runs", "git_status", "TEXT", "''")
+	addColumn("runs", "git_diff_hash", "TEXT", "''")
+	addColumn("runs", "git_diff_path", "TEXT", "''")
+	addColumn("runs", "git_allow_dirty", "BOOLEAN NOT NULL", "0")
 	addColumn("runs", "resolved_env", "TEXT", "''")
 	addColumn("runs", "resolved_python", "TEXT", "''")
 	addColumn("runs", "resolved_cwd", "TEXT", "''")
 	addColumn("runs", "ui_events_path", "TEXT", "''")
+	addColumn("runs", "failure_kind", "TEXT", "''")
+	addColumn("runs", "failure_reason", "TEXT", "''")
 	addColumn("runs", "archived_at", "DATETIME", "NULL")
 	addColumn("runs", "deleted_at", "DATETIME", "NULL")
 	addColumn("resources", "socks_proxy", "TEXT", "''")
@@ -173,11 +188,11 @@ func (s *SQLite) DeleteResource(ctx context.Context, id string) error {
 
 // --- Runs ---
 
-const runColumns = "id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, project_env, resolved_env, resolved_python, resolved_cwd, env_json, log_paths_json, artifact_paths_json, metric_paths_json, ui_events_path, tmux_session, remote_run_dir, exit_code, created_by, created_at, started_at, finished_at, archived_at, deleted_at"
+const runColumns = "id, resource_id, name, status, kind, gpu_index, cwd, command, program, args_json, conda_env, project_env, target_env, force_reason, preempt_run_id, preempt_save, git_repo_root, git_remote_url, git_branch, git_commit, git_dirty, git_status, git_diff_hash, git_diff_path, git_allow_dirty, resolved_env, resolved_python, resolved_cwd, env_json, log_paths_json, artifact_paths_json, metric_paths_json, ui_events_path, tmux_session, remote_run_dir, exit_code, failure_kind, failure_reason, created_by, created_at, started_at, finished_at, archived_at, deleted_at"
 
 func scanRun(r *Run) func(rowScanner) error {
 	return func(row rowScanner) error {
-		return row.Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.ProjectEnv, &r.ResolvedEnv, &r.ResolvedPython, &r.ResolvedCwd, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.UIEventsPath, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.ArchivedAt, &r.DeletedAt)
+		return row.Scan(&r.ID, &r.ResourceID, &r.Name, &r.Status, &r.Kind, &r.GPUIndex, &r.Cwd, &r.Command, &r.Program, &r.ArgsJSON, &r.CondaEnv, &r.ProjectEnv, &r.TargetEnv, &r.ForceReason, &r.PreemptRunID, &r.PreemptSave, &r.GitRepoRoot, &r.GitRemoteURL, &r.GitBranch, &r.GitCommit, &r.GitDirty, &r.GitStatus, &r.GitDiffHash, &r.GitDiffPath, &r.GitAllowDirty, &r.ResolvedEnv, &r.ResolvedPython, &r.ResolvedCwd, &r.EnvJSON, &r.LogPathsJSON, &r.ArtifactPathsJSON, &r.MetricPathsJSON, &r.UIEventsPath, &r.TmuxSession, &r.RemoteRunDir, &r.ExitCode, &r.FailureKind, &r.FailureReason, &r.CreatedBy, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.ArchivedAt, &r.DeletedAt)
 	}
 }
 
@@ -185,8 +200,8 @@ func (s *SQLite) CreateRun(ctx context.Context, r *Run) error {
 	r.CreatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO runs (`+runColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ResourceID, r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.UIEventsPath, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.CreatedAt, r.StartedAt, r.FinishedAt, r.ArchivedAt, r.DeletedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.ResourceID, r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.TargetEnv, r.ForceReason, r.PreemptRunID, r.PreemptSave, r.GitRepoRoot, r.GitRemoteURL, r.GitBranch, r.GitCommit, r.GitDirty, r.GitStatus, r.GitDiffHash, r.GitDiffPath, r.GitAllowDirty, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.UIEventsPath, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.FailureKind, r.FailureReason, r.CreatedBy, r.CreatedAt, r.StartedAt, r.FinishedAt, r.ArchivedAt, r.DeletedAt,
 	)
 	return err
 }
@@ -267,8 +282,8 @@ func runFilterWhere(filter RunFilter) (string, []interface{}) {
 
 func (s *SQLite) UpdateRun(ctx context.Context, r *Run) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET name=?, status=?, kind=?, gpu_index=?, cwd=?, command=?, program=?, args_json=?, conda_env=?, project_env=?, resolved_env=?, resolved_python=?, resolved_cwd=?, env_json=?, log_paths_json=?, artifact_paths_json=?, metric_paths_json=?, ui_events_path=?, tmux_session=?, remote_run_dir=?, exit_code=?, created_by=?, started_at=?, finished_at=? WHERE id=?`,
-		r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.UIEventsPath, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.CreatedBy, r.StartedAt, r.FinishedAt, r.ID,
+		`UPDATE runs SET name=?, status=?, kind=?, gpu_index=?, cwd=?, command=?, program=?, args_json=?, conda_env=?, project_env=?, target_env=?, force_reason=?, preempt_run_id=?, preempt_save=?, git_repo_root=?, git_remote_url=?, git_branch=?, git_commit=?, git_dirty=?, git_status=?, git_diff_hash=?, git_diff_path=?, git_allow_dirty=?, resolved_env=?, resolved_python=?, resolved_cwd=?, env_json=?, log_paths_json=?, artifact_paths_json=?, metric_paths_json=?, ui_events_path=?, tmux_session=?, remote_run_dir=?, exit_code=?, failure_kind=?, failure_reason=?, created_by=?, started_at=?, finished_at=? WHERE id=?`,
+		r.Name, r.Status, r.Kind, r.GPUIndex, r.Cwd, r.Command, r.Program, r.ArgsJSON, r.CondaEnv, r.ProjectEnv, r.TargetEnv, r.ForceReason, r.PreemptRunID, r.PreemptSave, r.GitRepoRoot, r.GitRemoteURL, r.GitBranch, r.GitCommit, r.GitDirty, r.GitStatus, r.GitDiffHash, r.GitDiffPath, r.GitAllowDirty, r.ResolvedEnv, r.ResolvedPython, r.ResolvedCwd, r.EnvJSON, r.LogPathsJSON, r.ArtifactPathsJSON, r.MetricPathsJSON, r.UIEventsPath, r.TmuxSession, r.RemoteRunDir, r.ExitCode, r.FailureKind, r.FailureReason, r.CreatedBy, r.StartedAt, r.FinishedAt, r.ID,
 	)
 	return err
 }
