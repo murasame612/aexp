@@ -72,6 +72,8 @@ import {
   projectEvidenceGroups,
   serializeEvidenceGraph,
   layoutEvidenceGraph,
+  inspectProtocolFrameMigration,
+  convertProtocolToFrame,
   type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
@@ -402,6 +404,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     },
     [boardLabels, detail.data?.status, selectEdge, updateEdgeData]
   );
+  const convertProtocolNodeToFrame = useCallback((nodeId: string) => {
+    const result = convertProtocolToFrame(nodes, edges, nodeId);
+    if (!result.migration.eligible || detail.data?.status === "archived") return;
+    setNodes(result.nodes.map(withNodeHandlers));
+    setEdges(result.edges.map(withEdgeHandlers));
+    markDirty();
+  }, [detail.data?.status, edges, markDirty, nodes, setEdges, setNodes, withEdgeHandlers, withNodeHandlers]);
 
   useEffect(() => {
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, labels: boardLabels } })));
@@ -847,6 +856,12 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const selectedNode = useMemo(
     () => selected?.kind === "node" ? nodes.find((node) => node.id === selected.id) || null : null,
     [nodes, selected]
+  );
+  const selectedProtocolMigration = useMemo(
+    () => selectedNode?.data.type === "protocol"
+      ? inspectProtocolFrameMigration(nodes, edges, selectedNode.id)
+      : null,
+    [edges, nodes, selectedNode]
   );
   const selectedEdge = useMemo(
     () => selected?.kind === "edge" ? edges.find((edge) => edge.id === selected.id) || null : null,
@@ -1709,9 +1724,14 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 memberCount={selectedNode.data.type === "group"
                   ? nodes.filter((node) => node.data.groupId === selectedNode.id).length
                   : 0}
+                protocolMigration={selectedProtocolMigration}
+                migrationMembers={selectedProtocolMigration
+                  ? nodes.filter((node) => selectedProtocolMigration.memberIds.includes(node.id))
+                  : []}
                 onClose={clearSelection}
                 onUpdate={updateNodeData}
                 onToggleGroup={(collapsed) => toggleGroupCollapsed([selectedNode.id], collapsed)}
+                onConvertProtocol={() => convertProtocolNodeToFrame(selectedNode.id)}
               />
             ) : selectedEdge ? (
               <EvidenceEdgeInspector
@@ -1957,16 +1977,22 @@ function EvidenceNodeInspector({
   node,
   groups,
   memberCount,
+  protocolMigration,
+  migrationMembers,
   onClose,
   onUpdate,
-  onToggleGroup
+  onToggleGroup,
+  onConvertProtocol
 }: {
   node: EvidenceFlowNode;
   groups: EvidenceFlowNode[];
   memberCount: number;
+  protocolMigration: ReturnType<typeof inspectProtocolFrameMigration> | null;
+  migrationMembers: EvidenceFlowNode[];
   onClose: () => void;
   onUpdate: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
   onToggleGroup: (collapsed: boolean) => void;
+  onConvertProtocol: () => void;
 }) {
   const data = node.data;
   const regularNodeTypes = evidenceNodeTypes.filter((type) => type !== "group");
@@ -2049,6 +2075,37 @@ function EvidenceNodeInspector({
               {data.collapsed ? "展开集合" : "折叠集合"}
             </button>
           </>
+        ) : data.type === "protocol" && protocolMigration ? (
+          <section className="evidence-protocol-conversion">
+            <div>
+              <span>视觉结构</span>
+              <strong>整理为协议范围</strong>
+              <p>协议会成为带标题的范围框，不再占用普通卡片；以下节点会处在框内。</p>
+            </div>
+            {migrationMembers.length ? (
+              <ul>
+                {migrationMembers.map((member) => <li key={member.id}>{member.data.title || member.id}</li>)}
+              </ul>
+            ) : null}
+            {protocolMigration.blockers.length ? (
+              <div className="evidence-protocol-conversion-blockers">
+                {protocolMigration.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
+              </div>
+            ) : (
+              <p className="evidence-protocol-conversion-note">
+                {protocolMigration.removableEdgeIds.length} 条旧归属线会改为范围成员关系；正式图仍需通过现有审批。
+              </p>
+            )}
+            <button
+              type="button"
+              className="evidence-group-toggle"
+              disabled={readOnly || !protocolMigration.eligible}
+              onClick={onConvertProtocol}
+            >
+              <Network size={14} />
+              转换为协议范围
+            </button>
+          </section>
         ) : groups.length ? (
           <label>
             <span>所属协议集合</span>

@@ -630,6 +630,87 @@ export interface EvidenceGroupDescriptor {
   memberIds: string[];
 }
 
+export interface ProtocolFrameMigration {
+  eligible: boolean;
+  protocolId: string;
+  memberIds: string[];
+  removableEdgeIds: string[];
+  blockers: string[];
+}
+
+export function inspectProtocolFrameMigration(
+  nodes: EvidenceFlowNode[],
+  edges: EvidenceFlowEdge[],
+  protocolId: string
+): ProtocolFrameMigration {
+  const protocol = nodes.find((node) => node.id === protocolId);
+  const blockers: string[] = [];
+  if (!protocol) blockers.push("找不到协议节点");
+  else if (protocol.data.type !== "protocol") blockers.push("只有实验协议节点可以转换为协议范围");
+  else if (protocol.data.groupId) blockers.push("该协议已经属于另一个范围");
+
+  const incident = edges
+    .filter((edge) => edge.source === protocolId || edge.target === protocolId)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (protocol && !incident.length) blockers.push("协议没有可转换的归属关系");
+
+  const memberIds = [...new Set(incident.map((edge) => edge.source === protocolId ? edge.target : edge.source))].sort();
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  for (const edge of incident) {
+    if ((edge.data?.type || "next_step") !== "related_to") {
+      blockers.push(`关系「${text(edge.label) || edge.id}」具有研究语义，不能自动改成范围归属`);
+    }
+  }
+  for (const memberId of memberIds) {
+    const member = nodeById.get(memberId);
+    if (!member) blockers.push(`关系指向不存在的节点 ${memberId}`);
+    else if (member.data.type === "group") blockers.push(`范围 ${member.data.title || memberId} 不能嵌套`);
+    else if (member.data.groupId && member.data.groupId !== protocolId) {
+      blockers.push(`${member.data.title || memberId} 已属于另一个协议范围`);
+    }
+  }
+
+  return {
+    eligible: blockers.length === 0,
+    protocolId,
+    memberIds,
+    removableEdgeIds: incident.map((edge) => edge.id),
+    blockers: [...new Set(blockers)]
+  };
+}
+
+export function convertProtocolToFrame(
+  nodes: EvidenceFlowNode[],
+  edges: EvidenceFlowEdge[],
+  protocolId: string
+): { nodes: EvidenceFlowNode[]; edges: EvidenceFlowEdge[]; migration: ProtocolFrameMigration } {
+  const migration = inspectProtocolFrameMigration(nodes, edges, protocolId);
+  if (!migration.eligible) return { nodes, edges, migration };
+  const members = new Set(migration.memberIds);
+  const removedEdges = new Set(migration.removableEdgeIds);
+  return {
+    nodes: nodes.map((node) => {
+      if (node.id === protocolId) {
+        return {
+          ...node,
+          connectable: false,
+          data: {
+            ...node.data,
+            type: "group",
+            groupKind: "protocol",
+            version: node.data.version || "v1",
+            groupId: undefined
+          }
+        };
+      }
+      if (!members.has(node.id)) return node;
+      return { ...node, data: { ...node.data, groupId: protocolId } };
+    }),
+    edges: edges.filter((edge) => !removedEdges.has(edge.id)),
+    migration
+  };
+}
+
 export interface EvidenceGroupFrameBounds {
   x: number;
   y: number;

@@ -14,6 +14,8 @@ import {
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
   layoutEvidenceGraph,
+  inspectProtocolFrameMigration,
+  convertProtocolToFrame,
   projectEvidenceGroups,
   serializeEvidenceGraph,
   type EvidenceFlowEdge,
@@ -452,6 +454,73 @@ describe("evidenceChain helpers", () => {
     ]);
     expect(withDraft.collapsedGroupIds).toEqual([]);
     expect(withDraft.nodes.map((node) => node.id).sort()).toEqual(["claim", "dataset", "run"]);
+  });
+
+  it("converts membership-only protocol cards into visual protocol frames", () => {
+    const nodes: EvidenceFlowNode[] = [
+      {
+        id: "protocol",
+        type: "evidence",
+        position: { x: 100, y: 100 },
+        data: { type: "protocol", title: "统一验证协议", body: "固定 split 与 seeds", pinned: true }
+      },
+      {
+        id: "g1",
+        type: "evidence",
+        position: { x: 400, y: 100 },
+        data: { type: "plan", title: "G1", body: "" }
+      },
+      {
+        id: "g2",
+        type: "evidence",
+        position: { x: 700, y: 100 },
+        data: { type: "plan", title: "G2", body: "" }
+      }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "member-g1", source: "protocol", target: "g1", label: "统一协议", data: { type: "related_to", rationale: "" } },
+      { id: "member-g2", source: "protocol", target: "g2", label: "消融与负对照", data: { type: "related_to", rationale: "" } }
+    ];
+
+    const result = convertProtocolToFrame(nodes, edges, "protocol");
+    expect(result.migration).toMatchObject({
+      eligible: true,
+      memberIds: ["g1", "g2"],
+      removableEdgeIds: ["member-g1", "member-g2"]
+    });
+    expect(result.nodes.find((node) => node.id === "protocol")).toMatchObject({
+      connectable: false,
+      data: {
+        type: "group",
+        title: "统一验证协议",
+        body: "固定 split 与 seeds",
+        groupKind: "protocol",
+        version: "v1"
+      }
+    });
+    expect(result.nodes.find((node) => node.id === "g1")?.data.groupId).toBe("protocol");
+    expect(result.nodes.find((node) => node.id === "g2")?.data.groupId).toBe("protocol");
+    expect(result.edges).toEqual([]);
+  });
+
+  it("refuses to erase semantic protocol relations or steal grouped members", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "protocol", type: "evidence", position: { x: 0, y: 0 }, data: { type: "protocol", title: "Protocol", body: "" } },
+      { id: "run", type: "evidence", position: { x: 0, y: 0 }, data: { type: "run", title: "Run", body: "", groupId: "other" } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "uses", source: "protocol", target: "run", label: "uses", data: { type: "uses", rationale: "" } }
+    ];
+
+    const inspection = inspectProtocolFrameMigration(nodes, edges, "protocol");
+    expect(inspection.eligible).toBe(false);
+    expect(inspection.blockers).toEqual(expect.arrayContaining([
+      expect.stringContaining("具有研究语义"),
+      expect.stringContaining("已属于另一个协议范围")
+    ]));
+    const result = convertProtocolToFrame(nodes, edges, "protocol");
+    expect(result.nodes).toBe(nodes);
+    expect(result.edges).toBe(edges);
   });
 
   it("lays out protocol groups as bounded subgraphs before the outer evidence flow", () => {
