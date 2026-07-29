@@ -7,20 +7,24 @@ import {
   edgeStyle,
   edgeTypeLabel,
   evidenceAutoHandlePair,
+  evidenceGroupFrameBounds,
   evidenceMapReferenceStatus,
   evidenceMarkerEnd,
   evidenceProposalPreview,
   evidenceWorkspaceProposalPreview,
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
+  isProtocolGroupMemberType,
   layoutEvidenceGraph,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
+  constrainProtocolMemberPosition,
   projectEvidenceGroups,
   serializeEvidenceGraph,
   type EvidenceFlowEdge,
   type EvidenceFlowNode
 } from "./evidenceChain";
+import type { EvidenceNodeType } from "./types";
 
 describe("evidenceChain helpers", () => {
   it("separates layout-only changes from reviewable semantic edits", () => {
@@ -397,7 +401,7 @@ describe("evidenceChain helpers", () => {
     expect(reset.find((node) => node.id === "run-early")!.data.pinned).toBe(false);
   });
 
-  it("projects collapsed protocol groups without changing the stored graph", () => {
+  it("keeps protocol ranges permanently expanded even with legacy collapsed data", () => {
     const nodes: EvidenceFlowNode[] = [
       {
         id: "protocol",
@@ -431,29 +435,50 @@ describe("evidenceChain helpers", () => {
     ];
 
     const projection = projectEvidenceGroups(nodes, edges);
-    expect(projection.nodes.map((node) => node.id).sort()).toEqual(["claim", "protocol"]);
-    expect(projection.hiddenNodeIds).toEqual(["dataset", "run"]);
+    expect(projection.nodes.map((node) => node.id).sort()).toEqual(["claim", "dataset", "run"]);
     expect(projection.internalEdgeCounts).toEqual({ protocol: 1 });
-    expect(projection.edges).toHaveLength(1);
-    expect(projection.edges[0]).toMatchObject({
-      source: "protocol",
-      target: "claim",
-      label: "增强 ×2",
-      data: {
-        projected: true,
-        projectedCount: 2,
-        projectedSourceEdgeIds: ["supports-a", "supports-b"]
-      }
-    });
+    expect(projection.edges).toEqual(edges);
     expect(serializeEvidenceGraph(nodes, edges).nodes).toHaveLength(4);
     expect(serializeEvidenceGraph(nodes, edges).edges).toHaveLength(3);
+  });
 
-    const withDraft = projectEvidenceGroups(nodes, [
-      ...edges,
-      { id: "draft", source: "run", target: "claim", data: { type: "weakens", rationale: "", draft: true } }
-    ]);
-    expect(withDraft.collapsedGroupIds).toEqual([]);
-    expect(withDraft.nodes.map((node) => node.id).sort()).toEqual(["claim", "dataset", "run"]);
+  it("only permits experiment-structure nodes inside protocol ranges", () => {
+    const permitted: EvidenceNodeType[] = ["dataset", "run", "plan", "experiment"];
+    const forbidden: EvidenceNodeType[] = ["group", "protocol", "claim", "issue", "hypothesis", "conclusion", "note", "map_ref"];
+    expect(permitted.every(isProtocolGroupMemberType)).toBe(true);
+    expect(forbidden.some(isProtocolGroupMemberType)).toBe(false);
+  });
+
+  it("clamps protocol members inside the permanent frame", () => {
+    const bounds = { x: 100, y: 200, width: 700, height: 420 };
+    expect(constrainProtocolMemberPosition({ x: -900, y: -900 }, bounds)).toEqual({ x: 114, y: 246 });
+    expect(constrainProtocolMemberPosition({ x: 900, y: 900 }, bounds)).toEqual({ x: 480, y: 468 });
+    expect(constrainProtocolMemberPosition({ x: 300, y: 350 }, bounds)).toEqual({ x: 300, y: 350 });
+  });
+
+  it("keeps a protocol frame's own geometry instead of chasing its members", () => {
+    const group: EvidenceFlowNode = {
+      id: "protocol",
+      type: "evidence",
+      position: { x: 100, y: 200 },
+      width: 720,
+      height: 420,
+      data: { type: "group", title: "Protocol", body: "", groupKind: "protocol" }
+    };
+    const member: EvidenceFlowNode = {
+      id: "run",
+      type: "evidence",
+      position: { x: 180, y: 300 },
+      width: 286,
+      height: 184,
+      data: { type: "run", title: "Run", body: "", groupId: "protocol" }
+    };
+    expect(evidenceGroupFrameBounds({ id: "protocol", group, memberIds: ["run"] }, [group, member])).toEqual({
+      x: 100,
+      y: 200,
+      width: 720,
+      height: 420
+    });
   });
 
   it("converts membership-only protocol cards into visual protocol frames", () => {
@@ -516,7 +541,7 @@ describe("evidenceChain helpers", () => {
     expect(inspection.eligible).toBe(false);
     expect(inspection.blockers).toEqual(expect.arrayContaining([
       expect.stringContaining("具有研究语义"),
-      expect.stringContaining("已属于另一个协议范围")
+      expect.stringContaining("已属于另一个协议容器")
     ]));
     const result = convertProtocolToFrame(nodes, edges, "protocol");
     expect(result.nodes).toBe(nodes);

@@ -118,6 +118,14 @@ func TestValidateEvidenceChainGraphProtocolGroups(t *testing.T) {
 			code: "GROUP_NESTING_NOT_SUPPORTED",
 		},
 		{
+			name: "claim cannot belong to protocol group",
+			graph: EvidenceChainGraph{Nodes: []EvidenceChainNode{
+				{ID: "protocol_group", Type: EvidenceNodeGroup, DataJSON: `{"groupKind":"protocol"}`},
+				{ID: "claim", Type: EvidenceNodeClaim, DataJSON: `{"groupId":"protocol_group"}`},
+			}},
+			code: "GROUP_MEMBER_TYPE_NOT_ALLOWED",
+		},
+		{
 			name: "edge touches group",
 			graph: EvidenceChainGraph{
 				Nodes: []EvidenceChainNode{

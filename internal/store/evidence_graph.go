@@ -222,6 +222,16 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 		if group.Type != EvidenceNodeGroup {
 			return graphValidationError("GROUP_TARGET_INVALID", fmt.Sprintf("node %q groupId %q points to node type %q", nodeID, groupID, group.Type))
 		}
+		groupKind, err := evidenceNodeGroupKind(group.DataJSON)
+		if err != nil {
+			return graphValidationError("INVALID_GROUP_KIND", fmt.Sprintf("group node %q groupKind is invalid: %v", groupID, err))
+		}
+		if groupKind == "protocol" && !validProtocolGroupMemberType(node.Type) {
+			return graphValidationError(
+				"GROUP_MEMBER_TYPE_NOT_ALLOWED",
+				fmt.Sprintf("node %q type %q cannot belong to protocol group %q", nodeID, node.Type, groupID),
+			)
+		}
 	}
 
 	edgeIDs := make(map[string]bool, len(graph.Edges))
@@ -369,6 +379,15 @@ func evidenceNodeGroupKind(raw string) (string, error) {
 		return "", errors.New("must be a string")
 	}
 	return strings.TrimSpace(groupKind), nil
+}
+
+func validProtocolGroupMemberType(nodeType string) bool {
+	switch nodeType {
+	case EvidenceNodeDataset, EvidenceNodeRun, EvidenceNodePlan, EvidenceNodeExperiment:
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidEvidenceEdgeType(t string) bool {

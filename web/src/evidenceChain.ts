@@ -5,6 +5,11 @@ import { runTitle, text } from "./utils";
 
 export const evidenceNodeTypes: EvidenceNodeType[] = ["group", "dataset", "protocol", "claim", "issue", "plan", "hypothesis", "experiment", "conclusion", "note"];
 export const evidenceEdgeTypes: EvidenceEdgeType[] = ["uses", "supports", "weakens", "reveals_issue", "supersedes", "next_step", "related_to", "does_not_prove", "custom"];
+export const protocolGroupMemberTypes: EvidenceNodeType[] = ["dataset", "run", "plan", "experiment"];
+
+export function isProtocolGroupMemberType(type: EvidenceNodeType): boolean {
+  return protocolGroupMemberTypes.includes(type);
+}
 
 export interface EvidenceNodeData extends Record<string, unknown> {
   type: EvidenceNodeType;
@@ -58,11 +63,6 @@ export interface EvidenceEdgeData extends Record<string, unknown> {
   draft?: boolean;
   proposalRunId?: string;
   sourceEdgeId?: string;
-  projected?: boolean;
-  projectedCount?: number;
-  projectedSourceEdgeIds?: string[];
-  collapsedGroupIds?: string[];
-  onExpandGroups?: (groupIds: string[]) => void;
   onSelectEdge?: (edgeId: string) => void;
   onUpdateEdge?: (edgeId: string, patch: { type?: EvidenceEdgeType; label?: string; rationale?: string }) => void;
   labels?: EvidenceBoardLabels;
@@ -223,7 +223,7 @@ export function nodeTypeLabel(type: EvidenceNodeType) {
     case "map_ref":
       return "Topic 引用";
     case "group":
-      return "协议集合";
+      return "协议容器";
   }
 }
 
@@ -340,14 +340,14 @@ export function createTextNode(type: EvidenceNodeType, position: { x: number; y:
     id: `node_${type}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     type: "evidence",
     position,
-    width: 286,
-    height: 184,
+    width: type === "group" ? 720 : 286,
+    height: type === "group" ? 420 : 184,
     data: {
       type,
       title: defaultNodeTitle(type),
       body: "",
       ...(type === "group"
-        ? { groupKind: "protocol" as const, version: "v1", provenanceSummary: "", collapsed: false }
+        ? { groupKind: "protocol" as const, version: "v1", provenanceSummary: "" }
         : {})
     }
   };
@@ -646,7 +646,7 @@ export function inspectProtocolFrameMigration(
   const protocol = nodes.find((node) => node.id === protocolId);
   const blockers: string[] = [];
   if (!protocol) blockers.push("找不到协议节点");
-  else if (protocol.data.type !== "protocol") blockers.push("只有实验协议节点可以转换为协议范围");
+  else if (protocol.data.type !== "protocol") blockers.push("只有实验协议节点可以转换为协议容器");
   else if (protocol.data.groupId) blockers.push("该协议已经属于另一个范围");
 
   const incident = edges
@@ -665,8 +665,9 @@ export function inspectProtocolFrameMigration(
     const member = nodeById.get(memberId);
     if (!member) blockers.push(`关系指向不存在的节点 ${memberId}`);
     else if (member.data.type === "group") blockers.push(`范围 ${member.data.title || memberId} 不能嵌套`);
+    else if (!isProtocolGroupMemberType(member.data.type)) blockers.push(`${member.data.title || memberId} 不是协议容器允许的节点类型`);
     else if (member.data.groupId && member.data.groupId !== protocolId) {
-      blockers.push(`${member.data.title || memberId} 已属于另一个协议范围`);
+      blockers.push(`${member.data.title || memberId} 已属于另一个协议容器`);
     }
   }
 
@@ -688,18 +689,27 @@ export function convertProtocolToFrame(
   if (!migration.eligible) return { nodes, edges, migration };
   const members = new Set(migration.memberIds);
   const removedEdges = new Set(migration.removableEdgeIds);
+  const protocol = nodes.find((node) => node.id === protocolId)!;
+  const frame = evidenceGroupFrameBounds(
+    { id: protocolId, group: protocol, memberIds: migration.memberIds },
+    nodes
+  );
   return {
     nodes: nodes.map((node) => {
       if (node.id === protocolId) {
         return {
           ...node,
+          position: { x: frame.x, y: frame.y },
+          width: frame.width,
+          height: frame.height,
           connectable: false,
           data: {
             ...node.data,
             type: "group",
             groupKind: "protocol",
             version: node.data.version || "v1",
-            groupId: undefined
+            groupId: undefined,
+            collapsed: undefined
           }
         };
       }
@@ -722,8 +732,6 @@ export interface EvidenceGroupProjection {
   nodes: EvidenceFlowNode[];
   edges: EvidenceFlowEdge[];
   groups: EvidenceGroupDescriptor[];
-  hiddenNodeIds: string[];
-  collapsedGroupIds: string[];
   internalEdgeCounts: Record<string, number>;
 }
 
@@ -754,23 +762,33 @@ export function evidenceGroupFrameBounds(
   const members = descriptor.memberIds
     .map((id) => nodeByID.get(id))
     .filter((node): node is EvidenceFlowNode => Boolean(node));
+  const groupLeft = descriptor.group.position.x;
+  const groupTop = descriptor.group.position.y;
+  const groupWidth = Math.max(420, evidenceNodeWidth(descriptor.group));
+  const groupHeight = Math.max(210, evidenceNodeHeight(descriptor.group));
   if (!members.length) {
     return {
-      x: descriptor.group.position.x,
-      y: descriptor.group.position.y,
-      width: 680,
-      height: 250
+      x: groupLeft,
+      y: groupTop,
+      width: groupWidth,
+      height: groupHeight
     };
   }
-  const left = Math.min(...members.map((node) => node.position.x));
-  const top = Math.min(...members.map((node) => node.position.y));
-  const right = Math.max(...members.map((node) => node.position.x + evidenceNodeWidth(node)));
-  const bottom = Math.max(...members.map((node) => node.position.y + evidenceNodeHeight(node)));
+  const left = Math.min(groupLeft, ...members.map((node) => node.position.x - 24));
+  const top = Math.min(groupTop, ...members.map((node) => node.position.y - 68));
+  const right = Math.max(
+    groupLeft + groupWidth,
+    ...members.map((node) => node.position.x + evidenceNodeWidth(node) + 24)
+  );
+  const bottom = Math.max(
+    groupTop + groupHeight,
+    ...members.map((node) => node.position.y + evidenceNodeHeight(node) + 28)
+  );
   return {
-    x: left - 24,
-    y: top - 58,
-    width: Math.max(360, right - left + 48),
-    height: Math.max(210, bottom - top + 82)
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top
   };
 }
 
@@ -781,8 +799,6 @@ export function projectEvidenceGroups(nodes: EvidenceFlowNode[], edges: Evidence
       nodes,
       edges,
       groups,
-      hiddenNodeIds: [],
-      collapsedGroupIds: [],
       internalEdgeCounts: {}
     };
   }
@@ -790,119 +806,34 @@ export function projectEvidenceGroups(nodes: EvidenceFlowNode[], edges: Evidence
   for (const group of groups) {
     for (const memberID of group.memberIds) ownerByMember.set(memberID, group.id);
   }
-  const forceExpanded = new Set<string>();
-  for (const node of nodes) {
-    if (!node.data.draft) continue;
-    const groupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
-    if (groupID) forceExpanded.add(groupID);
-  }
-  for (const edge of edges) {
-    if (!edge.data?.draft) continue;
-    const sourceGroupID = ownerByMember.get(edge.source);
-    const targetGroupID = ownerByMember.get(edge.target);
-    if (sourceGroupID) forceExpanded.add(sourceGroupID);
-    if (targetGroupID) forceExpanded.add(targetGroupID);
-  }
-  const collapsedGroupIDs = groups
-    .filter((group) => group.group.data.collapsed === true && !forceExpanded.has(group.id))
-    .map((group) => group.id)
-    .sort();
-  const collapsed = new Set(collapsedGroupIDs);
-  const hidden = new Set<string>();
-  for (const group of groups) {
-    if (!collapsed.has(group.id)) continue;
-    for (const memberID of group.memberIds) hidden.add(memberID);
-  }
   const internalEdgeCounts: Record<string, number> = {};
-  for (const groupID of collapsedGroupIDs) internalEdgeCounts[groupID] = 0;
-  const projected = new Map<string, EvidenceFlowEdge>();
-  const visibleEdges: EvidenceFlowEdge[] = [];
-  for (const edge of [...edges].sort((left, right) => left.id.localeCompare(right.id))) {
-    const sourceGroupID = hidden.has(edge.source) ? ownerByMember.get(edge.source) : undefined;
-    const targetGroupID = hidden.has(edge.target) ? ownerByMember.get(edge.target) : undefined;
-    const source = sourceGroupID || edge.source;
-    const target = targetGroupID || edge.target;
-    if (source === target) {
-      if (sourceGroupID && sourceGroupID === targetGroupID) {
-        internalEdgeCounts[sourceGroupID] = (internalEdgeCounts[sourceGroupID] || 0) + 1;
-      }
-      continue;
-    }
-    if (!sourceGroupID && !targetGroupID) {
-      visibleEdges.push(edge);
-      continue;
-    }
-    const type = edge.data?.type || "next_step";
-    const draftKey = edge.data?.draft === true ? "draft" : "accepted";
-    const key = `${source}\u0000${target}\u0000${type}\u0000${draftKey}`;
-    const existing = projected.get(key);
-    if (existing) {
-      const sourceIDs = [...(existing.data?.projectedSourceEdgeIds || []), edge.id].sort();
-      const count = sourceIDs.length;
-      projected.set(key, {
-        ...existing,
-        label: `${edgeTypeLabel(type)} ×${count}`,
-        data: {
-          ...existing.data!,
-          projectedCount: count,
-          projectedSourceEdgeIds: sourceIDs
-        }
-      });
-      continue;
-    }
-    const collapsedGroups = [sourceGroupID, targetGroupID].filter((value): value is string => Boolean(value)).sort();
-    projected.set(key, {
-      ...edge,
-      id: `projected:${draftKey}:${source}:${type}:${target}`,
-      source,
-      target,
-      sourceHandle: undefined,
-      targetHandle: undefined,
-      label: edgeTypeLabel(type),
-      selectable: false,
-      deletable: false,
-      data: {
-        ...edge.data,
-        type,
-        rationale: edge.data?.rationale || "",
-        autoHandles: true,
-        projected: true,
-        projectedCount: 1,
-        projectedSourceEdgeIds: [edge.id],
-        collapsedGroupIds: collapsedGroups
-      }
-    });
-  }
-  visibleEdges.push(...[...projected.values()].sort((left, right) => left.id.localeCompare(right.id)));
-  const descriptorByID = new Map(groups.map((group) => [group.id, group]));
-  const externalEdgeCounts: Record<string, number> = {};
-  for (const edge of projected.values()) {
-    for (const groupID of edge.data?.collapsedGroupIds || []) {
-      externalEdgeCounts[groupID] = (externalEdgeCounts[groupID] || 0) + (edge.data?.projectedCount || 1);
+  for (const group of groups) internalEdgeCounts[group.id] = 0;
+  for (const edge of edges) {
+    const sourceGroupID = ownerByMember.get(edge.source);
+    if (sourceGroupID && sourceGroupID === ownerByMember.get(edge.target)) {
+      internalEdgeCounts[sourceGroupID] = (internalEdgeCounts[sourceGroupID] || 0) + 1;
     }
   }
   return {
-    nodes: nodes.flatMap((node) => {
-      if (node.data.type === "group") {
-        if (!collapsed.has(node.id)) return [];
-        const descriptor = descriptorByID.get(node.id);
-        return [{
-          ...node,
-          data: {
-            ...node.data,
-            groupMemberCount: descriptor?.memberIds.length || 0,
-            groupInternalEdgeCount: internalEdgeCounts[node.id] || 0,
-            groupExternalEdgeCount: externalEdgeCounts[node.id] || 0
-          }
-        }];
-      }
-      return hidden.has(node.id) ? [] : [node];
-    }),
-    edges: visibleEdges,
+    nodes: nodes.filter((node) => node.data.type !== "group"),
+    edges,
     groups,
-    hiddenNodeIds: [...hidden].sort(),
-    collapsedGroupIds: collapsedGroupIDs,
     internalEdgeCounts
+  };
+}
+
+export function constrainProtocolMemberPosition(
+  position: { x: number; y: number },
+  bounds: EvidenceGroupFrameBounds,
+  nodeSize = { width: 306, height: 138 }
+): { x: number; y: number } {
+  const minX = bounds.x + 14;
+  const minY = bounds.y + 46;
+  const maxX = Math.max(minX, bounds.x + bounds.width - nodeSize.width - 14);
+  const maxY = Math.max(minY, bounds.y + bounds.height - nodeSize.height - 14);
+  return {
+    x: Math.min(maxX, Math.max(minX, position.x)),
+    y: Math.min(maxY, Math.max(minY, position.y))
   };
 }
 

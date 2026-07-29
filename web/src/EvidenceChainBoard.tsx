@@ -68,12 +68,14 @@ import {
   evidenceNodeTypes,
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
+  isProtocolGroupMemberType,
   nodeTypeLabel,
   projectEvidenceGroups,
   serializeEvidenceGraph,
   layoutEvidenceGraph,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
+  constrainProtocolMemberPosition,
   type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
@@ -166,6 +168,8 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<EvidenceFlowNode>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<EvidenceFlowEdge>([]);
   const dragStartGroupFramesRef = useRef<Array<{ id: string; bounds: EvidenceGroupFrameBounds }>>([]);
+  const [draggingProtocolFrame, setDraggingProtocolFrame] = useState<{ id: string; bounds: EvidenceGroupFrameBounds } | null>(null);
+  const draggingProtocolFrameRef = useRef<{ id: string; bounds: EvidenceGroupFrameBounds } | null>(null);
   const boardLabels = useMemo(
     () => ({
       titlePlaceholder: t("titlePlaceholder"),
@@ -767,7 +771,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     setNodes((current) => {
       if (type !== "group") return [...current, node];
       const selectedMemberIDs = new Set(current
-        .filter((item) => item.selected && item.data.type !== "group" && !item.data.draft)
+        .filter((item) => item.selected && isProtocolGroupMemberType(item.data.type) && !item.data.draft)
         .map((item) => item.id));
       return [
         ...current.map((item) => selectedMemberIDs.has(item.id)
@@ -803,13 +807,14 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   );
   const groupFrames = useMemo(
     () => groupProjection.groups
-      .filter((group) => !groupProjection.collapsedGroupIds.includes(group.id))
       .map((group) => ({
         id: group.id,
         descriptor: group,
-        bounds: evidenceGroupFrameBounds(group, canvasBase.nodes)
+        bounds: draggingProtocolFrame?.id === group.id
+          ? draggingProtocolFrame.bounds
+          : evidenceGroupFrameBounds(group, canvasBase.nodes)
       })),
-    [canvasBase.nodes, groupProjection.collapsedGroupIds, groupProjection.groups]
+    [canvasBase.nodes, draggingProtocolFrame, groupProjection.groups]
   );
   const groupAtPoint = useCallback((
     point: { x: number; y: number },
@@ -823,35 +828,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     ))
     .sort((left, right) => left.bounds.width * left.bounds.height - right.bounds.width * right.bounds.height)[0]?.id || "",
   [groupFrames]);
-  const toggleGroupCollapsed = useCallback((groupIDs: string[], collapsed?: boolean) => {
-    const targetIDs = new Set(groupIDs);
-    setNodes((current) => current.map((node) => {
-      if (!targetIDs.has(node.id) || node.data.type !== "group") return node;
-      const next = collapsed ?? node.data.collapsed !== true;
-      return { ...node, data: { ...node.data, collapsed: next } };
-    }));
-    if (detail.data?.status !== "archived") markDirty();
-    if (collapsed && selected?.kind === "node") {
-      const selectedMember = nodes.find((node) => node.id === selected.id);
-      const ownerID = selectedMember?.data.groupId;
-      if (ownerID && targetIDs.has(ownerID)) setSelected({ kind: "node", id: ownerID });
-    }
-  }, [detail.data?.status, markDirty, nodes, selected, setNodes]);
   const visibleNodes = groupProjection.nodes;
   const visibleEdges = useMemo(
-    () => autoRouteEvidenceEdges(
-      groupProjection.edges.map((edge) => edge.data?.projected
-        ? {
-          ...edge,
-          data: {
-            ...edge.data,
-            onExpandGroups: (groupIDs: string[]) => toggleGroupCollapsed(groupIDs, false)
-          }
-        }
-        : edge),
-      visibleNodes
-    ),
-    [groupProjection.edges, toggleGroupCollapsed, visibleNodes]
+    () => autoRouteEvidenceEdges(groupProjection.edges, visibleNodes),
+    [groupProjection.edges, visibleNodes]
   );
   const selectedNode = useMemo(
     () => selected?.kind === "node" ? nodes.find((node) => node.id === selected.id) || null : null,
@@ -863,6 +843,8 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       : null,
     [edges, nodes, selectedNode]
   );
+  const selectedGroupHasMembers = selectedNode?.data.type === "group"
+    && nodes.some((node) => node.data.groupId === selectedNode.id);
   const selectedEdge = useMemo(
     () => selected?.kind === "edge" ? edges.find((edge) => edge.id === selected.id) || null : null,
     [edges, selected]
@@ -1007,6 +989,8 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     if (!selected || detail.data?.status === "archived") return;
     if (selected.kind === "node") {
       const nodeId = selected.id;
+      const selectedGroup = nodes.find((node) => node.id === nodeId && node.data.type === "group");
+      if (selectedGroup && nodes.some((node) => node.data.groupId === nodeId)) return;
       setNodes((current) => current
         .filter((node) => node.id !== nodeId)
         .map((node) => node.data.groupId === nodeId
@@ -1019,7 +1003,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     }
     setSelected(null);
     markDirty();
-  }, [detail.data?.status, markDirty, selected, setEdges, setNodes]);
+  }, [detail.data?.status, markDirty, nodes, selected, setEdges, setNodes]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1044,11 +1028,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
   };
   const onEdgeClick: EdgeMouseHandler<EvidenceFlowEdge> = (_event, edge) => {
-    if (edge.data?.projected) {
-      edge.data.onExpandGroups?.(edge.data.collapsedGroupIds || []);
-      clearSelection();
-      return;
-    }
     if (edge.data?.draft && edge.data.proposalRunId) {
       setPreviewRunID(edge.data.proposalRunId);
       setRunTrayOpen(false);
@@ -1072,7 +1051,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       x: position.x + compactEvidenceNodeSize.width / 2,
       y: position.y + compactEvidenceNodeSize.height / 2
     });
-    if (groupID) node.data = { ...node.data, groupId: groupID };
+    if (groupID && isProtocolGroupMemberType(node.data.type)) node.data = { ...node.data, groupId: groupID };
     setNodes((current) => [...current, node]);
     setSelected({ kind: "node", id: node.id });
     markDirty();
@@ -1341,7 +1320,8 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 type="button"
                 aria-label={t("deleteElementTitle")}
                 data-label="删除元素"
-                title={t("deleteElementTitle")}
+                title={selectedGroupHasMembers ? "协议容器包含成员，不能直接删除" : t("deleteElementTitle")}
+                disabled={selectedGroupHasMembers}
                 onClick={deleteSelection}
               >
                 <Trash2 size={14} />
@@ -1406,15 +1386,48 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onNodeDoubleClick={onNodeDoubleClick}
-            onNodeDragStart={() => {
+            onNodeDragStart={(_event, node) => {
               dragStartGroupFramesRef.current = groupFrames.map(({ id, bounds }) => ({ id, bounds }));
+              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
+              const frame = currentGroupID
+                ? dragStartGroupFramesRef.current.find((item) => item.id === currentGroupID)
+                : undefined;
+              draggingProtocolFrameRef.current = frame || null;
+              setDraggingProtocolFrame(draggingProtocolFrameRef.current);
+            }}
+            onNodeDrag={(_event, node) => {
+              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
+              const frame = draggingProtocolFrameRef.current;
+              if (!currentGroupID || frame?.id !== currentGroupID) return;
+              const position = constrainProtocolMemberPosition(node.position, frame.bounds);
+              setNodes((current) => current.map((item) => item.id === node.id ? { ...item, position } : item));
             }}
             onNodeDragStop={(_event, node) => {
-              if (node.data.draft) return;
+              if (node.data.draft) {
+                draggingProtocolFrameRef.current = null;
+                setDraggingProtocolFrame(null);
+                return;
+              }
               if (node.data.type === "group") {
                 setNodes((current) => current.map((item) => item.id === node.id
                   ? { ...item, position: node.position, data: { ...item.data, pinned: true } }
                   : item));
+                draggingProtocolFrameRef.current = null;
+                setDraggingProtocolFrame(null);
+                markDirty();
+                return;
+              }
+              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
+              if (currentGroupID) {
+                const frame = dragStartGroupFramesRef.current.find((item) => item.id === currentGroupID);
+                const position = frame
+                  ? constrainProtocolMemberPosition(node.position, frame.bounds)
+                  : node.position;
+                setNodes((current) => current.map((item) => item.id === node.id
+                  ? { ...item, position, data: { ...item.data, pinned: true, groupId: currentGroupID } }
+                  : item));
+                draggingProtocolFrameRef.current = null;
+                setDraggingProtocolFrame(null);
                 markDirty();
                 return;
               }
@@ -1423,7 +1436,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 y: node.position.y + compactEvidenceNodeSize.height / 2
               };
               const targetGroupID = groupAtPoint(center, dragStartGroupFramesRef.current);
-              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
               setNodes((current) => current.map((item) => item.id === node.id
                 ? {
                   ...item,
@@ -1431,10 +1443,12 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                   data: {
                     ...item.data,
                     pinned: true,
-                    groupId: targetGroupID || (currentGroupID ? undefined : item.data.groupId)
+                    groupId: targetGroupID && isProtocolGroupMemberType(item.data.type) ? targetGroupID : undefined
                   }
                 }
                 : item));
+              draggingProtocolFrameRef.current = null;
+              setDraggingProtocolFrame(null);
               markDirty();
             }}
             onPaneClick={clearSelection}
@@ -1464,7 +1478,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                       setNodes((current) => current.map((node) => ({ ...node, selected: node.id === id })));
                       setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
                     }}
-                    onCollapse={() => toggleGroupCollapsed([id], true)}
+                    selected={selected?.kind === "node" && selected.id === id}
                   />
                 );
               })}
@@ -1730,7 +1744,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                   : []}
                 onClose={clearSelection}
                 onUpdate={updateNodeData}
-                onToggleGroup={(collapsed) => toggleGroupCollapsed([selectedNode.id], collapsed)}
                 onConvertProtocol={() => convertProtocolNodeToFrame(selectedNode.id)}
               />
             ) : selectedEdge ? (
@@ -1925,50 +1938,36 @@ function EvidenceGroupFrame({
   bounds,
   internalEdgeCount,
   onSelect,
-  onCollapse
+  selected
 }: {
   descriptor: EvidenceGroupDescriptor;
   bounds: EvidenceGroupFrameBounds;
   internalEdgeCount: number;
   onSelect: () => void;
-  onCollapse: () => void;
+  selected: boolean;
 }) {
   const data = descriptor.group.data;
   return (
     <section
-      className={`evidence-group-frame ${data.draft ? "evidence-group-frame--draft" : ""}`}
+      className={`evidence-group-frame ${data.draft ? "evidence-group-frame--draft" : ""} ${selected ? "is-selected" : ""}`}
       style={{
         transform: `translate(${bounds.x}px, ${bounds.y}px)`,
         width: bounds.width,
         height: bounds.height
       }}
-      aria-label={`${data.title || "协议集合"}，${descriptor.memberIds.length} 个节点`}
+      aria-label={`${data.title || "实验协议"}，${descriptor.memberIds.length} 个节点`}
     >
       <header className="evidence-group-frame-header">
-        <button type="button" className="evidence-group-frame-title nodrag nopan" onClick={onSelect}>
+        <button type="button" className="evidence-group-frame-title nodrag nopan" aria-pressed={selected} onClick={onSelect}>
           <span className="evidence-group-frame-kind">{data.draft ? "Agent 草稿" : "实验协议"}</span>
-          <strong>{data.title || "协议集合"}</strong>
+          <strong>{data.title || "实验协议"}</strong>
           {data.version ? <span className="evidence-group-version">{data.version}</span> : null}
         </button>
         <div className="evidence-group-frame-meta">
-          <span>{descriptor.memberIds.length} 节点</span>
-          {internalEdgeCount ? <span>{internalEdgeCount} 内部关系</span> : null}
-          {!data.draft ? (
-            <button
-              type="button"
-              className="icon-button nodrag nopan"
-              aria-label="折叠集合"
-              title="折叠集合"
-              onClick={(event) => {
-                event.stopPropagation();
-                onCollapse();
-              }}
-            >
-              <ChevronDown size={14} />
-            </button>
-          ) : null}
+          <span>{descriptor.memberIds.length} 节点 · {internalEdgeCount} 内部关系</span>
         </div>
       </header>
+      {!descriptor.memberIds.length ? <p>拖入数据、实验、计划或实验设计节点</p> : null}
     </section>
   );
 }
@@ -1981,7 +1980,6 @@ function EvidenceNodeInspector({
   migrationMembers,
   onClose,
   onUpdate,
-  onToggleGroup,
   onConvertProtocol
 }: {
   node: EvidenceFlowNode;
@@ -1991,12 +1989,13 @@ function EvidenceNodeInspector({
   migrationMembers: EvidenceFlowNode[];
   onClose: () => void;
   onUpdate: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
-  onToggleGroup: (collapsed: boolean) => void;
   onConvertProtocol: () => void;
 }) {
   const data = node.data;
   const regularNodeTypes = evidenceNodeTypes.filter((type) => type !== "group");
-  const typeOptions: EvidenceNodeType[] = data.type === "group"
+  const typeOptions: EvidenceNodeType[] = data.groupId
+    ? regularNodeTypes.filter(isProtocolGroupMemberType)
+    : data.type === "group"
     ? ["group"]
     : data.type === "run"
     ? ["run", ...regularNodeTypes]
@@ -2053,7 +2052,7 @@ function EvidenceNodeInspector({
                 />
               </label>
               <section className="evidence-inspector-section compact">
-                <span>集合成员</span>
+                <span>协议成员</span>
                 <p>{memberCount} 个节点</p>
               </section>
             </div>
@@ -2066,21 +2065,17 @@ function EvidenceNodeInspector({
                 onChange={(event) => onUpdate(node.id, { provenanceSummary: event.target.value })}
               />
             </label>
-            <button
-              type="button"
-              className="evidence-group-toggle"
-              onClick={() => onToggleGroup(data.collapsed !== true)}
-            >
-              {data.collapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              {data.collapsed ? "展开集合" : "折叠集合"}
-            </button>
+            <section className="evidence-inspector-section compact">
+              <span>允许的成员</span>
+              <p>数据版本、实验记录、计划、实验设计</p>
+            </section>
           </>
         ) : data.type === "protocol" && protocolMigration ? (
           <section className="evidence-protocol-conversion">
             <div>
               <span>视觉结构</span>
-              <strong>整理为协议范围</strong>
-              <p>协议会成为带标题的范围框，不再占用普通卡片；以下节点会处在框内。</p>
+              <strong>整理为协议容器</strong>
+              <p>协议会成为永久展开的大框；以下执行结构节点会固定在框内。</p>
             </div>
             {migrationMembers.length ? (
               <ul>
@@ -2103,21 +2098,27 @@ function EvidenceNodeInspector({
               onClick={onConvertProtocol}
             >
               <Network size={14} />
-              转换为协议范围
+              转换为协议容器
             </button>
           </section>
-        ) : groups.length ? (
+        ) : data.groupId ? (
+          <section className="evidence-inspector-section evidence-group-membership-lock">
+            <span>所属实验协议</span>
+            <p>{groups.find((group) => group.id === data.groupId)?.data.title || data.groupId}</p>
+            <small>成员已锁定在协议框内，可以在内部排列和连线，但不能拖出或改到其他协议。</small>
+          </section>
+        ) : groups.length && isProtocolGroupMemberType(data.type) ? (
           <label>
-            <span>所属协议集合</span>
+            <span>所属实验协议</span>
             <select
               disabled={readOnly}
               value={data.groupId || ""}
               onChange={(event) => onUpdate(node.id, { groupId: event.target.value || undefined })}
             >
-              <option value="">不属于集合</option>
+              <option value="">尚未加入实验协议</option>
               {groups.map((group) => (
                 <option key={group.id} value={group.id}>
-                  {group.data.title || "协议集合"}{group.data.version ? ` · ${group.data.version}` : ""}
+                  {group.data.title || "实验协议"}{group.data.version ? ` · ${group.data.version}` : ""}
                 </option>
               ))}
             </select>
@@ -2251,44 +2252,12 @@ function EvidenceEdgeInspector({
   );
 }
 
-function EvidenceNode({ id, data, selected }: NodeProps<EvidenceFlowNode>) {
+function EvidenceNode({ data, selected }: NodeProps<EvidenceFlowNode>) {
   const color = evidenceColor(data.type);
   const summary = text(data.keyMetrics || data.summary || data.body).trim();
   const status = data.type === "map_ref"
     ? data.mapRefStatus === "stale" ? "有更新" : data.mapRefStatus === "archived" ? "已归档" : data.mapRefStatus === "missing" ? "不可用" : "已同步"
     : data.status || data.runKind || "";
-
-  if (data.type === "group") {
-    return (
-      <div
-        className={`evidence-group-chip ${data.draft ? "evidence-group-frame--draft" : ""} ${selected ? "selected" : ""}`}
-        style={{ "--evidence-color": color } as CSSProperties}
-      >
-        <EvidenceNodeHandles />
-        <div className="evidence-node-category">
-          <span><Network size={12} />协议集合</span>
-          {data.version ? <span>{data.version}</span> : null}
-        </div>
-        <h3>{data.title || "协议集合"}</h3>
-        <p>{data.groupMemberCount || 0} 节点 · {data.groupInternalEdgeCount || 0} 内部关系</p>
-        <footer>
-          <span>{data.groupExternalEdgeCount || 0} 条外部关系</span>
-          <button
-            type="button"
-            className="nodrag nopan"
-            aria-label="展开集合"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              data.onUpdateNode?.(id, { collapsed: false });
-            }}
-          >
-            展开 <ChevronRight size={13} />
-          </button>
-        </footer>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -2399,8 +2368,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
         onPointerLeave={() => setHovered(false)}
         onClick={(event) => {
           event.stopPropagation();
-          if (data?.projected) data.onExpandGroups?.(data.collapsedGroupIds || []);
-          else if (!isDraft) data?.onSelectEdge?.(id);
+          if (!isDraft) data?.onSelectEdge?.(id);
         }}
       />
       <EdgeLabelRenderer>
@@ -2414,12 +2382,9 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              if (data?.projected) data.onExpandGroups?.(data.collapsedGroupIds || []);
-              else if (!isDraft) data?.onSelectEdge?.(id);
+              if (!isDraft) data?.onSelectEdge?.(id);
             }}
-            title={data?.projected
-              ? `${data.projectedCount || 1} 条关系折叠显示 · 点击展开集合`
-              : isDraft ? `${edgeTypeLabel(type)} · Agent 草稿` : `${edgeTypeLabel(type)} · 点击查看详情`}
+            title={isDraft ? `${edgeTypeLabel(type)} · Agent 草稿` : `${edgeTypeLabel(type)} · 点击查看详情`}
           >
             {isDraft ? `草稿 · ${displayLabel}` : displayLabel}
           </button>
