@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -131,6 +132,7 @@ func canonicalEvidenceData(raw string) (json.RawMessage, error) {
 		delete(object, "sourceHandle")
 		delete(object, "targetHandle")
 		delete(object, "autoHandles")
+		delete(object, "collapsed")
 	}
 	payload, err := json.Marshal(value)
 	return json.RawMessage(payload), err
@@ -150,6 +152,7 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 	}
 	nodes := make(map[string]EvidenceChainNode, len(graph.Nodes))
 	runNodes := make(map[string]string)
+	groupMembership := make(map[string]string)
 	for i := range graph.Nodes {
 		node := &graph.Nodes[i]
 		node.ID = strings.TrimSpace(node.ID)
@@ -177,6 +180,18 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 			}
 			runNodes[node.RunID] = node.ID
 		}
+		if node.Type == EvidenceNodeGroup && node.RunID != "" {
+			return graphValidationError("GROUP_RUN_ID_FORBIDDEN", fmt.Sprintf("group node %q cannot reference run_id", node.ID))
+		}
+		if node.Type == EvidenceNodeGroup {
+			groupKind, err := evidenceNodeGroupKind(node.DataJSON)
+			if err != nil {
+				return graphValidationError("INVALID_GROUP_KIND", fmt.Sprintf("group node %q groupKind is invalid: %v", node.ID, err))
+			}
+			if groupKind != "protocol" {
+				return graphValidationError("INVALID_GROUP_KIND", fmt.Sprintf("group node %q requires groupKind %q", node.ID, "protocol"))
+			}
+		}
 		if node.Width <= 0 {
 			node.Width = 260
 		}
@@ -186,7 +201,27 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 		if _, _, err := CanonicalEvidenceGraph(EvidenceChainGraph{Nodes: []EvidenceChainNode{*node}}); err != nil {
 			return err
 		}
+		groupID, present, err := evidenceNodeGroupID(node.DataJSON)
+		if err != nil {
+			return graphValidationError("INVALID_GROUP_ID", fmt.Sprintf("node %q groupId is invalid: %v", node.ID, err))
+		}
+		if present {
+			groupMembership[node.ID] = groupID
+		}
 		nodes[node.ID] = *node
+	}
+	for nodeID, groupID := range groupMembership {
+		node := nodes[nodeID]
+		if node.Type == EvidenceNodeGroup {
+			return graphValidationError("GROUP_NESTING_NOT_SUPPORTED", fmt.Sprintf("group node %q cannot belong to another group", nodeID))
+		}
+		group, exists := nodes[groupID]
+		if !exists {
+			return graphValidationError("GROUP_NOT_FOUND", fmt.Sprintf("node %q references missing group %q", nodeID, groupID))
+		}
+		if group.Type != EvidenceNodeGroup {
+			return graphValidationError("GROUP_TARGET_INVALID", fmt.Sprintf("node %q groupId %q points to node type %q", nodeID, groupID, group.Type))
+		}
 	}
 
 	edgeIDs := make(map[string]bool, len(graph.Edges))
@@ -222,6 +257,9 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 		}
 		if !targetOK {
 			return graphValidationError("MISSING_EDGE_TARGET", fmt.Sprintf("edge %q target node %q does not exist", edge.ID, edge.TargetNodeID))
+		}
+		if source.Type == EvidenceNodeGroup || target.Type == EvidenceNodeGroup {
+			return graphValidationError("GROUP_EDGE_NOT_ALLOWED", fmt.Sprintf("edge %q cannot connect directly to a group", edge.ID))
 		}
 		if strictResearchGraph && isSemanticEvidenceEdge(edge.Type) {
 			if edge.SourceNodeID == edge.TargetNodeID {
@@ -287,11 +325,50 @@ func graphValidationError(code, message string) error {
 func ValidEvidenceNodeType(t string) bool {
 	switch t {
 	case EvidenceNodeDataset, EvidenceNodeProtocol, EvidenceNodeRun, EvidenceNodeClaim, EvidenceNodeIssue, EvidenceNodePlan,
-		EvidenceNodeHypothesis, EvidenceNodeExperiment, EvidenceNodeConclusion, EvidenceNodeNote, EvidenceNodeMapRef:
+		EvidenceNodeHypothesis, EvidenceNodeExperiment, EvidenceNodeConclusion, EvidenceNodeNote, EvidenceNodeMapRef, EvidenceNodeGroup:
 		return true
 	default:
 		return false
 	}
+}
+
+func evidenceNodeGroupID(raw string) (string, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return "", false, err
+	}
+	value, exists := data["groupId"]
+	if !exists {
+		return "", false, nil
+	}
+	var groupID string
+	if err := json.Unmarshal(value, &groupID); err != nil {
+		return "", true, errors.New("must be a string")
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return "", true, errors.New("must not be blank")
+	}
+	return groupID, true, nil
+}
+
+func evidenceNodeGroupKind(raw string) (string, error) {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(normalizeEvidenceDataJSON(raw)), &data); err != nil {
+		return "", err
+	}
+	value, exists := data["groupKind"]
+	if !exists {
+		return "", errors.New("is required")
+	}
+	var groupKind string
+	if err := json.Unmarshal(value, &groupKind); err != nil {
+		return "", errors.New("must be a string")
+	}
+	return strings.TrimSpace(groupKind), nil
 }
 
 func ValidEvidenceEdgeType(t string) bool {

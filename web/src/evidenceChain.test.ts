@@ -14,6 +14,7 @@ import {
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
   layoutEvidenceGraph,
+  projectEvidenceGroups,
   serializeEvidenceGraph,
   type EvidenceFlowEdge,
   type EvidenceFlowNode
@@ -31,6 +32,20 @@ describe("evidenceChain helpers", () => {
     expect(buildEvidenceEditPatch("chain", original, semantic)).toMatchObject({
       chain_id: "chain",
       upsert_nodes: [{ id: "claim", title: "Changed claim" }]
+    });
+
+    const collapsed = {
+      nodes: [{ ...layout.nodes[0], data_json: `{"collapsed":true}` }],
+      edges: []
+    };
+    expect(buildEvidenceEditPatch("chain", original, collapsed)).toBeNull();
+    const grouped = {
+      nodes: [{ ...layout.nodes[0], data_json: `{"groupId":"protocol_group"}` }],
+      edges: []
+    };
+    expect(buildEvidenceEditPatch("chain", original, grouped)).toMatchObject({
+      chain_id: "chain",
+      upsert_nodes: [{ id: "claim", data_json: `{"groupId":"protocol_group"}` }]
     });
   });
 
@@ -275,6 +290,51 @@ describe("evidenceChain helpers", () => {
     });
   });
 
+  it("keeps draft protocol membership inside the proposal namespace", () => {
+    const preview = evidenceWorkspaceProposalPreview({
+      id: "proposal_group",
+      project_id: "project_a",
+      target_map_id: "topic_context",
+      base_graph_revision: 0,
+      actor: "agent",
+      summary: "Group comparable evidence",
+      routing_reason: "The topic owns this protocol.",
+      project_level_impact: false,
+      source_run_ids: [],
+      source_snapshot_ids: [],
+      patch_json: JSON.stringify({
+        chain_id: "topic_context",
+        routing_reason: "The topic owns this protocol.",
+        nodes: [
+          {
+            id: "protocol_group",
+            type: "group",
+            title: "Clean-810 protocol",
+            body: "",
+            data_json: `{"groupKind":"protocol","version":"v1"}`
+          },
+          {
+            id: "protocol_issue",
+            type: "issue",
+            title: "Lock split",
+            body: "",
+            data_json: `{"groupId":"protocol_group"}`
+          }
+        ],
+        edges: []
+      }),
+      status: "pending",
+      proposal_hash: "hash",
+      reviewed_by: "",
+      created_at: "2026-07-29T00:00:00Z",
+      updated_at: "2026-07-29T00:00:00Z"
+    });
+
+    expect(preview).not.toBeNull();
+    expect(preview?.nodes.find((node) => node.data.type === "group")?.id).toBe("draft:proposal_group:protocol_group");
+    expect(preview?.nodes.find((node) => node.data.type === "issue")?.data.groupId).toBe("draft:proposal_group:protocol_group");
+  });
+
   it("rejects malformed proposals and never serializes draft overlay elements", () => {
     expect(evidenceProposalPreview({
       id: "card:bad",
@@ -333,6 +393,107 @@ describe("evidenceChain helpers", () => {
     const reset = layoutEvidenceGraph(nodes, edges, true);
     expect(reset.find((node) => node.id === "run-early")!.position).not.toEqual({ x: 777, y: 888 });
     expect(reset.find((node) => node.id === "run-early")!.data.pinned).toBe(false);
+  });
+
+  it("projects collapsed protocol groups without changing the stored graph", () => {
+    const nodes: EvidenceFlowNode[] = [
+      {
+        id: "protocol",
+        type: "evidence",
+        position: { x: 80, y: 80 },
+        data: { type: "group", title: "Clean-810 protocol", body: "", collapsed: true, groupKind: "protocol" }
+      },
+      {
+        id: "dataset",
+        type: "evidence",
+        position: { x: 120, y: 150 },
+        data: { type: "dataset", title: "Dataset", body: "", groupId: "protocol" }
+      },
+      {
+        id: "run",
+        type: "evidence",
+        position: { x: 460, y: 150 },
+        data: { type: "run", title: "Run", body: "", groupId: "protocol" }
+      },
+      {
+        id: "claim",
+        type: "evidence",
+        position: { x: 900, y: 150 },
+        data: { type: "claim", title: "Claim", body: "" }
+      }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "inside", source: "dataset", target: "run", data: { type: "uses", rationale: "" } },
+      { id: "supports-a", source: "dataset", target: "claim", data: { type: "supports", rationale: "" } },
+      { id: "supports-b", source: "run", target: "claim", data: { type: "supports", rationale: "" } }
+    ];
+
+    const projection = projectEvidenceGroups(nodes, edges);
+    expect(projection.nodes.map((node) => node.id).sort()).toEqual(["claim", "protocol"]);
+    expect(projection.hiddenNodeIds).toEqual(["dataset", "run"]);
+    expect(projection.internalEdgeCounts).toEqual({ protocol: 1 });
+    expect(projection.edges).toHaveLength(1);
+    expect(projection.edges[0]).toMatchObject({
+      source: "protocol",
+      target: "claim",
+      label: "增强 ×2",
+      data: {
+        projected: true,
+        projectedCount: 2,
+        projectedSourceEdgeIds: ["supports-a", "supports-b"]
+      }
+    });
+    expect(serializeEvidenceGraph(nodes, edges).nodes).toHaveLength(4);
+    expect(serializeEvidenceGraph(nodes, edges).edges).toHaveLength(3);
+
+    const withDraft = projectEvidenceGroups(nodes, [
+      ...edges,
+      { id: "draft", source: "run", target: "claim", data: { type: "weakens", rationale: "", draft: true } }
+    ]);
+    expect(withDraft.collapsedGroupIds).toEqual([]);
+    expect(withDraft.nodes.map((node) => node.id).sort()).toEqual(["claim", "dataset", "run"]);
+  });
+
+  it("lays out protocol groups as bounded subgraphs before the outer evidence flow", () => {
+    const nodes: EvidenceFlowNode[] = [
+      {
+        id: "protocol",
+        type: "evidence",
+        position: { x: 0, y: 0 },
+        data: { type: "group", title: "Protocol", body: "", groupKind: "protocol" }
+      },
+      {
+        id: "dataset",
+        type: "evidence",
+        position: { x: 0, y: 0 },
+        data: { type: "dataset", title: "Dataset", body: "", groupId: "protocol" }
+      },
+      {
+        id: "run",
+        type: "evidence",
+        position: { x: 0, y: 0 },
+        data: { type: "run", title: "Run", body: "", groupId: "protocol" }
+      },
+      {
+        id: "claim",
+        type: "evidence",
+        position: { x: 0, y: 0 },
+        data: { type: "claim", title: "Claim", body: "" }
+      }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "uses", source: "dataset", target: "run", data: { type: "uses", rationale: "" } },
+      { id: "supports", source: "run", target: "claim", data: { type: "supports", rationale: "" } }
+    ];
+
+    const first = layoutEvidenceGraph(nodes, edges, true);
+    const second = layoutEvidenceGraph([...nodes].reverse(), [...edges].reverse(), true);
+    const positions = (rows: EvidenceFlowNode[]) => Object.fromEntries(rows.map((node) => [node.id, node.position]));
+    expect(positions(second)).toEqual(positions(first));
+    const laidOut = positions(first);
+    expect(laidOut.dataset.x).toBeLessThan(laidOut.run.x);
+    expect(laidOut.dataset.x).toBeGreaterThanOrEqual(laidOut.protocol.x);
+    expect(laidOut.run.x).toBeLessThan(laidOut.claim.x);
   });
 
   it("orders adjacent ranks by their neighbours to remove avoidable crossings", () => {

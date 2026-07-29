@@ -1507,6 +1507,7 @@ const (
 	EvidenceNodeConclusion = "conclusion"
 	EvidenceNodeNote       = "note"
 	EvidenceNodeMapRef     = "map_ref"
+	EvidenceNodeGroup      = "group"
 )
 
 // Evidence Chain edge type constants.

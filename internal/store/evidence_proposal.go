@@ -97,12 +97,20 @@ func (s *SQLite) SubmitEvidenceGraphProposal(ctx context.Context, card *ProjectR
 		patch.Nodes[i].X = 0
 		patch.Nodes[i].Y = 0
 		patch.Nodes[i].Pinned = false
+		patch.Nodes[i].DataJSON, err = stripEvidenceProposalLayoutData(patch.Nodes[i].DataJSON)
+		if err != nil {
+			return nil, graphValidationError("INVALID_NODE_DATA", fmt.Sprintf("node %q data_json is invalid: %v", patch.Nodes[i].ID, err))
+		}
 	}
 	for i := range patch.UpsertNodes {
 		patch.UpsertNodes[i].ChainID = patch.ChainID
 		patch.UpsertNodes[i].X = 0
 		patch.UpsertNodes[i].Y = 0
 		patch.UpsertNodes[i].Pinned = false
+		patch.UpsertNodes[i].DataJSON, err = stripEvidenceProposalLayoutData(patch.UpsertNodes[i].DataJSON)
+		if err != nil {
+			return nil, graphValidationError("INVALID_NODE_DATA", fmt.Sprintf("node %q data_json is invalid: %v", patch.UpsertNodes[i].ID, err))
+		}
 	}
 	for i := range patch.Edges {
 		patch.Edges[i].ChainID = patch.ChainID
@@ -318,6 +326,7 @@ func mergeEvidenceGraph(current EvidenceChainGraph, patch EvidenceGraphPatch) Ev
 			// save explicitly changes it.
 			node.X, node.Y = merged.Nodes[index].X, merged.Nodes[index].Y
 			node.Width, node.Height, node.Pinned = merged.Nodes[index].Width, merged.Nodes[index].Height, merged.Nodes[index].Pinned
+			node.DataJSON = preserveEvidenceNodeLayoutData(merged.Nodes[index].DataJSON, node.DataJSON)
 			merged.Nodes[index] = node
 		} else {
 			nodeIndex[node.ID] = len(merged.Nodes)
@@ -342,6 +351,50 @@ func mergeEvidenceGraph(current EvidenceChainGraph, patch EvidenceGraphPatch) Ev
 		}
 	}
 	return merged
+}
+
+func stripEvidenceProposalLayoutData(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "{}", nil
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return "", err
+	}
+	delete(data, "collapsed")
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func preserveEvidenceNodeLayoutData(currentRaw, proposedRaw string) string {
+	var current map[string]interface{}
+	var proposed map[string]interface{}
+	if json.Unmarshal([]byte(normalizeEvidenceDataJSON(currentRaw)), &current) != nil {
+		return proposedRaw
+	}
+	if json.Unmarshal([]byte(normalizeEvidenceDataJSON(proposedRaw)), &proposed) != nil {
+		return proposedRaw
+	}
+	if collapsed, exists := current["collapsed"]; exists {
+		proposed["collapsed"] = collapsed
+	} else {
+		delete(proposed, "collapsed")
+	}
+	payload, err := json.Marshal(proposed)
+	if err != nil {
+		return proposedRaw
+	}
+	return string(payload)
+}
+
+func normalizeEvidenceDataJSON(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return "{}"
+	}
+	return raw
 }
 
 func blockerFromError(err error) EvidenceGraphBlocker {

@@ -634,7 +634,7 @@ export interface ExperimentMatrixDetail extends ExperimentMatrix {
   cells: ExperimentMatrixCell[];
 }
 
-export type EvidenceNodeType = "dataset" | "protocol" | "run" | "claim" | "issue" | "plan" | "hypothesis" | "experiment" | "conclusion" | "note" | "map_ref";
+export type EvidenceNodeType = "dataset" | "protocol" | "run" | "claim" | "issue" | "plan" | "hypothesis" | "experiment" | "conclusion" | "note" | "map_ref" | "group";
 export type EvidenceEdgeType = "uses" | "supports" | "weakens" | "reveals_issue" | "supersedes" | "next_step" | "related_to" | "does_not_prove" | "custom";
 
 export interface EvidenceGraphRoutingHints {

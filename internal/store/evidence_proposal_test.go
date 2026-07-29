@@ -8,6 +8,37 @@ import (
 	"time"
 )
 
+func TestMergeEvidenceGraphPreservesGroupCollapseLayout(t *testing.T) {
+	current := EvidenceChainGraph{Nodes: []EvidenceChainNode{{
+		ID:       "protocol_group",
+		Type:     EvidenceNodeGroup,
+		Title:    "Old title",
+		DataJSON: `{"collapsed":true,"groupKind":"protocol","version":"v1"}`,
+	}}}
+	patch := EvidenceGraphPatch{UpsertNodes: []EvidenceChainNode{{
+		ID:       "protocol_group",
+		Type:     EvidenceNodeGroup,
+		Title:    "New title",
+		DataJSON: `{"collapsed":false,"groupKind":"protocol","version":"v2"}`,
+	}}}
+	cleaned, err := stripEvidenceProposalLayoutData(patch.UpsertNodes[0].DataJSON)
+	if err != nil {
+		t.Fatalf("stripEvidenceProposalLayoutData: %v", err)
+	}
+	patch.UpsertNodes[0].DataJSON = cleaned
+	merged := mergeEvidenceGraph(current, patch)
+	if len(merged.Nodes) != 1 || merged.Nodes[0].Title != "New title" {
+		t.Fatalf("merged graph = %#v", merged)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(merged.Nodes[0].DataJSON), &data); err != nil {
+		t.Fatalf("merged data_json: %v", err)
+	}
+	if data["collapsed"] != true || data["version"] != "v2" || data["groupKind"] != "protocol" {
+		t.Fatalf("merged data = %#v", data)
+	}
+}
+
 func TestEvidenceGraphProposalAutoResolvesProjectPrimaryMap(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

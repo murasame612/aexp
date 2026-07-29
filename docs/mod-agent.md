@@ -72,6 +72,45 @@ aexp mcp uninstall --target all
 - `aexp_sync_remote_pull`
 - `aexp_cli`（通用 CLI 兼容口，允许修改类命令；不允许手写 `event` telemetry）
 
+### Evidence Proposal 中的协议集合
+
+Evidence Map 区分三种东西：
+
+- `group`：协议集合，只负责把同一实验协议下的数据、Run、假设和结论收在一起；
+- 普通节点：真实研究对象，例如 dataset、run、claim、issue 和 plan；
+- 边：普通节点之间的研究关系，不承担“属于集合”的语义。
+
+Agent 通过 `aexp_create_evidence_proposal.patch_json` 创建协议集合。集合本身使用
+`type: "group"`，成员在各自的 `data_json.groupId` 中引用集合 ID：
+
+```json
+{
+  "nodes": [
+    {
+      "id": "protocol_clean810",
+      "type": "group",
+      "title": "Clean-810 matched protocol",
+      "data_json": "{\"groupKind\":\"protocol\",\"version\":\"v1\",\"provenanceSummary\":\"good810 + fixed split + seeds 41/42/43\"}"
+    },
+    {
+      "id": "run_vis_baseline",
+      "type": "run",
+      "run_id": "run_...",
+      "data_json": "{\"groupId\":\"protocol_clean810\"}"
+    }
+  ],
+  "edges": []
+}
+```
+
+V1 约束：
+
+- 一个节点最多属于一个集合；
+- 集合不能嵌套；
+- 边不能直接连接集合，协议替换、增强、削弱等关系仍应连接真实节点；
+- `groupId` 是需要审核的研究语义；
+- `collapsed` 是前端临时视图状态，Agent 不应提交，折叠后的聚合边也不会写回图谱。
+
 下面的 `list_resources/create_run/...` 是目标语义草案；当前实现使用上面的 `aexp_*`
 名称，以避免和其他 MCP server 的通用工具名冲突。正常 agent 流程不应该退回裸 CLI；
 `aexp_cli` 只作为兼容口。它允许 `run cancel`、`run submit`、`sync push`、

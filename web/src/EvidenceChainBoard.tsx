@@ -11,6 +11,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  ViewportPortal,
   getSmoothStepPath,
   useEdgesState,
   useNodesState,
@@ -59,6 +60,7 @@ import {
   evidenceProposalPreview,
   evidenceWorkspaceProposalPreview,
   evidenceAutoHandlePair,
+  evidenceGroupFrameBounds,
   evidenceMarkerEnd,
   edgeStyle,
   edgeTypeLabel,
@@ -67,12 +69,15 @@ import {
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
   nodeTypeLabel,
+  projectEvidenceGroups,
   serializeEvidenceGraph,
   layoutEvidenceGraph,
   type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
   type EvidenceHandleSide,
+  type EvidenceGroupDescriptor,
+  type EvidenceGroupFrameBounds,
   type EvidenceNodeData
 } from "./evidenceChain";
 import type { I18nKey } from "./i18n";
@@ -158,6 +163,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const [chainMetaComposing, setChainMetaComposing] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<EvidenceFlowNode>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<EvidenceFlowEdge>([]);
+  const dragStartGroupFramesRef = useRef<Array<{ id: string; bounds: EvidenceGroupFrameBounds }>>([]);
   const boardLabels = useMemo(
     () => ({
       titlePlaceholder: t("titlePlaceholder"),
@@ -312,9 +318,9 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const updateNodeData = useCallback(
     (nodeId: string, patch: Partial<EvidenceNodeData>) => {
       setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node)));
-      markDirty();
+      if (detail.data?.status !== "archived") markDirty();
     },
-    [markDirty, setNodes]
+    [detail.data?.status, markDirty, setNodes]
   );
 
   const updateEdgeData = useCallback(
@@ -359,6 +365,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     const mapRefStatus = evidenceMapReferenceStatus(node.data, referencedMap);
     return {
       ...node,
+      connectable: node.data.type !== "group" && node.connectable !== false,
       width: compactEvidenceNodeSize.width,
       height: compactEvidenceNodeSize.height,
       style: { ...node.style, ...compactEvidenceNodeSize },
@@ -748,7 +755,18 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
 
   const addTextNode = (type: EvidenceNodeType) => {
     const node = withNodeHandlers(createTextNode(type, flow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })));
-    setNodes((current) => [...current, node]);
+    setNodes((current) => {
+      if (type !== "group") return [...current, node];
+      const selectedMemberIDs = new Set(current
+        .filter((item) => item.selected && item.data.type !== "group" && !item.data.draft)
+        .map((item) => item.id));
+      return [
+        ...current.map((item) => selectedMemberIDs.has(item.id)
+          ? { ...item, data: { ...item.data, groupId: node.id } }
+          : item),
+        node
+      ];
+    });
     setSelected({ kind: "node", id: node.id });
     setNodeMenuOpen(false);
     markDirty();
@@ -762,20 +780,69 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
 
   const nodeTypes = useMemo(() => ({ evidence: EvidenceNode }), []);
   const edgeTypes = useMemo(() => ({ evidence: EvidenceEdge }), []);
-  const visibleNodes = useMemo(() => {
-    if (!activeCanvasPreview) return nodes;
+  const canvasBase = useMemo(() => {
+    if (!activeCanvasPreview) return { nodes, edges };
     const acceptedPinned = nodes.map((node) => ({ ...node, data: { ...node.data, pinned: true } }));
     const mergedEdges = [...edges, ...activeCanvasPreview.preview.edges];
     const laidOut = layoutEvidenceGraph([...acceptedPinned, ...activeCanvasPreview.preview.nodes], mergedEdges);
     const draftNodes = laidOut.filter((node) => node.data.draft === true).map(withNodeHandlers);
-    return [...nodes, ...draftNodes];
+    return { nodes: [...nodes, ...draftNodes], edges: mergedEdges };
   }, [activeCanvasPreview, edges, nodes, withNodeHandlers]);
+  const groupProjection = useMemo(
+    () => projectEvidenceGroups(canvasBase.nodes, canvasBase.edges),
+    [canvasBase]
+  );
+  const groupFrames = useMemo(
+    () => groupProjection.groups
+      .filter((group) => !groupProjection.collapsedGroupIds.includes(group.id))
+      .map((group) => ({
+        id: group.id,
+        descriptor: group,
+        bounds: evidenceGroupFrameBounds(group, canvasBase.nodes)
+      })),
+    [canvasBase.nodes, groupProjection.collapsedGroupIds, groupProjection.groups]
+  );
+  const groupAtPoint = useCallback((
+    point: { x: number; y: number },
+    frames: Array<{ id: string; bounds: EvidenceGroupFrameBounds }> = groupFrames
+  ) => frames
+    .filter(({ bounds }) => (
+      point.x >= bounds.x
+      && point.x <= bounds.x + bounds.width
+      && point.y >= bounds.y
+      && point.y <= bounds.y + bounds.height
+    ))
+    .sort((left, right) => left.bounds.width * left.bounds.height - right.bounds.width * right.bounds.height)[0]?.id || "",
+  [groupFrames]);
+  const toggleGroupCollapsed = useCallback((groupIDs: string[], collapsed?: boolean) => {
+    const targetIDs = new Set(groupIDs);
+    setNodes((current) => current.map((node) => {
+      if (!targetIDs.has(node.id) || node.data.type !== "group") return node;
+      const next = collapsed ?? node.data.collapsed !== true;
+      return { ...node, data: { ...node.data, collapsed: next } };
+    }));
+    if (detail.data?.status !== "archived") markDirty();
+    if (collapsed && selected?.kind === "node") {
+      const selectedMember = nodes.find((node) => node.id === selected.id);
+      const ownerID = selectedMember?.data.groupId;
+      if (ownerID && targetIDs.has(ownerID)) setSelected({ kind: "node", id: ownerID });
+    }
+  }, [detail.data?.status, markDirty, nodes, selected, setNodes]);
+  const visibleNodes = groupProjection.nodes;
   const visibleEdges = useMemo(
     () => autoRouteEvidenceEdges(
-      activeCanvasPreview ? [...edges, ...activeCanvasPreview.preview.edges] : edges,
+      groupProjection.edges.map((edge) => edge.data?.projected
+        ? {
+          ...edge,
+          data: {
+            ...edge.data,
+            onExpandGroups: (groupIDs: string[]) => toggleGroupCollapsed(groupIDs, false)
+          }
+        }
+        : edge),
       visibleNodes
     ),
-    [activeCanvasPreview, edges, visibleNodes]
+    [groupProjection.edges, toggleGroupCollapsed, visibleNodes]
   );
   const selectedNode = useMemo(
     () => selected?.kind === "node" ? nodes.find((node) => node.id === selected.id) || null : null,
@@ -894,6 +961,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       const id = `edge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
       const sourceType = nodes.find((node) => node.id === connection.source)?.data.type || "note";
       const targetType = nodes.find((node) => node.id === connection.target)?.data.type || "note";
+      if (sourceType === "group" || targetType === "group") return;
       const type: EvidenceEdgeType = defaultEvidenceRelation(sourceType, targetType);
       const hasManualHandles = Boolean(connection.sourceHandle && connection.targetHandle);
       setEdges((current) =>
@@ -924,7 +992,11 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     if (!selected || detail.data?.status === "archived") return;
     if (selected.kind === "node") {
       const nodeId = selected.id;
-      setNodes((current) => current.filter((node) => node.id !== nodeId));
+      setNodes((current) => current
+        .filter((node) => node.id !== nodeId)
+        .map((node) => node.data.groupId === nodeId
+          ? { ...node, data: { ...node.data, groupId: undefined } }
+          : node));
       setEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
     } else {
       const edgeId = selected.id;
@@ -957,6 +1029,11 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
   };
   const onEdgeClick: EdgeMouseHandler<EvidenceFlowEdge> = (_event, edge) => {
+    if (edge.data?.projected) {
+      edge.data.onExpandGroups?.(edge.data.collapsedGroupIds || []);
+      clearSelection();
+      return;
+    }
     if (edge.data?.draft && edge.data.proposalRunId) {
       setPreviewRunID(edge.data.proposalRunId);
       setRunTrayOpen(false);
@@ -974,7 +1051,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     const raw = event.dataTransfer.getData(candidateMime);
     if (!raw) return;
     const candidate = JSON.parse(raw) as EvidenceChainRunCandidate;
-    const node = withNodeHandlers(candidateToNode(candidate, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })));
+    const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const node = withNodeHandlers(candidateToNode(candidate, position));
+    const groupID = groupAtPoint({
+      x: position.x + compactEvidenceNodeSize.width / 2,
+      y: position.y + compactEvidenceNodeSize.height / 2
+    });
+    if (groupID) node.data = { ...node.data, groupId: groupID };
     setNodes((current) => [...current, node]);
     setSelected({ kind: "node", id: node.id });
     markDirty();
@@ -1308,9 +1391,35 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onNodeDoubleClick={onNodeDoubleClick}
+            onNodeDragStart={() => {
+              dragStartGroupFramesRef.current = groupFrames.map(({ id, bounds }) => ({ id, bounds }));
+            }}
             onNodeDragStop={(_event, node) => {
               if (node.data.draft) return;
-              setNodes((current) => current.map((item) => item.id === node.id ? { ...item, data: { ...item.data, pinned: true } } : item));
+              if (node.data.type === "group") {
+                setNodes((current) => current.map((item) => item.id === node.id
+                  ? { ...item, position: node.position, data: { ...item.data, pinned: true } }
+                  : item));
+                markDirty();
+                return;
+              }
+              const center = {
+                x: node.position.x + compactEvidenceNodeSize.width / 2,
+                y: node.position.y + compactEvidenceNodeSize.height / 2
+              };
+              const targetGroupID = groupAtPoint(center, dragStartGroupFramesRef.current);
+              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
+              setNodes((current) => current.map((item) => item.id === node.id
+                ? {
+                  ...item,
+                  position: node.position,
+                  data: {
+                    ...item.data,
+                    pinned: true,
+                    groupId: targetGroupID || (currentGroupID ? undefined : item.data.groupId)
+                  }
+                }
+                : item));
               markDirty();
             }}
             onPaneClick={clearSelection}
@@ -1320,6 +1429,31 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             fitView
           >
             <Background gap={24} color="#dce2e8" />
+            <ViewportPortal>
+              {groupFrames.map(({ id, descriptor, bounds }) => {
+                const memberIDs = new Set(descriptor.memberIds);
+                const internalEdges = canvasBase.edges.filter((edge) => memberIDs.has(edge.source) && memberIDs.has(edge.target)).length;
+                return (
+                  <EvidenceGroupFrame
+                    key={id}
+                    descriptor={descriptor}
+                    bounds={bounds}
+                    internalEdgeCount={internalEdges}
+                    onSelect={() => {
+                      if (descriptor.group.data.draft && descriptor.group.data.proposalRunId) {
+                        setPreviewRunID(descriptor.group.data.proposalRunId);
+                        clearSelection();
+                        return;
+                      }
+                      setSelected({ kind: "node", id });
+                      setNodes((current) => current.map((node) => ({ ...node, selected: node.id === id })));
+                      setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+                    }}
+                    onCollapse={() => toggleGroupCollapsed([id], true)}
+                  />
+                );
+              })}
+            </ViewportPortal>
             <Controls />
             <MiniMap pannable zoomable />
           </ReactFlow>
@@ -1571,8 +1705,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
               <EvidenceNodeInspector
                 key={selectedNode.id}
                 node={selectedNode}
+                groups={nodes.filter((node) => node.data.type === "group" && !node.data.draft)}
+                memberCount={selectedNode.data.type === "group"
+                  ? nodes.filter((node) => node.data.groupId === selectedNode.id).length
+                  : 0}
                 onClose={clearSelection}
                 onUpdate={updateNodeData}
+                onToggleGroup={(collapsed) => toggleGroupCollapsed([selectedNode.id], collapsed)}
               />
             ) : selectedEdge ? (
               <EvidenceEdgeInspector
@@ -1761,21 +1900,83 @@ function CandidateItem({ candidate, activePreview, onPreviewProposal }: { candid
   );
 }
 
+function EvidenceGroupFrame({
+  descriptor,
+  bounds,
+  internalEdgeCount,
+  onSelect,
+  onCollapse
+}: {
+  descriptor: EvidenceGroupDescriptor;
+  bounds: EvidenceGroupFrameBounds;
+  internalEdgeCount: number;
+  onSelect: () => void;
+  onCollapse: () => void;
+}) {
+  const data = descriptor.group.data;
+  return (
+    <section
+      className={`evidence-group-frame ${data.draft ? "evidence-group-frame--draft" : ""}`}
+      style={{
+        transform: `translate(${bounds.x}px, ${bounds.y}px)`,
+        width: bounds.width,
+        height: bounds.height
+      }}
+      aria-label={`${data.title || "协议集合"}，${descriptor.memberIds.length} 个节点`}
+    >
+      <header className="evidence-group-frame-header">
+        <button type="button" className="evidence-group-frame-title nodrag nopan" onClick={onSelect}>
+          <span className="evidence-group-frame-kind">{data.draft ? "Agent 草稿" : "实验协议"}</span>
+          <strong>{data.title || "协议集合"}</strong>
+          {data.version ? <span className="evidence-group-version">{data.version}</span> : null}
+        </button>
+        <div className="evidence-group-frame-meta">
+          <span>{descriptor.memberIds.length} 节点</span>
+          {internalEdgeCount ? <span>{internalEdgeCount} 内部关系</span> : null}
+          {!data.draft ? (
+            <button
+              type="button"
+              className="icon-button nodrag nopan"
+              aria-label="折叠集合"
+              title="折叠集合"
+              onClick={(event) => {
+                event.stopPropagation();
+                onCollapse();
+              }}
+            >
+              <ChevronDown size={14} />
+            </button>
+          ) : null}
+        </div>
+      </header>
+    </section>
+  );
+}
+
 function EvidenceNodeInspector({
   node,
+  groups,
+  memberCount,
   onClose,
-  onUpdate
+  onUpdate,
+  onToggleGroup
 }: {
   node: EvidenceFlowNode;
+  groups: EvidenceFlowNode[];
+  memberCount: number;
   onClose: () => void;
   onUpdate: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
+  onToggleGroup: (collapsed: boolean) => void;
 }) {
   const data = node.data;
-  const typeOptions: EvidenceNodeType[] = data.type === "run"
-    ? ["run", ...evidenceNodeTypes]
+  const regularNodeTypes = evidenceNodeTypes.filter((type) => type !== "group");
+  const typeOptions: EvidenceNodeType[] = data.type === "group"
+    ? ["group"]
+    : data.type === "run"
+    ? ["run", ...regularNodeTypes]
     : data.type === "map_ref"
       ? ["map_ref"]
-      : evidenceNodeTypes;
+      : regularNodeTypes;
   const readOnly = data.readOnly === true;
   const gitLabel = gitNodeLabel(data);
 
@@ -1813,6 +2014,58 @@ function EvidenceNodeInspector({
             onChange={(event) => onUpdate(node.id, { title: event.target.value })}
           />
         </label>
+        {data.type === "group" ? (
+          <>
+            <div className="evidence-inspector-grid">
+              <label>
+                <span>协议版本</span>
+                <input
+                  value={data.version || ""}
+                  readOnly={readOnly}
+                  placeholder="例如 v3 / clean810"
+                  onChange={(event) => onUpdate(node.id, { version: event.target.value })}
+                />
+              </label>
+              <section className="evidence-inspector-section compact">
+                <span>集合成员</span>
+                <p>{memberCount} 个节点</p>
+              </section>
+            </div>
+            <label>
+              <span>来源摘要</span>
+              <input
+                value={data.provenanceSummary || ""}
+                readOnly={readOnly}
+                placeholder="split hash、seeds、数据版本或评估等级"
+                onChange={(event) => onUpdate(node.id, { provenanceSummary: event.target.value })}
+              />
+            </label>
+            <button
+              type="button"
+              className="evidence-group-toggle"
+              onClick={() => onToggleGroup(data.collapsed !== true)}
+            >
+              {data.collapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              {data.collapsed ? "展开集合" : "折叠集合"}
+            </button>
+          </>
+        ) : groups.length ? (
+          <label>
+            <span>所属协议集合</span>
+            <select
+              disabled={readOnly}
+              value={data.groupId || ""}
+              onChange={(event) => onUpdate(node.id, { groupId: event.target.value || undefined })}
+            >
+              <option value="">不属于集合</option>
+              {groups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.data.title || "协议集合"}{group.data.version ? ` · ${group.data.version}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label className="evidence-inspector-body-field">
           <span>完整内容</span>
           <textarea
@@ -1948,6 +2201,38 @@ function EvidenceNode({ id, data, selected }: NodeProps<EvidenceFlowNode>) {
     ? data.mapRefStatus === "stale" ? "有更新" : data.mapRefStatus === "archived" ? "已归档" : data.mapRefStatus === "missing" ? "不可用" : "已同步"
     : data.status || data.runKind || "";
 
+  if (data.type === "group") {
+    return (
+      <div
+        className={`evidence-group-chip ${data.draft ? "evidence-group-frame--draft" : ""} ${selected ? "selected" : ""}`}
+        style={{ "--evidence-color": color } as CSSProperties}
+      >
+        <EvidenceNodeHandles />
+        <div className="evidence-node-category">
+          <span><Network size={12} />协议集合</span>
+          {data.version ? <span>{data.version}</span> : null}
+        </div>
+        <h3>{data.title || "协议集合"}</h3>
+        <p>{data.groupMemberCount || 0} 节点 · {data.groupInternalEdgeCount || 0} 内部关系</p>
+        <footer>
+          <span>{data.groupExternalEdgeCount || 0} 条外部关系</span>
+          <button
+            type="button"
+            className="nodrag nopan"
+            aria-label="展开集合"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              data.onUpdateNode?.(id, { collapsed: false });
+            }}
+          >
+            展开 <ChevronRight size={13} />
+          </button>
+        </footer>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`evidence-node ${data.type} ${data.draft ? "evidence-node--draft" : ""} ${selected ? "selected" : ""}`}
@@ -2057,7 +2342,8 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
         onPointerLeave={() => setHovered(false)}
         onClick={(event) => {
           event.stopPropagation();
-          if (!isDraft) data?.onSelectEdge?.(id);
+          if (data?.projected) data.onExpandGroups?.(data.collapsedGroupIds || []);
+          else if (!isDraft) data?.onSelectEdge?.(id);
         }}
       />
       <EdgeLabelRenderer>
@@ -2071,9 +2357,12 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              if (!isDraft) data?.onSelectEdge?.(id);
+              if (data?.projected) data.onExpandGroups?.(data.collapsedGroupIds || []);
+              else if (!isDraft) data?.onSelectEdge?.(id);
             }}
-            title={isDraft ? `${edgeTypeLabel(type)} · Agent 草稿` : `${edgeTypeLabel(type)} · 点击查看详情`}
+            title={data?.projected
+              ? `${data.projectedCount || 1} 条关系折叠显示 · 点击展开集合`
+              : isDraft ? `${edgeTypeLabel(type)} · Agent 草稿` : `${edgeTypeLabel(type)} · 点击查看详情`}
           >
             {isDraft ? `草稿 · ${displayLabel}` : displayLabel}
           </button>
@@ -2185,6 +2474,8 @@ function evidenceColor(type: EvidenceNodeType | EvidenceEdgeType) {
       return "#6f6a60";
     case "map_ref":
       return "#725b9b";
+    case "group":
+      return "#486f91";
     case "supports":
       return "#23805a";
     case "weakens":

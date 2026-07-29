@@ -49,6 +49,100 @@ func TestCanonicalEvidenceGraphIgnoresOrderingAndLayout(t *testing.T) {
 	if hashC == hashA {
 		t.Fatal("semantic title change did not change hash")
 	}
+
+	withGroupLayout := base
+	withGroupLayout.Nodes = append([]EvidenceChainNode(nil), base.Nodes...)
+	withGroupLayout.Nodes[0].DataJSON = `{"collapsed":true,"evidence_context":{"protocol":"rgb"},"pinned":true}`
+	_, hashD, err := CanonicalEvidenceGraph(withGroupLayout)
+	if err != nil {
+		t.Fatalf("CanonicalEvidenceGraph collapsed: %v", err)
+	}
+	if hashD != hashA {
+		t.Fatalf("collapsed view state changed semantic hash: %s != %s", hashD, hashA)
+	}
+	withGroupMembership := base
+	withGroupMembership.Nodes = append([]EvidenceChainNode(nil), base.Nodes...)
+	withGroupMembership.Nodes[0].DataJSON = `{"evidence_context":{"protocol":"rgb"},"groupId":"protocol_group","pinned":true}`
+	_, hashE, err := CanonicalEvidenceGraph(withGroupMembership)
+	if err != nil {
+		t.Fatalf("CanonicalEvidenceGraph group membership: %v", err)
+	}
+	if hashE == hashA {
+		t.Fatal("group membership did not change semantic hash")
+	}
+}
+
+func TestValidateEvidenceChainGraphProtocolGroups(t *testing.T) {
+	valid := EvidenceChainGraph{
+		Nodes: []EvidenceChainNode{
+			{ID: "protocol_group", Type: EvidenceNodeGroup, Title: "Clean-810 protocol", DataJSON: `{"groupKind":"protocol","version":"v1"}`},
+			{ID: "dataset", Type: EvidenceNodeDataset, DataJSON: `{"groupId":"protocol_group"}`},
+			{ID: "run", Type: EvidenceNodeRun, RunID: "run_grouped", DataJSON: `{"groupId":"protocol_group"}`},
+			{ID: "claim", Type: EvidenceNodeClaim},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "uses", Type: EvidenceEdgeUses, SourceNodeID: "dataset", TargetNodeID: "run"},
+			{ID: "supports", Type: EvidenceEdgeSupports, SourceNodeID: "run", TargetNodeID: "claim"},
+		},
+	}
+	if err := ValidateEvidenceChainGraph(&valid); err != nil {
+		t.Fatalf("valid grouped graph rejected: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		graph EvidenceChainGraph
+		code  string
+	}{
+		{
+			name: "missing group",
+			graph: EvidenceChainGraph{Nodes: []EvidenceChainNode{
+				{ID: "member", Type: EvidenceNodeNote, DataJSON: `{"groupId":"missing"}`},
+			}},
+			code: "GROUP_NOT_FOUND",
+		},
+		{
+			name: "target is not group",
+			graph: EvidenceChainGraph{Nodes: []EvidenceChainNode{
+				{ID: "target", Type: EvidenceNodeNote},
+				{ID: "member", Type: EvidenceNodeNote, DataJSON: `{"groupId":"target"}`},
+			}},
+			code: "GROUP_TARGET_INVALID",
+		},
+		{
+			name: "nested group",
+			graph: EvidenceChainGraph{Nodes: []EvidenceChainNode{
+				{ID: "outer", Type: EvidenceNodeGroup, DataJSON: `{"groupKind":"protocol"}`},
+				{ID: "inner", Type: EvidenceNodeGroup, DataJSON: `{"groupId":"outer","groupKind":"protocol"}`},
+			}},
+			code: "GROUP_NESTING_NOT_SUPPORTED",
+		},
+		{
+			name: "edge touches group",
+			graph: EvidenceChainGraph{
+				Nodes: []EvidenceChainNode{
+					{ID: "protocol_group", Type: EvidenceNodeGroup, DataJSON: `{"groupKind":"protocol"}`},
+					{ID: "claim", Type: EvidenceNodeClaim},
+				},
+				Edges: []EvidenceChainEdge{
+					{ID: "bad", Type: EvidenceEdgeRelatedTo, SourceNodeID: "protocol_group", TargetNodeID: "claim"},
+				},
+			},
+			code: "GROUP_EDGE_NOT_ALLOWED",
+		},
+		{
+			name: "group kind required",
+			graph: EvidenceChainGraph{Nodes: []EvidenceChainNode{
+				{ID: "protocol_group", Type: EvidenceNodeGroup},
+			}},
+			code: "INVALID_GROUP_KIND",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertGraphValidationCode(t, ValidateEvidenceChainGraph(&tc.graph), tc.code)
+		})
+	}
 }
 
 func TestValidateEvidenceChainGraphSemanticBlockers(t *testing.T) {

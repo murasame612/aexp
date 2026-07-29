@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import type { EvidenceChainEdge, EvidenceChainNode, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceGraphPatch, EvidenceNodeType, EvidenceProposal } from "./types";
 import { runTitle, text } from "./utils";
 
-export const evidenceNodeTypes: EvidenceNodeType[] = ["dataset", "protocol", "claim", "issue", "plan", "hypothesis", "experiment", "conclusion", "note"];
+export const evidenceNodeTypes: EvidenceNodeType[] = ["group", "dataset", "protocol", "claim", "issue", "plan", "hypothesis", "experiment", "conclusion", "note"];
 export const evidenceEdgeTypes: EvidenceEdgeType[] = ["uses", "supports", "weakens", "reveals_issue", "supersedes", "next_step", "related_to", "does_not_prove", "custom"];
 
 export interface EvidenceNodeData extends Record<string, unknown> {
@@ -33,6 +33,14 @@ export interface EvidenceNodeData extends Record<string, unknown> {
   target_graph_hash?: string;
   target_node_ids?: string[];
   summary?: string;
+  groupId?: string;
+  groupKind?: "protocol";
+  version?: string;
+  provenanceSummary?: string;
+  collapsed?: boolean;
+  groupMemberCount?: number;
+  groupInternalEdgeCount?: number;
+  groupExternalEdgeCount?: number;
   mapRefStatus?: "current" | "stale" | "archived" | "missing";
   onOpenRun?: (runId: string) => void;
   onOpenMap?: (mapId: string) => void;
@@ -50,6 +58,11 @@ export interface EvidenceEdgeData extends Record<string, unknown> {
   draft?: boolean;
   proposalRunId?: string;
   sourceEdgeId?: string;
+  projected?: boolean;
+  projectedCount?: number;
+  projectedSourceEdgeIds?: string[];
+  collapsedGroupIds?: string[];
+  onExpandGroups?: (groupIds: string[]) => void;
   onSelectEdge?: (edgeId: string) => void;
   onUpdateEdge?: (edgeId: string, patch: { type?: EvidenceEdgeType; label?: string; rationale?: string }) => void;
   labels?: EvidenceBoardLabels;
@@ -112,6 +125,7 @@ export function evidenceWorkspaceProposalPreview(proposal: EvidenceProposal): Ev
       selectable: true,
       data: {
         ...mapped.data,
+        groupId: mapped.data.groupId ? nodeIDs.get(mapped.data.groupId) || mapped.data.groupId : undefined,
         readOnly: true,
         draft: true,
         proposalRunId: previewKey,
@@ -208,6 +222,8 @@ export function nodeTypeLabel(type: EvidenceNodeType) {
       return "笔记";
     case "map_ref":
       return "Topic 引用";
+    case "group":
+      return "协议集合";
   }
 }
 
@@ -216,6 +232,7 @@ export function defaultNodeTitle(type: EvidenceNodeType) {
 }
 
 export function defaultEvidenceRelation(source: EvidenceNodeType, target: EvidenceNodeType): EvidenceEdgeType {
+  if (source === "group" || target === "group") return "related_to";
   if ((source === "dataset" || source === "protocol") && target === "run") return "uses";
   if (source === "run" && target === "claim") return "supports";
   if ((source === "run" || source === "claim") && target === "issue") return "reveals_issue";
@@ -328,7 +345,10 @@ export function createTextNode(type: EvidenceNodeType, position: { x: number; y:
     data: {
       type,
       title: defaultNodeTitle(type),
-      body: ""
+      body: "",
+      ...(type === "group"
+        ? { groupKind: "protocol" as const, version: "v1", provenanceSummary: "", collapsed: false }
+        : {})
     }
   };
 }
@@ -407,6 +427,7 @@ export function evidenceProposalPreview(candidate: EvidenceChainRunCandidate): E
       selectable: true,
       data: {
         ...mapped.data,
+        groupId: mapped.data.groupId ? nodeIDs.get(mapped.data.groupId) || mapped.data.groupId : undefined,
         readOnly: true,
         draft: true,
         proposalRunId: candidate.run_id,
@@ -563,7 +584,7 @@ function semanticEvidenceData(raw?: string) {
   try {
     const value = JSON.parse(raw || "{}") as Record<string, unknown>;
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      for (const key of ["pinned", "position", "width", "height", "layout", "sourceHandle", "targetHandle", "autoHandles"]) delete value[key];
+      for (const key of ["pinned", "position", "width", "height", "layout", "sourceHandle", "targetHandle", "autoHandles", "collapsed"]) delete value[key];
     }
     return value;
   } catch {
@@ -603,6 +624,215 @@ export function edgeStyle(type: EvidenceEdgeType): CSSProperties {
   }
 }
 
+export interface EvidenceGroupDescriptor {
+  id: string;
+  group: EvidenceFlowNode;
+  memberIds: string[];
+}
+
+export interface EvidenceGroupFrameBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface EvidenceGroupProjection {
+  nodes: EvidenceFlowNode[];
+  edges: EvidenceFlowEdge[];
+  groups: EvidenceGroupDescriptor[];
+  hiddenNodeIds: string[];
+  collapsedGroupIds: string[];
+  internalEdgeCounts: Record<string, number>;
+}
+
+export function deriveEvidenceGroups(nodes: EvidenceFlowNode[]): EvidenceGroupDescriptor[] {
+  const groups = nodes
+    .filter((node) => node.data.type === "group")
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const groupIDs = new Set(groups.map((group) => group.id));
+  const members = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.data.type === "group") continue;
+    const groupID = typeof node.data.groupId === "string" ? node.data.groupId.trim() : "";
+    if (!groupID || !groupIDs.has(groupID)) continue;
+    members.set(groupID, [...(members.get(groupID) || []), node.id]);
+  }
+  return groups.map((group) => ({
+    id: group.id,
+    group,
+    memberIds: [...(members.get(group.id) || [])].sort()
+  }));
+}
+
+export function evidenceGroupFrameBounds(
+  descriptor: EvidenceGroupDescriptor,
+  nodes: EvidenceFlowNode[]
+): EvidenceGroupFrameBounds {
+  const nodeByID = new Map(nodes.map((node) => [node.id, node]));
+  const members = descriptor.memberIds
+    .map((id) => nodeByID.get(id))
+    .filter((node): node is EvidenceFlowNode => Boolean(node));
+  if (!members.length) {
+    return {
+      x: descriptor.group.position.x,
+      y: descriptor.group.position.y,
+      width: 680,
+      height: 250
+    };
+  }
+  const left = Math.min(...members.map((node) => node.position.x));
+  const top = Math.min(...members.map((node) => node.position.y));
+  const right = Math.max(...members.map((node) => node.position.x + evidenceNodeWidth(node)));
+  const bottom = Math.max(...members.map((node) => node.position.y + evidenceNodeHeight(node)));
+  return {
+    x: left - 24,
+    y: top - 58,
+    width: Math.max(360, right - left + 48),
+    height: Math.max(210, bottom - top + 82)
+  };
+}
+
+export function projectEvidenceGroups(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[]): EvidenceGroupProjection {
+  const groups = deriveEvidenceGroups(nodes);
+  if (!groups.length) {
+    return {
+      nodes,
+      edges,
+      groups,
+      hiddenNodeIds: [],
+      collapsedGroupIds: [],
+      internalEdgeCounts: {}
+    };
+  }
+  const ownerByMember = new Map<string, string>();
+  for (const group of groups) {
+    for (const memberID of group.memberIds) ownerByMember.set(memberID, group.id);
+  }
+  const forceExpanded = new Set<string>();
+  for (const node of nodes) {
+    if (!node.data.draft) continue;
+    const groupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
+    if (groupID) forceExpanded.add(groupID);
+  }
+  for (const edge of edges) {
+    if (!edge.data?.draft) continue;
+    const sourceGroupID = ownerByMember.get(edge.source);
+    const targetGroupID = ownerByMember.get(edge.target);
+    if (sourceGroupID) forceExpanded.add(sourceGroupID);
+    if (targetGroupID) forceExpanded.add(targetGroupID);
+  }
+  const collapsedGroupIDs = groups
+    .filter((group) => group.group.data.collapsed === true && !forceExpanded.has(group.id))
+    .map((group) => group.id)
+    .sort();
+  const collapsed = new Set(collapsedGroupIDs);
+  const hidden = new Set<string>();
+  for (const group of groups) {
+    if (!collapsed.has(group.id)) continue;
+    for (const memberID of group.memberIds) hidden.add(memberID);
+  }
+  const internalEdgeCounts: Record<string, number> = {};
+  for (const groupID of collapsedGroupIDs) internalEdgeCounts[groupID] = 0;
+  const projected = new Map<string, EvidenceFlowEdge>();
+  const visibleEdges: EvidenceFlowEdge[] = [];
+  for (const edge of [...edges].sort((left, right) => left.id.localeCompare(right.id))) {
+    const sourceGroupID = hidden.has(edge.source) ? ownerByMember.get(edge.source) : undefined;
+    const targetGroupID = hidden.has(edge.target) ? ownerByMember.get(edge.target) : undefined;
+    const source = sourceGroupID || edge.source;
+    const target = targetGroupID || edge.target;
+    if (source === target) {
+      if (sourceGroupID && sourceGroupID === targetGroupID) {
+        internalEdgeCounts[sourceGroupID] = (internalEdgeCounts[sourceGroupID] || 0) + 1;
+      }
+      continue;
+    }
+    if (!sourceGroupID && !targetGroupID) {
+      visibleEdges.push(edge);
+      continue;
+    }
+    const type = edge.data?.type || "next_step";
+    const draftKey = edge.data?.draft === true ? "draft" : "accepted";
+    const key = `${source}\u0000${target}\u0000${type}\u0000${draftKey}`;
+    const existing = projected.get(key);
+    if (existing) {
+      const sourceIDs = [...(existing.data?.projectedSourceEdgeIds || []), edge.id].sort();
+      const count = sourceIDs.length;
+      projected.set(key, {
+        ...existing,
+        label: `${edgeTypeLabel(type)} ×${count}`,
+        data: {
+          ...existing.data!,
+          projectedCount: count,
+          projectedSourceEdgeIds: sourceIDs
+        }
+      });
+      continue;
+    }
+    const collapsedGroups = [sourceGroupID, targetGroupID].filter((value): value is string => Boolean(value)).sort();
+    projected.set(key, {
+      ...edge,
+      id: `projected:${draftKey}:${source}:${type}:${target}`,
+      source,
+      target,
+      sourceHandle: undefined,
+      targetHandle: undefined,
+      label: edgeTypeLabel(type),
+      selectable: false,
+      deletable: false,
+      data: {
+        ...edge.data,
+        type,
+        rationale: edge.data?.rationale || "",
+        autoHandles: true,
+        projected: true,
+        projectedCount: 1,
+        projectedSourceEdgeIds: [edge.id],
+        collapsedGroupIds: collapsedGroups
+      }
+    });
+  }
+  visibleEdges.push(...[...projected.values()].sort((left, right) => left.id.localeCompare(right.id)));
+  const descriptorByID = new Map(groups.map((group) => [group.id, group]));
+  const externalEdgeCounts: Record<string, number> = {};
+  for (const edge of projected.values()) {
+    for (const groupID of edge.data?.collapsedGroupIds || []) {
+      externalEdgeCounts[groupID] = (externalEdgeCounts[groupID] || 0) + (edge.data?.projectedCount || 1);
+    }
+  }
+  return {
+    nodes: nodes.flatMap((node) => {
+      if (node.data.type === "group") {
+        if (!collapsed.has(node.id)) return [];
+        const descriptor = descriptorByID.get(node.id);
+        return [{
+          ...node,
+          data: {
+            ...node.data,
+            groupMemberCount: descriptor?.memberIds.length || 0,
+            groupInternalEdgeCount: internalEdgeCounts[node.id] || 0,
+            groupExternalEdgeCount: externalEdgeCounts[node.id] || 0
+          }
+        }];
+      }
+      return hidden.has(node.id) ? [] : [node];
+    }),
+    edges: visibleEdges,
+    groups,
+    hiddenNodeIds: [...hidden].sort(),
+    collapsedGroupIds: collapsedGroupIDs,
+    internalEdgeCounts
+  };
+}
+
+function evidenceNodeWidth(node: EvidenceFlowNode) {
+  return typeof node.measured?.width === "number" ? node.measured.width : typeof node.width === "number" ? node.width : 306;
+}
+
+function evidenceNodeHeight(node: EvidenceFlowNode) {
+  return typeof node.measured?.height === "number" ? node.measured.height : typeof node.height === "number" ? node.height : 138;
+}
+
 const evidenceColumnStep = 420;
 const evidenceRowStep = 196;
 const evidenceOrigin = { x: 80, y: 72 };
@@ -627,7 +857,7 @@ export function evidenceAutoHandlePair(
 // semantics determine rank; coordinates remain a UI projection. Ordering
 // inside a rank follows adjacent nodes instead of node type lanes so the
 // common evidence DAG stays left-to-right with fewer avoidable crossings.
-export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[], resetPins = false): EvidenceFlowNode[] {
+function layoutFlatEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[], resetPins = false): EvidenceFlowNode[] {
   const byID = new Map(nodes.map((node) => [node.id, node]));
   const indegree = new Map(nodes.map((node) => [node.id, 0]));
   const outgoing = new Map<string, string[]>();
@@ -741,13 +971,20 @@ export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFl
   }
 
   const largestLayer = Math.max(1, ...[...layers.values()].map((layer) => layer.length));
+  const layerX = new Map<number, number>();
+  let nextLayerX = evidenceOrigin.x;
+  for (const layerRank of layerRanks) {
+    layerX.set(layerRank, nextLayerX);
+    const widestNode = Math.max(0, ...(layers.get(layerRank) || []).map(evidenceNodeWidth));
+    nextLayerX += Math.max(evidenceColumnStep, widestNode + 114);
+  }
   const positionByID = new Map<string, { x: number; y: number }>();
   for (const layerRank of layerRanks) {
     const layer = layers.get(layerRank) || [];
     const centeredOffset = (largestLayer - layer.length) * evidenceRowStep / 2;
     layer.forEach((node, index) => {
       positionByID.set(node.id, {
-        x: evidenceOrigin.x + layerRank * evidenceColumnStep,
+        x: layerX.get(layerRank) || evidenceOrigin.x,
         y: evidenceOrigin.y + centeredOffset + index * evidenceRowStep
       });
     });
@@ -762,4 +999,122 @@ export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFl
       data: { ...node.data, pinned: false }
     };
   });
+}
+
+export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[], resetPins = false): EvidenceFlowNode[] {
+  const groups = deriveEvidenceGroups(nodes);
+  if (!groups.length) return layoutFlatEvidenceGraph(nodes, edges, resetPins);
+
+  const nodeByID = new Map(nodes.map((node) => [node.id, node]));
+  const ownerByMember = new Map<string, string>();
+  for (const group of groups) {
+    for (const memberID of group.memberIds) ownerByMember.set(memberID, group.id);
+  }
+  const groupFootprint = new Map<string, { width: number; height: number }>();
+  for (const descriptor of groups) {
+    const members = descriptor.memberIds
+      .map((id) => nodeByID.get(id))
+      .filter((node): node is EvidenceFlowNode => Boolean(node));
+    if (!members.length) {
+      groupFootprint.set(descriptor.id, { width: 680, height: 250 });
+      continue;
+    }
+    const memberIDs = new Set(members.map((member) => member.id));
+    const memberEdges = edges.filter((edge) => memberIDs.has(edge.source) && memberIDs.has(edge.target));
+    if (memberEdges.length) {
+      const local = layoutFlatEvidenceGraph(members, memberEdges, true);
+      const minX = Math.min(...local.map((member) => member.position.x));
+      const minY = Math.min(...local.map((member) => member.position.y));
+      const maxX = Math.max(...local.map((member) => member.position.x + evidenceNodeWidth(member)));
+      const maxY = Math.max(...local.map((member) => member.position.y + evidenceNodeHeight(member)));
+      groupFootprint.set(descriptor.id, {
+        width: Math.max(360, maxX - minX + 48),
+        height: Math.max(210, maxY - minY + 82)
+      });
+      continue;
+    }
+    const columns = Math.min(3, members.length);
+    const rows = Math.ceil(members.length / 3);
+    const widest = Math.max(...members.map(evidenceNodeWidth));
+    const tallest = Math.max(...members.map(evidenceNodeHeight));
+    groupFootprint.set(descriptor.id, {
+      width: Math.max(360, (columns - 1) * 340 + widest + 48),
+      height: Math.max(210, (rows - 1) * 174 + tallest + 82)
+    });
+  }
+  const outerNodes = nodes
+    .filter((node) => node.data.type === "group" || !ownerByMember.has(node.id))
+    .map((node) => {
+      const footprint = node.data.type === "group" ? groupFootprint.get(node.id) : undefined;
+      return footprint ? { ...node, width: footprint.width, height: footprint.height } : node;
+    });
+  const outerNodeIDs = new Set(outerNodes.map((node) => node.id));
+  const outerEdges: EvidenceFlowEdge[] = [];
+  const outerEdgeKeys = new Set<string>();
+  for (const edge of [...edges].sort((left, right) => left.id.localeCompare(right.id))) {
+    const source = ownerByMember.get(edge.source) || edge.source;
+    const target = ownerByMember.get(edge.target) || edge.target;
+    if (source === target || !outerNodeIDs.has(source) || !outerNodeIDs.has(target)) continue;
+    const type = edge.data?.type || "next_step";
+    const key = `${source}\u0000${target}\u0000${type}`;
+    if (outerEdgeKeys.has(key)) continue;
+    outerEdgeKeys.add(key);
+    outerEdges.push({
+      ...edge,
+      id: `layout:${source}:${type}:${target}`,
+      source,
+      target
+    });
+  }
+  const laidOutOuter = layoutFlatEvidenceGraph(outerNodes, outerEdges, resetPins);
+  const positioned = new Map(laidOutOuter.map((node) => [node.id, node]));
+
+  for (const descriptor of groups) {
+    const group = positioned.get(descriptor.id) || descriptor.group;
+    const members = descriptor.memberIds
+      .map((id) => nodeByID.get(id))
+      .filter((node): node is EvidenceFlowNode => Boolean(node))
+      .sort((left, right) => {
+        const leftKey = `${left.data.occurredAt || ""}\u0000${left.id}`;
+        const rightKey = `${right.data.occurredAt || ""}\u0000${right.id}`;
+        return leftKey.localeCompare(rightKey);
+      });
+    if (!members.length) continue;
+    const memberIDs = new Set(members.map((member) => member.id));
+    const memberEdges = edges.filter((edge) => memberIDs.has(edge.source) && memberIDs.has(edge.target));
+    let memberPositions = new Map<string, { x: number; y: number }>();
+    if (memberEdges.length) {
+      const local = layoutFlatEvidenceGraph(members, memberEdges, true);
+      const minX = Math.min(...local.map((member) => member.position.x));
+      const minY = Math.min(...local.map((member) => member.position.y));
+      memberPositions = new Map(local.map((member) => [
+        member.id,
+        {
+          x: group.position.x + 24 + member.position.x - minX,
+          y: group.position.y + 64 + member.position.y - minY
+        }
+      ]));
+    } else {
+      memberPositions = new Map(members.map((member, index) => [
+        member.id,
+        {
+          x: group.position.x + 24 + (index % 3) * 340,
+          y: group.position.y + 64 + Math.floor(index / 3) * 174
+        }
+      ]));
+    }
+    for (const member of members) {
+      if (!resetPins && member.data.pinned === true) {
+        positioned.set(member.id, member);
+        continue;
+      }
+      positioned.set(member.id, {
+        ...member,
+        position: memberPositions.get(member.id) || member.position,
+        data: { ...member.data, pinned: false }
+      });
+    }
+  }
+
+  return nodes.map((node) => positioned.get(node.id) || node);
 }

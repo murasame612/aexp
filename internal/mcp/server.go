@@ -2796,7 +2796,7 @@ func toolRegistry() []toolSpec {
 				"project_level_impact": boolSchema("Required true for a direct Primary Map proposal."),
 				"source_run_ids":       arrayStringSchema("Optional source Runs; zero Runs is valid for bootstrap context."),
 				"source_snapshot_ids":  arrayStringSchema("Optional immutable Evidence Snapshot sources."),
-				"patch_json":           stringSchema("Additive patch JSON with nodes and edges. Agent coordinates are ignored."),
+				"patch_json":           stringSchema("Additive patch JSON with nodes and edges. Agent coordinates are ignored. A protocol collection is a node with type=group and data_json.groupKind=protocol; member nodes reference it through data_json.groupId. Do not create edges to group nodes, do not nest groups, and never send collapsed because collapse is UI-only."),
 				"timeout":              numberSchema("Tool timeout in seconds."),
 			}, []string{"project_id", "summary", "patch_json"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {

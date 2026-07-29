@@ -164,12 +164,22 @@ func (s *SQLite) CreateEvidenceProposal(ctx context.Context, proposal *EvidenceP
 		patch.Nodes[i].X = 0
 		patch.Nodes[i].Y = 0
 		patch.Nodes[i].Pinned = false
+		cleanedData, cleanErr := stripEvidenceProposalLayoutData(patch.Nodes[i].DataJSON)
+		if cleanErr != nil {
+			return nil, graphValidationError("INVALID_NODE_DATA", fmt.Sprintf("node %q data_json is invalid: %v", patch.Nodes[i].ID, cleanErr))
+		}
+		patch.Nodes[i].DataJSON = cleanedData
 	}
 	for i := range patch.UpsertNodes {
 		patch.UpsertNodes[i].ChainID = proposal.TargetChainID
 		patch.UpsertNodes[i].X = 0
 		patch.UpsertNodes[i].Y = 0
 		patch.UpsertNodes[i].Pinned = false
+		cleanedData, cleanErr := stripEvidenceProposalLayoutData(patch.UpsertNodes[i].DataJSON)
+		if cleanErr != nil {
+			return nil, graphValidationError("INVALID_NODE_DATA", fmt.Sprintf("node %q data_json is invalid: %v", patch.UpsertNodes[i].ID, cleanErr))
+		}
+		patch.UpsertNodes[i].DataJSON = cleanedData
 	}
 	for i := range patch.Edges {
 		patch.Edges[i].ChainID = proposal.TargetChainID
