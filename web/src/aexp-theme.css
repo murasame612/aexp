@@ -1187,20 +1187,19 @@ textarea:focus {
 }
 
 .evidence-edge-label > button {
-  min-height: 20px;
+  min-height: 22px;
   max-width: 190px;
-  padding: 1px 7px;
-  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  padding: 2px 8px;
+  border: 1px solid color-mix(in oklab, var(--evidence-color) 34%, var(--border));
   border-radius: var(--radius-pill);
-  background: color-mix(in oklab, var(--surface) 91%, var(--evidence-color) 9%);
-  color: color-mix(in oklab, var(--ink) 72%, var(--evidence-color));
-  box-shadow: 0 1px 1px rgba(60, 46, 28, 0.055);
+  background: color-mix(in oklab, var(--surface) 94%, var(--evidence-color) 6%);
+  color: color-mix(in oklab, var(--ink) 86%, var(--evidence-color));
+  box-shadow: 0 1px 3px rgba(60, 46, 28, 0.11);
   font-family: var(--font-ui);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 760;
   letter-spacing: 0;
   text-shadow: none;
-  backdrop-filter: blur(8px) saturate(1.1);
 }
 
 .evidence-edge-label > button:hover {
@@ -2536,7 +2535,7 @@ textarea:focus {
 .evidence-edge-label.evidence-edge-label--draft > button {
   border-style: dashed;
   border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
-  background: color-mix(in oklab, var(--surface) 78%, transparent);
+  background: color-mix(in oklab, var(--surface) 94%, var(--accent) 6%);
   color: var(--accent-deep);
 }
 

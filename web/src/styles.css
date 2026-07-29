@@ -4339,13 +4339,14 @@ select {
 .evidence-edge-label {
   position: absolute;
   z-index: 12;
-  opacity: 0.54;
+  opacity: 1;
   pointer-events: auto;
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: transform 140ms ease, filter 140ms ease;
 }
 
 .evidence-edge-label.is-visible {
-  opacity: 1;
+  z-index: 18;
+  filter: drop-shadow(0 2px 4px rgba(60, 46, 28, 0.12));
 }
 
 .evidence-edge-label:not(.is-visible) > button {
