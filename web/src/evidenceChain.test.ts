@@ -20,7 +20,9 @@ import {
   convertProtocolToFrame,
   constrainProtocolMemberPosition,
   projectEvidenceGroups,
+  protocolContainerMoveDeltaForKey,
   serializeEvidenceGraph,
+  translateProtocolContainer,
   type EvidenceFlowEdge,
   type EvidenceFlowNode
 } from "./evidenceChain";
@@ -451,9 +453,49 @@ describe("evidenceChain helpers", () => {
 
   it("clamps protocol members inside the permanent frame", () => {
     const bounds = { x: 100, y: 200, width: 700, height: 420 };
-    expect(constrainProtocolMemberPosition({ x: -900, y: -900 }, bounds)).toEqual({ x: 114, y: 246 });
-    expect(constrainProtocolMemberPosition({ x: 900, y: 900 }, bounds)).toEqual({ x: 480, y: 468 });
+    expect(constrainProtocolMemberPosition({ x: -900, y: -900 }, bounds)).toEqual({ x: 124, y: 264 });
+    expect(constrainProtocolMemberPosition({ x: 900, y: 900 }, bounds)).toEqual({ x: 470, y: 458 });
     expect(constrainProtocolMemberPosition({ x: 300, y: 350 }, bounds)).toEqual({ x: 300, y: 350 });
+    expect(constrainProtocolMemberPosition(
+      { x: 900, y: 900 },
+      bounds,
+      { width: 420, height: 200 }
+    )).toEqual({ x: 356, y: 396 });
+  });
+
+  it("moves a protocol container and all of its members as one unit", () => {
+    const nodes: EvidenceFlowNode[] = [
+      {
+        id: "protocol",
+        type: "evidence",
+        position: { x: 100, y: 200 },
+        data: { type: "group", title: "Protocol", body: "", groupKind: "protocol" }
+      },
+      {
+        id: "run",
+        type: "evidence",
+        position: { x: 180, y: 300 },
+        data: { type: "run", title: "Run", body: "", groupId: "protocol" }
+      },
+      {
+        id: "claim",
+        type: "evidence",
+        position: { x: 900, y: 400 },
+        data: { type: "claim", title: "Claim", body: "" }
+      }
+    ];
+    const moved = translateProtocolContainer(nodes, "protocol", { x: 120, y: -40 });
+    expect(moved.find((node) => node.id === "protocol")?.position).toEqual({ x: 220, y: 160 });
+    expect(moved.find((node) => node.id === "run")?.position).toEqual({ x: 300, y: 260 });
+    expect(moved.find((node) => node.id === "claim")?.position).toEqual({ x: 900, y: 400 });
+    expect(moved.find((node) => node.id === "protocol")?.data.pinned).toBe(true);
+    expect(moved.find((node) => node.id === "run")?.data.pinned).toBe(true);
+  });
+
+  it("supports precise and accelerated keyboard movement for protocol containers", () => {
+    expect(protocolContainerMoveDeltaForKey("ArrowLeft")).toEqual({ x: -10, y: 0 });
+    expect(protocolContainerMoveDeltaForKey("ArrowDown", true)).toEqual({ x: 0, y: 40 });
+    expect(protocolContainerMoveDeltaForKey("Enter")).toBeNull();
   });
 
   it("keeps a protocol frame's own geometry instead of chasing its members", () => {

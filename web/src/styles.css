@@ -4035,6 +4035,17 @@ select {
     linear-gradient(180deg, rgba(70, 111, 154, 0.12) 0 48px, rgba(70, 111, 154, 0.035) 48px 100%);
 }
 
+.evidence-group-frame.is-moving {
+  border-color: rgba(64, 102, 139, 0.82);
+  box-shadow: 0 10px 28px rgba(37, 57, 78, 0.14), 0 0 0 3px rgba(70, 111, 154, 0.13);
+}
+
+.evidence-group-frame.is-member-dragging {
+  border-color: rgba(70, 111, 154, 0.62);
+  background:
+    linear-gradient(180deg, rgba(70, 111, 154, 0.12) 0 48px, rgba(70, 111, 154, 0.045) 48px 100%);
+}
+
 .evidence-group-frame--draft {
   border-style: dashed;
   border-color: rgba(183, 91, 51, 0.38);
@@ -4053,6 +4064,38 @@ select {
   pointer-events: auto;
   border-bottom: 1px solid rgba(64, 102, 139, 0.15);
   background: rgba(255, 255, 255, 0.24);
+}
+
+.evidence-group-move-handle {
+  width: 28px;
+  height: 32px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #5d7185;
+  cursor: grab;
+  touch-action: none;
+}
+
+.evidence-group-move-handle:hover:not(:disabled),
+.evidence-group-move-handle:focus-visible {
+  background: rgba(70, 111, 154, 0.1);
+  color: #355f83;
+}
+
+.evidence-group-move-handle:active:not(:disabled),
+.evidence-group-frame.is-moving .evidence-group-move-handle {
+  cursor: grabbing;
+  background: rgba(70, 111, 154, 0.14);
+}
+
+.evidence-group-move-handle:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .evidence-group-frame-title {

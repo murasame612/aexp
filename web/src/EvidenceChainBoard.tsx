@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   addEdge,
   Background,
@@ -24,7 +24,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, Archive, ArrowUpRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, ListPlus, Network, PinOff, Plus, RefreshCcw, Route, Save, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUpRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, GripVertical, ListPlus, Network, PinOff, Plus, RefreshCcw, Route, Save, Search, Trash2, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
@@ -76,6 +76,8 @@ import {
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
   constrainProtocolMemberPosition,
+  protocolContainerMoveDeltaForKey,
+  translateProtocolContainer,
   type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
@@ -170,6 +172,16 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const dragStartGroupFramesRef = useRef<Array<{ id: string; bounds: EvidenceGroupFrameBounds }>>([]);
   const [draggingProtocolFrame, setDraggingProtocolFrame] = useState<{ id: string; bounds: EvidenceGroupFrameBounds } | null>(null);
   const draggingProtocolFrameRef = useRef<{ id: string; bounds: EvidenceGroupFrameBounds } | null>(null);
+  const protocolContainerDragRef = useRef<{
+    id: string;
+    start: { x: number; y: number };
+    latest: { x: number; y: number };
+    baseline: EvidenceFlowNode[];
+    wasDirty: boolean;
+    moved: boolean;
+  } | null>(null);
+  const protocolContainerDragFrameRef = useRef<number | null>(null);
+  const [movingProtocolContainerId, setMovingProtocolContainerId] = useState("");
   const boardLabels = useMemo(
     () => ({
       titlePlaceholder: t("titlePlaceholder"),
@@ -828,6 +840,74 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     ))
     .sort((left, right) => left.bounds.width * left.bounds.height - right.bounds.width * right.bounds.height)[0]?.id || "",
   [groupFrames]);
+  const beginProtocolContainerMove = useCallback((groupId: string, client: { x: number; y: number }) => {
+    if (detail.data?.status === "archived") return;
+    const group = nodes.find((node) => node.id === groupId && node.data.type === "group");
+    if (!group || group.data.draft) return;
+    const baseline = nodes.map((node) => ({
+      ...node,
+      selected: node.id === groupId,
+      position: { ...node.position },
+      data: { ...node.data }
+    }));
+    protocolContainerDragRef.current = {
+      id: groupId,
+      start: flow.screenToFlowPosition(client),
+      latest: { x: 0, y: 0 },
+      baseline,
+      wasDirty: dirtyRef.current,
+      moved: false
+    };
+    dirtyRef.current = true;
+    setMovingProtocolContainerId(groupId);
+    setSelected({ kind: "node", id: groupId });
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    setNodes(baseline);
+  }, [detail.data?.status, flow, nodes, setEdges, setNodes]);
+  const moveProtocolContainer = useCallback((client: { x: number; y: number }) => {
+    const drag = protocolContainerDragRef.current;
+    if (!drag) return;
+    const current = flow.screenToFlowPosition(client);
+    drag.latest = {
+      x: current.x - drag.start.x,
+      y: current.y - drag.start.y
+    };
+    drag.moved = drag.moved || Math.hypot(drag.latest.x, drag.latest.y) >= 3;
+    if (protocolContainerDragFrameRef.current !== null) return;
+    protocolContainerDragFrameRef.current = window.requestAnimationFrame(() => {
+      protocolContainerDragFrameRef.current = null;
+      const active = protocolContainerDragRef.current;
+      if (!active) return;
+      setNodes(translateProtocolContainer(active.baseline, active.id, active.latest));
+    });
+  }, [flow, setNodes]);
+  const endProtocolContainerMove = useCallback(() => {
+    const drag = protocolContainerDragRef.current;
+    if (!drag) return;
+    if (protocolContainerDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(protocolContainerDragFrameRef.current);
+      protocolContainerDragFrameRef.current = null;
+    }
+    setNodes(drag.moved
+      ? translateProtocolContainer(drag.baseline, drag.id, drag.latest)
+      : drag.baseline);
+    protocolContainerDragRef.current = null;
+    setMovingProtocolContainerId("");
+    if (drag.moved) markDirty();
+    else dirtyRef.current = drag.wasDirty;
+  }, [markDirty, setNodes]);
+  const moveProtocolContainerBy = useCallback((groupId: string, delta: { x: number; y: number }) => {
+    if (detail.data?.status === "archived") return;
+    setNodes((current) => translateProtocolContainer(current, groupId, delta));
+    markDirty();
+  }, [detail.data?.status, markDirty, setNodes]);
+  useEffect(() => () => {
+    if (protocolContainerDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(protocolContainerDragFrameRef.current);
+      protocolContainerDragFrameRef.current = null;
+    }
+    protocolContainerDragRef.current = null;
+  }, []);
   const visibleNodes = groupProjection.nodes;
   const visibleEdges = useMemo(
     () => autoRouteEvidenceEdges(groupProjection.edges, visibleNodes),
@@ -1395,13 +1475,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
               draggingProtocolFrameRef.current = frame || null;
               setDraggingProtocolFrame(draggingProtocolFrameRef.current);
             }}
-            onNodeDrag={(_event, node) => {
-              const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
-              const frame = draggingProtocolFrameRef.current;
-              if (!currentGroupID || frame?.id !== currentGroupID) return;
-              const position = constrainProtocolMemberPosition(node.position, frame.bounds);
-              setNodes((current) => current.map((item) => item.id === node.id ? { ...item, position } : item));
-            }}
             onNodeDragStop={(_event, node) => {
               if (node.data.draft) {
                 draggingProtocolFrameRef.current = null;
@@ -1421,7 +1494,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
               if (currentGroupID) {
                 const frame = dragStartGroupFramesRef.current.find((item) => item.id === currentGroupID);
                 const position = frame
-                  ? constrainProtocolMemberPosition(node.position, frame.bounds)
+                  ? constrainProtocolMemberPosition(node.position, frame.bounds, {
+                    width: node.measured?.width || node.width || compactEvidenceNodeSize.width,
+                    height: node.measured?.height || node.height || compactEvidenceNodeSize.height
+                  })
                   : node.position;
                 setNodes((current) => current.map((item) => item.id === node.id
                   ? { ...item, position, data: { ...item.data, pinned: true, groupId: currentGroupID } }
@@ -1479,6 +1555,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                       setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
                     }}
                     selected={selected?.kind === "node" && selected.id === id}
+                    movable={detail.data?.status !== "archived" && !descriptor.group.data.draft}
+                    moving={movingProtocolContainerId === id}
+                    memberDragging={draggingProtocolFrame?.id === id}
+                    onMoveStart={(client) => beginProtocolContainerMove(id, client)}
+                    onMove={moveProtocolContainer}
+                    onMoveEnd={endProtocolContainerMove}
+                    onMoveBy={(delta) => moveProtocolContainerBy(id, delta)}
                   />
                 );
               })}
@@ -1938,18 +2021,50 @@ function EvidenceGroupFrame({
   bounds,
   internalEdgeCount,
   onSelect,
-  selected
+  selected,
+  movable,
+  moving,
+  memberDragging,
+  onMoveStart,
+  onMove,
+  onMoveEnd,
+  onMoveBy
 }: {
   descriptor: EvidenceGroupDescriptor;
   bounds: EvidenceGroupFrameBounds;
   internalEdgeCount: number;
   onSelect: () => void;
   selected: boolean;
+  movable: boolean;
+  moving: boolean;
+  memberDragging: boolean;
+  onMoveStart: (client: { x: number; y: number }) => void;
+  onMove: (client: { x: number; y: number }) => void;
+  onMoveEnd: () => void;
+  onMoveBy: (delta: { x: number; y: number }) => void;
 }) {
   const data = descriptor.group.data;
+  const pointerRef = useRef<number | null>(null);
+  const finishPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (pointerRef.current !== event.pointerId) return;
+    onMove({ x: event.clientX, y: event.clientY });
+    pointerRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    onMoveEnd();
+  };
+  const onMoveHandleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const delta = protocolContainerMoveDeltaForKey(event.key, event.shiftKey);
+    if (!delta || !movable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect();
+    onMoveBy(delta);
+  };
   return (
     <section
-      className={`evidence-group-frame ${data.draft ? "evidence-group-frame--draft" : ""} ${selected ? "is-selected" : ""}`}
+      className={`evidence-group-frame ${data.draft ? "evidence-group-frame--draft" : ""} ${selected ? "is-selected" : ""} ${moving ? "is-moving" : ""} ${memberDragging ? "is-member-dragging" : ""}`}
       style={{
         transform: `translate(${bounds.x}px, ${bounds.y}px)`,
         width: bounds.width,
@@ -1958,13 +2073,51 @@ function EvidenceGroupFrame({
       aria-label={`${data.title || "实验协议"}，${descriptor.memberIds.length} 个节点`}
     >
       <header className="evidence-group-frame-header">
+        <button
+          type="button"
+          className="evidence-group-move-handle nodrag nopan"
+          disabled={!movable}
+          aria-label="移动实验协议"
+          aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight"
+          title="拖动可整体移动协议；方向键微调，Shift 加速"
+          onClick={onSelect}
+          onKeyDown={onMoveHandleKeyDown}
+          onPointerDown={(event) => {
+            if (!movable || event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            pointerRef.current = event.pointerId;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            onMoveStart({ x: event.clientX, y: event.clientY });
+          }}
+          onPointerMove={(event) => {
+            if (pointerRef.current !== event.pointerId) return;
+            event.preventDefault();
+            onMove({ x: event.clientX, y: event.clientY });
+          }}
+          onPointerUp={finishPointerMove}
+          onPointerCancel={finishPointerMove}
+          onLostPointerCapture={() => {
+            if (pointerRef.current === null) return;
+            pointerRef.current = null;
+            onMoveEnd();
+          }}
+        >
+          <GripVertical size={14} />
+        </button>
         <button type="button" className="evidence-group-frame-title nodrag nopan" aria-pressed={selected} onClick={onSelect}>
           <span className="evidence-group-frame-kind">{data.draft ? "Agent 草稿" : "实验协议"}</span>
           <strong>{data.title || "实验协议"}</strong>
           {data.version ? <span className="evidence-group-version">{data.version}</span> : null}
         </button>
         <div className="evidence-group-frame-meta">
-          <span>{descriptor.memberIds.length} 节点 · {internalEdgeCount} 内部关系</span>
+          <span>
+            {moving
+              ? "正在移动整个协议"
+              : memberDragging
+                ? "松开后吸附在协议内"
+                : `${descriptor.memberIds.length} 节点 · ${internalEdgeCount} 内部关系`}
+          </span>
         </div>
       </header>
       {!descriptor.memberIds.length ? <p>拖入数据、实验、计划或实验设计节点</p> : null}

@@ -728,6 +728,13 @@ export interface EvidenceGroupFrameBounds {
   height: number;
 }
 
+export const protocolFrameInsets = {
+  left: 24,
+  top: 64,
+  right: 24,
+  bottom: 24
+} as const;
+
 export interface EvidenceGroupProjection {
   nodes: EvidenceFlowNode[];
   edges: EvidenceFlowEdge[];
@@ -827,14 +834,51 @@ export function constrainProtocolMemberPosition(
   bounds: EvidenceGroupFrameBounds,
   nodeSize = { width: 306, height: 138 }
 ): { x: number; y: number } {
-  const minX = bounds.x + 14;
-  const minY = bounds.y + 46;
-  const maxX = Math.max(minX, bounds.x + bounds.width - nodeSize.width - 14);
-  const maxY = Math.max(minY, bounds.y + bounds.height - nodeSize.height - 14);
+  const minX = bounds.x + protocolFrameInsets.left;
+  const minY = bounds.y + protocolFrameInsets.top;
+  const maxX = Math.max(minX, bounds.x + bounds.width - nodeSize.width - protocolFrameInsets.right);
+  const maxY = Math.max(minY, bounds.y + bounds.height - nodeSize.height - protocolFrameInsets.bottom);
   return {
     x: Math.min(maxX, Math.max(minX, position.x)),
     y: Math.min(maxY, Math.max(minY, position.y))
   };
+}
+
+export function translateProtocolContainer(
+  nodes: EvidenceFlowNode[],
+  groupId: string,
+  delta: { x: number; y: number }
+): EvidenceFlowNode[] {
+  return nodes.map((node) => {
+    if (node.id !== groupId && node.data.groupId !== groupId) return node;
+    return {
+      ...node,
+      position: {
+        x: node.position.x + delta.x,
+        y: node.position.y + delta.y
+      },
+      data: { ...node.data, pinned: true }
+    };
+  });
+}
+
+export function protocolContainerMoveDeltaForKey(
+  key: string,
+  shiftKey = false
+): { x: number; y: number } | null {
+  const step = shiftKey ? 40 : 10;
+  switch (key) {
+    case "ArrowLeft":
+      return { x: -step, y: 0 };
+    case "ArrowRight":
+      return { x: step, y: 0 };
+    case "ArrowUp":
+      return { x: 0, y: -step };
+    case "ArrowDown":
+      return { x: 0, y: step };
+    default:
+      return null;
+  }
 }
 
 function evidenceNodeWidth(node: EvidenceFlowNode) {
