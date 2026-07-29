@@ -29,14 +29,28 @@ CREATE TABLE resources (
 );
 ```
 
+> 本文展示核心字段，不再复制完整建表语句作为迁移权威来源。实际 schema
+> 以 `internal/store/schema.sql` 和 `migrateColumns` 为准。
+
 ### runs
 
 ```sql
 CREATE TABLE runs (
     id                  TEXT PRIMARY KEY,       -- run_ + nanoid
     resource_id         TEXT NOT NULL REFERENCES resources(id),
+    project_id          TEXT DEFAULT '',
+    target_id           TEXT DEFAULT '',
+    recipe_name         TEXT DEFAULT '',
     name                TEXT DEFAULT '',        -- 人可读名: ECL-iTransformer-run1
-    status              TEXT NOT NULL DEFAULT 'created', -- created|queued|starting|running|succeeded|failed|cancelled|lost
+    status              TEXT NOT NULL DEFAULT 'created', -- created|queued|preflighting|starting|running|succeeded|failed|cancelled|lost
+    status_source       TEXT DEFAULT 'local_cache',
+    status_observed_at  DATETIME,
+    status_checked_at   DATETIME,
+    status_check_error  TEXT DEFAULT '',
+    kind                TEXT NOT NULL DEFAULT 'formal', -- legacy compatibility
+    task_role           TEXT NOT NULL DEFAULT 'other',
+    evidence_grade      TEXT NOT NULL DEFAULT 'formal',
+    experiment_role     TEXT NOT NULL DEFAULT 'unspecified',
     cwd                 TEXT DEFAULT '',        -- 工作目录
     command             TEXT NOT NULL,          -- 完整命令
     conda_env           TEXT DEFAULT '',        -- 覆盖 resource 默认
@@ -53,6 +67,10 @@ CREATE TABLE runs (
     finished_at         DATETIME
 );
 ```
+
+`run_changes` 由 `runs` 的 insert/update/delete trigger 写入，作为跨进程 SSE 与
+增量查询的 durable cursor；`run_launch_jobs` 保存 API 异步提交请求及 queued / launching /
+succeeded / failed 状态，使“先显示 Run、后做 SSH 预检”在控制面重启后仍可恢复。
 
 ### resource_snapshots
 
@@ -96,12 +114,30 @@ CREATE INDEX idx_log_run ON log_lines(run_id, source, line_no);
 CREATE TABLE artifacts (
     id          TEXT PRIMARY KEY,
     run_id      TEXT NOT NULL REFERENCES runs(id),
-    path        TEXT NOT NULL,            -- 相对于 root_dir
+    path        TEXT NOT NULL,            -- 远端规范绝对路径
+    relative_path TEXT DEFAULT '',        -- 相对于 resolved cwd
+    source_uri  TEXT DEFAULT '',
     type        TEXT NOT NULL DEFAULT 'file',  -- file | dir
+    role        TEXT DEFAULT '',
+    mime        TEXT DEFAULT '',
     size        INTEGER DEFAULT 0,
+    sha256      TEXT DEFAULT '',
+    collection_state TEXT NOT NULL DEFAULT 'indexed',
+    collection_error TEXT DEFAULT '',
+    discovered_at DATETIME,
     modified_at DATETIME
 );
 ```
+
+`artifact_paths_json` 是声明，不是 inventory。`artifact_collections` 记录发现流程的
+`declared/discovering/indexed/partial/failed` 状态；`run_manifests` 保存 draft→final
+的版本化 JSON 和 SHA-256，final 后禁止静默覆盖。
+
+### project_definitions / project_targets
+
+`project_definitions` 保存 repo/recipe 的权威身份；`project_targets` 保存 Project ×
+Resource 的 desired execution binding。旧 `project_profiles(resource_id,cwd)` 继续作为
+实际环境 observation cache，不能当成 Target，也不能据此猜测历史 Project 归属。
 
 ### agent_events
 

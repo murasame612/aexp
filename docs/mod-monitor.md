@@ -146,4 +146,6 @@ else:
     status = "idle"
 ```
 
-run 的真实状态（succeeded/failed/lost）由 executor 的状态机决定，monitor 不干预。
+run 的状态判定规则仍由 executor 负责；monitor 包中的 active-run reconciler 会按
+resource 批量、限并发地触发这些判定。探测失败只把 observation 标成 stale/error，
+不会凭缓存伪造新的远端事实。

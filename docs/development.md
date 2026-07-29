@@ -37,9 +37,10 @@ Agent / CLI / Web UI
 |---|---|
 | Resource | A compute target, currently implemented for SSH resources. |
 | Run | A tracked execution bound to a resource and remote run directory. |
+| Project journal | Append-only research reasoning with optional links to zero or more Runs. |
 | Snapshot | Point-in-time resource telemetry such as CPU, memory, and GPU state. |
 | Agent event | Audit entry for agent or CLI actions. |
-| Run mark | Human or agent interpretation attached to a run after inspecting evidence. |
+| Run mark | Historical compatibility record; new reasoning belongs in the Project journal. |
 
 See [concepts.md](concepts.md) for the user-facing definitions.
 
@@ -60,14 +61,17 @@ See [concepts.md](concepts.md) for the user-facing definitions.
 
 Long-running commands go through `aexp run submit`:
 
-1. Validate resource, cwd, command, run kind, and GPU slot.
+1. Validate Project/Target provenance, cwd, command, the three run-semantic axes,
+   and GPU slot. Legacy `kind` is normalized into task role, evidence grade, and
+   experiment role; conflicting dual representations are rejected.
 2. Optionally detect the project runtime profile.
-3. Create a local SQLite run record.
+3. Create a local SQLite run record plus a draft, hashed Run Manifest.
 4. Deploy or update the remote wrapper script.
 5. Create `<root-dir>/.aexp/runs/<run_id>/`.
-6. Write `command.sh`.
+6. Write `command.sh` and `manifest.json`.
 7. Launch `tmux new-session -d -s aexp_<run_id>`.
-8. Update status, timestamps, logs, and agent events.
+8. Update status, timestamps, logs, and agent events. On terminal state, index
+   declared artifacts and finalize the immutable manifest.
 
 The remote wrapper writes:
 

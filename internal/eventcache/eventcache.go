@@ -115,6 +115,24 @@ func Write(runID string, lines []Line) (string, error) {
 	return path, writeAtomic(path, merged)
 }
 
+// WriteSnapshot replaces a cached generation with the complete snapshot
+// returned by the remote reader. It deliberately does not merge an older tail:
+// a remote log may have been truncated or recreated between observations.
+func WriteSnapshot(runID string, lines []Line) (string, error) {
+	path, err := Path(runID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return path, err
+	}
+	incoming := make([]string, 0, len(lines))
+	for _, line := range lines {
+		incoming = append(incoming, strings.TrimRight(line.Content, "\r\n"))
+	}
+	return path, writeAtomic(path, incoming)
+}
+
 func filename(runID string) (string, error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {

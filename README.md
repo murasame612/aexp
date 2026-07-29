@@ -6,12 +6,29 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-Agent-friendly experiment control for SSH machines.
+Agent-friendly research experiment and evidence control for SSH machines.
 
 `aexp` gives humans and coding agents a small control plane for running research
 experiments on remote GPU boxes. It keeps the convenience of SSH, but adds run
 records, tmux-backed execution, live logs, resource monitoring, structured
 metrics, and an audit trail.
+
+The normal research model has four concepts:
+
+```text
+Project
+├── Assets
+├── Runs
+└── Evidence Maps
+    ├── Primary (default inbox)
+    └── Topic graphs (optional)
+```
+
+An immutable Asset revision is used by a Run; verified Run outputs can be
+referenced by an Evidence Snapshot, evaluated by the Project Release gate, and
+then cited by an Evidence proposal. NAS, transfers, placements, and bindings
+remain inspectable implementation details under Settings; agents do not
+orchestrate them in the normal workflow.
 
 ![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
@@ -32,7 +49,7 @@ is still alive.
 | Find logs later | remember paths | `aexp run logs <run_id>` |
 | See GPU/CPU/RAM | run remote commands | Web dashboard and resource snapshots |
 | Resume after context loss | reconstruct from shell history | query runs, events, metrics, and marks |
-| Keep setup/smoke/formal runs separate | naming convention | first-class `--kind setup|smoke|formal|ablation` |
+| Keep task/evidence/experiment roles separate | naming convention | `task_role`, `evidence_grade`, and `experiment_role` (legacy `--kind` remains compatible) |
 
 Today `aexp` targets SSH resources. The schema leaves room for Docker, Slurm,
 Kubernetes, and local execution, but the open-source path is intentionally
@@ -48,9 +65,15 @@ simple: one local binary, one SQLite database, remote machines with SSH + tmux.
 - Run short one-shot commands without creating a formal run record.
 - Discover project runtime profiles: `.venv`, `uv run`, Conda, Python, Torch,
   CUDA, candidate logs, and candidate metric files.
+- Define executable Projects and per-resource Targets in the ui-v2 Launchpad,
+  inspect a prepare plan, and launch preparation as a tracked setup run.
 - Sync local project files to a resource with rsync.
 - Emit JSONL UI events from scripts for progress, params, notes, and metrics.
-- Store resources, runs, events, marks, and history in local SQLite.
+- Capture a versioned, hashed Run Manifest and index declared remote artifacts
+  without downloading large checkpoints automatically.
+- Check run comparability, aggregate structured metrics by seed, and generate a
+  provenance-bounded Markdown comparison report.
+- Store resources, projects, targets, runs, events, marks, and history in local SQLite.
 
 ## Install
 
@@ -117,7 +140,7 @@ Open the UI you want:
 
 | UI | URL | Use it for |
 |---|---|---|
-| React UI v2 | `http://localhost:8080/ui-v2/` | the main product experience: dense run lists, event dashboards, metric charts, matrices, and Evidence Chain whiteboards |
+| React UI v2 | `http://localhost:8080/ui-v2/` | the main Project experience: Overview, paginated Runs, Assets, and the Project's primary plus optional topic Evidence Maps |
 | Legacy UI | `http://localhost:8080/` | the embedded compatibility dashboard for older workflows, quick debugging, or installations that still depend on the root path |
 
 The two UIs use the same local `aexp` API and SQLite database. You can switch
@@ -131,9 +154,11 @@ If you use Codex, Claude Code, or Hermes Agent, install the MCP tools:
 aexp mcp install --target all
 ```
 
-The MCP tools let agents call `aexp_exec`, `aexp_submit_run`,
-`aexp_project_run`, `aexp_sync_push`, `aexp_mark_run`, and the rest of the
-structured surface without hand-editing MCP JSON/TOML.
+The default MCP surface is intentionally small: inspect Projects, publish and
+read Assets, submit and inspect Runs, create Snapshots, evaluate Releases, and
+submit reviewable Evidence proposals. Legacy storage/transfer tools remain
+callable for administrator compatibility but are not advertised as the normal
+research workflow.
 
 Explore a remote host before registering it:
 
@@ -174,10 +199,20 @@ aexp run submit \
   --cwd /workspace/Time-Series-Library \
   --project-env auto \
   --gpu-index 0 \
+  --dataset ecl@v1 \
+  --seed 41 --seed 42 --seed 43 \
+  --config-sha256 'sha256:<project-config-digest>' \
+  --split-protocol ecl-split-v1 \
+  --evaluation-protocol forecasting-eval-v1 \
   --log-paths 'logs/**/*.log' \
   --metric-paths 'results/**/*.json' \
   -- python train.py --data ECL --model iTransformer
 ```
+
+Formal and ablation runs require a dataset published and verified by
+`aexp dataset ingest`; metadata-only `dataset register` entries cannot become
+paper evidence. Project recipes calculate the project-config digest
+automatically.
 
 Watch it:
 
@@ -241,7 +276,11 @@ Use run kinds deliberately:
 ```bash
 aexp run submit --kind setup --no-gpu --resource gpu-box --shell -- 'uv sync'
 aexp run submit --kind smoke --resource gpu-box -- python train.py --epochs 1
-aexp run submit --kind formal --resource gpu-box -- python train.py --epochs 100
+aexp run submit --kind formal --resource gpu-box \
+  --dataset project-data@v1 --seed 41 \
+  --config-sha256 'sha256:<project-config-digest>' \
+  --split-protocol split-v1 --evaluation-protocol eval-v1 \
+  -- python train.py --epochs 100
 ```
 
 Smoke runs are connectivity or wiring checks. Do not treat them as experimental
@@ -288,8 +327,8 @@ trial, and identify the trial with `trial` plus a stable `variant` or `series`
 label. Use `training_epoch` and `training_done(..., early_stopped=True)` for
 training progress so early stopping displays as "early stopped at 62/100" rather
 than pretending the configured epoch budget was fully consumed. Do not
-reconstruct telemetry after the run; use run marks for post-hoc
-interpretation notes.
+reconstruct telemetry after the run. Runtime `note()` calls remain execution
+telemetry; write post-run interpretation in the Project journal.
 
 ```python
 for trial_id, cfg in enumerate(search_space):
@@ -375,14 +414,15 @@ pnpm --dir web build
 go build -o aexp ./cmd/aexp
 ```
 - structured progress and metrics
-- agent findings and run marks
+- Project journal entries linked to zero or more Runs
 
 ![resources](doc/imgs/resources_EN.png)
 
 ![logs](doc/imgs/logs.png)
 
-Agents and humans can attach lightweight findings to important runs. Highlighted
-runs stay visible in the list and the finding text remains attached to the run:
+Agents and humans record reasoning in the Project journal and may link the Runs
+that informed a decision. Historical RunMark records remain readable from the
+Run raw view:
 
 ![agent findings](doc/imgs/agent_findings.png)
 
@@ -410,10 +450,11 @@ aexp run events <run_id> [--tail 50] [--json]
 aexp run metrics <run_id> [--latest] [--json]
 aexp run logs <run_id> [--follow] [--source stdout|stderr]
 aexp run cancel <run_id>
-aexp run mark <run_id> --title ... --reason ... --evidence ...
 
 aexp project init
 aexp project doctor
+aexp project journal list <project_id> [--run <run_id>]
+aexp project journal create <project_id> --title ... --body-md-file notes.md [--run <run_id>] [--next-action ...]
 aexp project sync
 aexp project run <recipe>
 
@@ -460,6 +501,10 @@ The MCP server exposes structured tools for agents:
 - `aexp_init`
 - `aexp_project_init`
 - `aexp_list_resources`
+- `aexp_storage_stat`
+- `aexp_storage_list`
+- `aexp_storage_locations`
+- `aexp_storage_copy`
 - `aexp_doctor`
 - `aexp_resource_explore`
 - `aexp_resource_add`
@@ -477,8 +522,10 @@ The MCP server exposes structured tools for agents:
 - `aexp_latest_run_metrics` (alias)
 - `aexp_tail_run_logs`
 - `aexp_cancel_run`
-- `aexp_mark_run`
-- `aexp_list_run_marks`
+- `aexp_create_project_journal_entry`
+- `aexp_list_project_journal`
+- `aexp_get_project_journal_entry`
+- `aexp_update_project_journal_next_action`
 - `aexp_list_evidence_chains`
 - `aexp_create_evidence_chain`
 - `aexp_get_evidence_chain`

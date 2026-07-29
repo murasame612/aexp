@@ -14,6 +14,69 @@ import (
 	"github.com/ziwu/aexp/internal/store"
 )
 
+func TestSimplifiedResearchCommandSurface(t *testing.T) {
+	asset := assetCmd()
+	for _, name := range []string{"publish", "get", "list"} {
+		child, _, err := asset.Find([]string{name})
+		if err != nil || child == nil || child.Name() != name {
+			t.Fatalf("asset command %q missing: child=%v err=%v", name, child, err)
+		}
+	}
+
+	project := projectCmd()
+	for _, name := range []string{"list", "get"} {
+		child, _, err := project.Find([]string{name})
+		if err != nil || child == nil || child.Name() != name || child.Hidden {
+			t.Fatalf("canonical project command %q missing or hidden: child=%v err=%v", name, child, err)
+		}
+	}
+	for _, name := range []string{"card", "digest", "runs", "sync"} {
+		child, _, err := project.Find([]string{name})
+		if err != nil || child == nil || !child.Hidden {
+			t.Fatalf("legacy project command %q must remain callable but hidden: child=%v err=%v", name, child, err)
+		}
+	}
+
+	run := runCmd()
+	for _, name := range []string{"mark", "marks"} {
+		child, _, err := run.Find([]string{name})
+		if err != nil || child == nil || !child.Hidden {
+			t.Fatalf("legacy run command %q must remain callable but hidden: child=%v err=%v", name, child, err)
+		}
+	}
+
+	evidence := evidenceCmd()
+	for _, name := range []string{"create", "add-node", "add-edge", "list"} {
+		child, _, err := evidence.Find([]string{name})
+		if err != nil || child == nil || !child.Hidden {
+			t.Fatalf("direct evidence command %q must remain callable but hidden: child=%v err=%v", name, child, err)
+		}
+	}
+}
+
+func TestAgentCardUsesProjectJournalForResearchReasoning(t *testing.T) {
+	steps, rules := agentCardContent()
+	content := strings.Join(append(append([]string{}, steps...), rules...), "\n")
+	for _, want := range []string{
+		"project journal list",
+		"project journal create",
+		"Do not create new Run marks or Project cards",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("agent card missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		"Record project card:",
+		"Review project memory: aexp project digest",
+		"aexp run mark <run_id>",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("agent card still advertises legacy reasoning path %q:\n%s", forbidden, content)
+		}
+	}
+}
+
 func TestExecViaLocalAPISendsRequest(t *testing.T) {
 	var got executor.ExecRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,5 +364,61 @@ func TestBuildTarCreateArgsForFile(t *testing.T) {
 	want := []string{"-czf", "-", "-C", dir, "data.jsonl"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("tar args = %#v, want %#v", args, want)
+	}
+}
+
+func TestParseDatasetRefAndRelativePathRejectTraversal(t *testing.T) {
+	name, version, err := parseDatasetRef("facade@v3")
+	if err != nil || name != "facade" || version != "v3" {
+		t.Fatalf("parseDatasetRef = %q %q err=%v", name, version, err)
+	}
+	for _, ref := range []string{"facade", "facade@", "../facade@v3", "facade@v3/bad"} {
+		if _, _, err := parseDatasetRef(ref); err == nil {
+			t.Fatalf("parseDatasetRef(%q) accepted", ref)
+		}
+	}
+	for _, path := range []string{"/absolute", "../escape", "datasets/../../escape", ""} {
+		if _, err := cleanRelativeDataPath(path); err == nil {
+			t.Fatalf("cleanRelativeDataPath(%q) accepted", path)
+		}
+	}
+	if got, err := cleanRelativeDataPath("datasets/facade/v3"); err != nil || got != "datasets/facade/v3" {
+		t.Fatalf("clean path=%q err=%v", got, err)
+	}
+}
+
+func TestRunDatasetInputFromVersionRequiresVerifiedState(t *testing.T) {
+	dataset := &store.DatasetVersion{
+		ID: "dataset_facade_v3", DatasetID: "facade", Version: "v3",
+		ManifestSHA256: "sha256:manifest", State: store.DatasetStateRegistered,
+	}
+	if _, err := runDatasetInputFromVersion(dataset); err == nil || !strings.Contains(err.Error(), "dataset ingest") {
+		t.Fatalf("registered dataset error = %v", err)
+	}
+	dataset.State = store.DatasetStateVerified
+	input, err := runDatasetInputFromVersion(dataset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.ID != dataset.ID || input.DatasetID != dataset.DatasetID || input.Version != dataset.Version || input.ManifestSHA256 != dataset.ManifestSHA256 {
+		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestCwdEscapesRootUsesRemotePOSIXSemantics(t *testing.T) {
+	tests := []struct {
+		root, cwd string
+		want      bool
+	}{
+		{root: "/", cwd: "/home/ziwu/project", want: false},
+		{root: "/home/ziwu", cwd: "project", want: false},
+		{root: "/home/ziwu", cwd: "/home/ziwu/project", want: false},
+		{root: "/home/ziwu", cwd: "/home/ziwu-other/project", want: true},
+		{root: "/home/ziwu", cwd: "../escape", want: true},
+	}
+	for _, tt := range tests {
+		if got := cwdEscapesRoot(tt.root, tt.cwd); got != tt.want {
+			t.Errorf("cwdEscapesRoot(%q, %q) = %v, want %v", tt.root, tt.cwd, got, tt.want)
+		}
 	}
 }

@@ -6,9 +6,24 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-面向人和 Agent 的实验控制平面。
+面向人和 Agent 的科研实验与证据控制平面。
 
 `aexp` 是一个用 Go 写的单文件工具，用来把远程 SSH 机器上的科研实验跑得更稳、更可追踪。它保留 SSH 的直接感，同时补上 run 记录、tmux 后台执行、资源监控、结构化指标、日志查看、项目配置和 MCP 工具。
+
+普通使用只需要理解四个研究概念：
+
+```text
+Project
+├── Assets
+├── Runs
+└── Evidence Maps
+    ├── 主图（默认收件箱）
+    └── 专题图（可选）
+```
+
+Asset 是不可变、已校验的文件版本；Run 消费 Asset 并发布输出；Evidence Snapshot
+只引用已发布输出；Project 的 Release gate 判定它能否进入正式 Evidence。NAS、传输、
+副本位置和 binding 仍然可诊断，但放在 Settings 内部，不要求用户或 Agent 日常编排。
 
 ![aexp React dashboard](doc/imgs/ui-v2-dashboard.png)
 
@@ -34,15 +49,10 @@
 | 看指标 | grep 日志 / 读 csv | `aexp run snapshot/events/metrics` |
 | 看资源 | 远端命令 | Web 面板资源卡片 |
 | Agent 接管 | 重新读上下文 | MCP 工具 + run/project 记录 |
-| 区分 setup/smoke/formal | 靠命名约定 | 一等 `--kind setup|smoke|formal|ablation` |
+| 区分任务/证据/实验角色 | 靠命名约定 | `task_role`、`evidence_grade`、`experiment_role` 三个正交维度（兼容旧 `--kind`） |
 
-一句话：
-
-```text
-resource = 去哪台机器
-project  = 这个项目怎么同步、进环境、跑命令
-run      = 这一次到底跑了什么
-```
+一句话：Project 是研究范围，Asset 是可信文件版本，Run 是执行事实，Evidence Map
+是研究推理；Resource/Storage 只是系统管理能力。
 
 ## 功能概览
 
@@ -120,7 +130,7 @@ aexp serve --port 8080
 
 | UI | 地址 | 适合用途 |
 |---|---|---|
-| React UI v2 | `http://localhost:8080/ui-v2/` | 主要使用入口：高密度实验列表、事件面板、指标曲线、实验矩阵、证据链白板 |
+| React UI v2 | `http://localhost:8080/ui-v2/` | 主要入口：Project 概览、分页 Runs、Assets，以及该 Project 的主证据图和可选专题图 |
 | 旧版 UI | `http://localhost:8080/` | 兼容入口：旧工作流、快速调试、仍然依赖根路径打开面板的部署 |
 
 两个 UI 使用同一个本地 `aexp` API 和 SQLite 数据库，不需要迁移数据，可以随时切换。
@@ -133,7 +143,9 @@ aexp serve --port 8080
 aexp mcp install --target all
 ```
 
-这样 Agent 可以直接调用 `aexp_exec`、`aexp_submit_run`、`aexp_project_run`、`aexp_sync_push`、`aexp_mark_run` 等结构化工具，不需要自己拼 SSH 命令。
+默认 MCP 工具只暴露意图级操作：检查 Project、发布/读取 Asset、提交/检查 Run、
+创建 Snapshot、执行 Release 和提交待审核 Evidence proposal。旧 storage/transfer
+工具仍可供管理员兼容调用，但不再作为 Agent 的默认研究工作流。
 
 ## 添加远程资源
 
@@ -187,10 +199,19 @@ aexp run submit \
   --cwd /workspace/Time-Series-Library \
   --project-env auto \
   --gpu-index 0 \
+  --dataset ecl@v1 \
+  --seed 41 --seed 42 --seed 43 \
+  --config-sha256 'sha256:<项目配置摘要>' \
+  --split-protocol ecl-split-v1 \
+  --evaluation-protocol forecasting-eval-v1 \
   --log-paths 'logs/**/*.log' \
   --metric-paths 'results/**/*.json' \
   -- python train.py --data ECL --model iTransformer
 ```
+
+`formal` 和 `ablation` 必须绑定由 `aexp dataset ingest` 发布并校验为
+`verified` 的数据集；只通过 `dataset register` 手工登记的元数据不能成为论文证据。
+项目 recipe 会自动计算项目配置摘要。
 
 查看 run：
 
@@ -210,7 +231,11 @@ Web 面板会显示 run 类型、状态、GPU、命令、收藏、回收站和�
 ```bash
 aexp run submit --kind setup --no-gpu --resource gpu-box --shell -- 'uv sync'
 aexp run submit --kind smoke --resource gpu-box -- python train.py --epochs 1
-aexp run submit --kind formal --resource gpu-box -- python train.py --epochs 100
+aexp run submit --kind formal --resource gpu-box \
+  --dataset project-data@v1 --seed 41 \
+  --config-sha256 'sha256:<项目配置摘要>' \
+  --split-protocol split-v1 --evaluation-protocol eval-v1 \
+  -- python train.py --epochs 100
 ```
 
 `setup` 和 `smoke` 不是正式实验结果，不要在论文或总结里当作证据。
@@ -325,18 +350,20 @@ stdout/stderr 更适合失败、OOM、卡住或缺少事件时诊断：
 
 ![logs](doc/imgs/logs.png)
 
-## Agent 标注
+## 项目工作日志
 
-Agent 或人可以给重要 run 写标注：
+Agent 或人把研究推理写入项目日志；日志可以不挂 Run，也可以关联一个或多个 Run：
 
 ```bash
-aexp run mark run_xxx \
+aexp project journal create project_xxx \
   --title "IR baseline still stronger" \
-  --reason "mAP50-95 beats fusion baseline" \
-  --evidence "events + results.csv"
+  --body-md-file notes.md \
+  --run run_xxx \
+  --next-action "复核另外四个 seed"
 ```
 
-有标注的 run 会在列表里高亮，避免上下文丢失后忘记关键发现：
+Run 页面只展示关联日志的回链和写日志入口。历史 RunMark 不删除，只在 Run 的“原始”
+页中以兼容只读形式查看：
 
 ![agent findings](doc/imgs/agent_findings.png)
 
@@ -368,7 +395,10 @@ aexp mcp install --target hermes
 - `aexp_tail_run_events`
 - `aexp_get_run_metrics`
 - `aexp_tail_run_logs`
-- `aexp_mark_run`
+- `aexp_create_project_journal_entry`
+- `aexp_list_project_journal`
+- `aexp_get_project_journal_entry`
+- `aexp_update_project_journal_next_action`
 - `aexp_get_evidence_chain`
 - `aexp_add_evidence_node`
 - `aexp_add_evidence_edge`
@@ -383,7 +413,7 @@ aexp mcp install --target hermes
 项目复用：aexp_project_run
 正常监控：aexp_get_run_snapshot / aexp_tail_run_events
 失败诊断：aexp_tail_run_logs
-关键结论：aexp_mark_run
+研究推理：aexp_create_project_journal_entry
 ```
 
 证据链白板会把假说、实验 run、计划、结论和笔记放成可连线的研究推理图；Agent 可以读写语义节点和边，但具体排版仍然留给人调整：

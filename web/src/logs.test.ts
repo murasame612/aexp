@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
+import { isEmptyRemotePathSnapshot, logCursor, logSnapshotError, mergeCursorLogLines, mergeLogSnapshot } from "./logs";
 import type { LogsResponse } from "./types";
 
 function logs(payload: Partial<LogsResponse>): LogsResponse {
@@ -42,4 +42,27 @@ describe("log helpers", () => {
     );
     expect(merged.map((line) => line.content)).toEqual(["a", "b", "c"]);
   });
+
+	it("fills cursor gaps without duplicating overlapping lines", () => {
+		const current = [
+			{ source: "stdout", line_no: 7, content: "same" },
+			{ source: "stdout", line_no: 8, content: "old" }
+		];
+		const merged = mergeCursorLogLines(current, [
+			{ source: "stdout", line_no: 8, content: "old" },
+			{ source: "stdout", line_no: 9, content: "same" },
+			{ source: "stdout", line_no: 10, content: "new" }
+		]);
+		expect(merged.map((line) => line.line_no)).toEqual([7, 8, 9, 10]);
+		expect(logCursor(merged)).toBe(10);
+	});
+
+	it("replaces the previous generation after remote truncation", () => {
+		const merged = mergeCursorLogLines(
+			[{ source: "stdout", line_no: 99, content: "old file" }],
+			[{ source: "stdout", line_no: 1, content: "new file" }],
+			true
+		);
+		expect(merged).toEqual([{ source: "stdout", line_no: 1, content: "new file" }]);
+	});
 });

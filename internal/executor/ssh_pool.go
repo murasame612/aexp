@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -172,17 +173,37 @@ func (p *SSHPool) dialViaProxyCommand(ctx context.Context, tmpl string, host str
 
 // cmdConn wraps a command's stdin/stdout as a net.Conn.
 type cmdConn struct {
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	cmd    *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	cmd       *exec.Cmd
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (c *cmdConn) Read(b []byte) (int, error)  { return c.stdout.Read(b) }
 func (c *cmdConn) Write(b []byte) (int, error) { return c.stdin.Write(b) }
 func (c *cmdConn) Close() error {
-	c.stdin.Close()
-	c.stdout.Close()
-	return c.cmd.Process.Kill()
+	c.closeOnce.Do(func() {
+		_ = c.stdin.Close()
+		_ = c.stdout.Close()
+		if c.cmd.Process != nil {
+			if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				c.closeErr = err
+			}
+		}
+		// Kill only requests termination. Wait is still required to release the
+		// process table entry; without it every closed ProxyCommand remains a
+		// zombie owned by the long-lived aexp serve process.
+		if c.cmd.ProcessState == nil {
+			if err := c.cmd.Wait(); err != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) && !errors.Is(err, os.ErrProcessDone) && c.closeErr == nil {
+					c.closeErr = err
+				}
+			}
+		}
+	})
+	return c.closeErr
 }
 func (c *cmdConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
 func (c *cmdConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
@@ -303,6 +324,102 @@ func (p *SSHPool) Exec(ctx context.Context, host string, port int, user string, 
 	return outBuf.String(), errBuf.String(), err
 }
 
+// ExecStreamLines runs a command and reports stdout records separated by
+// either a newline or carriage return. The latter matters for tools such as
+// rsync --info=progress2, which redraw a single terminal line. Unlike the
+// legacy ExecStream helper this method returns the remote exit status and
+// stderr, so callers must not mistake a broken transfer for a clean EOF.
+func (p *SSHPool) ExecStreamLines(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string, onLine func(string) error) (string, error) {
+	session, err := p.newSessionContext(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := session.Start(cmd); err != nil {
+		return "", err
+	}
+
+	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderrBuf, stderr)
+		close(stderrDone)
+	}()
+
+	callbackErr := make(chan error, 1)
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		scanner.Split(splitCommandRecords)
+		for scanner.Scan() {
+			if onLine == nil {
+				continue
+			}
+			if err := onLine(scanner.Text()); err != nil {
+				select {
+				case callbackErr <- err:
+				default:
+				}
+				_ = session.Close()
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			select {
+			case callbackErr <- err:
+			default:
+			}
+		}
+	}()
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- session.Wait() }()
+	select {
+	case err = <-waitCh:
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGINT)
+		_ = session.Close()
+		err = ctx.Err()
+	}
+	<-stdoutDone
+	<-stderrDone
+	select {
+	case scanErr := <-callbackErr:
+		if scanErr != nil {
+			return stderrBuf.String(), scanErr
+		}
+	default:
+	}
+	return stderrBuf.String(), err
+}
+
+func splitCommandRecords(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, value := range data {
+		if value == '\n' || value == '\r' {
+			advance = i + 1
+			for advance < len(data) && (data[advance] == '\n' || data[advance] == '\r') {
+				advance++
+			}
+			return advance, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
 // ExecStream runs a command and streams stdout lines to a channel.
 func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (<-chan string, error) {
 	session, err := p.newSessionContext(ctx, host, port, user, keyPath, socksProxy, proxyCommand)
@@ -336,6 +453,10 @@ func (p *SSHPool) ExecStream(ctx context.Context, host string, port int, user st
 		}()
 		defer close(done)
 		scanner := bufio.NewScanner(stdout)
+		// Training logs occasionally contain large JSON/tensor records. The
+		// Scanner default is only 64 KiB and used to terminate the live stream
+		// silently when one record crossed that boundary.
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		scanner.Split(splitLogTokens)
 		for scanner.Scan() {
 			select {

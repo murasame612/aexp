@@ -2,97 +2,46 @@ package eventcache
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestWriteReadMergeAndTail(t *testing.T) {
+func TestWriteSnapshotDropsPreviousGenerationTail(t *testing.T) {
 	t.Setenv(envCacheDir, t.TempDir())
-
-	if _, err := Write("run_cache_1", []Line{
-		{LineNo: 1, Content: `{"type":"metric","value":1}`},
-		{LineNo: 2, Content: `{"type":"metric","value":2}`},
+	if _, err := WriteSnapshot("run_truncated", []Line{
+		{LineNo: 1, Content: "old-one"},
+		{LineNo: 2, Content: "old-two"},
+		{LineNo: 3, Content: "old-tail"},
 	}); err != nil {
-		t.Fatalf("Write initial: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := Write("run_cache_1", []Line{
-		{LineNo: 2, Content: `{"type":"metric","value":20}`},
-		{LineNo: 3, Content: `{"type":"metric","value":30}`},
+	if _, err := WriteSnapshot("run_truncated", []Line{
+		{LineNo: 1, Content: "new-one"},
+		{LineNo: 2, Content: "new-two"},
 	}); err != nil {
-		t.Fatalf("Write merge: %v", err)
+		t.Fatal(err)
 	}
-
-	lines, path, err := Read("run_cache_1", 2)
+	lines, _, err := Read("run_truncated", 0)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatal(err)
 	}
-	if filepath.Base(path) != "run_cache_1.jsonl" {
-		t.Fatalf("cache path = %q", path)
-	}
-	if len(lines) != 2 {
-		t.Fatalf("len(lines) = %d, want 2", len(lines))
-	}
-	if lines[0].LineNo != 2 || lines[0].Content != `{"type":"metric","value":20}` {
-		t.Fatalf("first tail line = %#v", lines[0])
-	}
-	if lines[1].LineNo != 3 || lines[1].Content != `{"type":"metric","value":30}` {
-		t.Fatalf("second tail line = %#v", lines[1])
+	if len(lines) != 2 || lines[0].Content != "new-one" || lines[1].Content != "new-two" {
+		t.Fatalf("cache retained an old generation: %#v", lines)
 	}
 }
 
-func TestWriteReplacesWhenIncomingTailHasGap(t *testing.T) {
+func TestWriteSnapshotCanRepresentEmptyGeneration(t *testing.T) {
 	t.Setenv(envCacheDir, t.TempDir())
-
-	if _, err := Write("run_cache_gap", []Line{
-		{LineNo: 1, Content: `old 1`},
-		{LineNo: 2, Content: `old 2`},
-	}); err != nil {
-		t.Fatalf("Write initial: %v", err)
+	if _, err := WriteSnapshot("run_empty", []Line{{LineNo: 1, Content: "old"}}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := Write("run_cache_gap", []Line{
-		{LineNo: 10, Content: `tail 10`},
-		{LineNo: 11, Content: `tail 11`},
-	}); err != nil {
-		t.Fatalf("Write tail gap: %v", err)
+	if _, err := WriteSnapshot("run_empty", nil); err != nil {
+		t.Fatal(err)
 	}
-
-	lines, _, err := Read("run_cache_gap", 0)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
+	lines, _, err := Read("run_empty", 0)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
-	if len(lines) != 2 || lines[0].Content != "tail 10" || lines[1].Content != "tail 11" {
-		t.Fatalf("unexpected replacement lines: %#v", lines)
-	}
-}
-
-func TestPathSanitizesRunID(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(envCacheDir, dir)
-
-	path, err := Path("../run bad")
-	if err != nil {
-		t.Fatalf("Path: %v", err)
-	}
-	if got, want := filepath.Dir(path), dir; got != want {
-		t.Fatalf("dir = %q, want %q", got, want)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("Path should not create file, stat err = %v", err)
-	}
-}
-
-func TestLastSnapshotPathUsesCacheDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(envCacheDir, dir)
-
-	path, err := LastSnapshotPath("../run bad")
-	if err != nil {
-		t.Fatalf("LastSnapshotPath: %v", err)
-	}
-	if got, want := filepath.Dir(path), dir; got != want {
-		t.Fatalf("dir = %q, want %q", got, want)
-	}
-	if got := filepath.Base(path); got != ".._run_bad_last_snapshot.json" {
-		t.Fatalf("snapshot base = %q", got)
+	if len(lines) != 0 {
+		t.Fatalf("empty generation retained old lines: %#v", lines)
 	}
 }

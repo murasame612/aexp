@@ -4,6 +4,12 @@ import type { Locale, Run } from "./types";
 const tokenKey = "aexp_api_token";
 const localeKey = "aexp_locale";
 
+const safeStorage = {
+  get(key:string) { try { return window.localStorage.getItem(key); } catch { return null; } },
+  set(key:string,value:string) { try { window.localStorage.setItem(key,value); } catch { /* in-memory state still works */ } },
+  remove(key:string) { try { window.localStorage.removeItem(key); } catch { /* in-memory state still works */ } }
+};
+
 interface AppState {
   token: string;
   locale: Locale;
@@ -16,25 +22,25 @@ interface AppState {
 }
 
 function initialLocale(): Locale {
-  const saved = localStorage.getItem(localeKey);
+  const saved = safeStorage.get(localeKey);
   if (saved === "en" || saved === "zh") return saved;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  token: localStorage.getItem(tokenKey) || "",
+  token: safeStorage.get(tokenKey) || "",
   locale: initialLocale(),
   selectedRunIds: new Set<string>(),
   setToken: (token) => {
-    localStorage.setItem(tokenKey, token);
+    safeStorage.set(tokenKey, token);
     set({ token });
   },
   clearToken: () => {
-    localStorage.removeItem(tokenKey);
+    safeStorage.remove(tokenKey);
     set({ token: "" });
   },
   setLocale: (locale) => {
-    localStorage.setItem(localeKey, locale);
+    safeStorage.set(localeKey, locale);
     set({ locale });
   },
   toggleSelectedRun: (run, checked) =>

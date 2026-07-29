@@ -8,13 +8,16 @@
 aexp exec        = 超短 SSH 指令，适合 10-30 秒内的检查命令
 aexp run submit  = 长时间 SSH 任务，适合 setup、数据准备、训练、评估
 aexp project     = 项目级可复用 recipe，像 repo 里的 aexp Makefile
+ui-v2 Launchpad  = Project 身份 + 每个 resource 的 Target 执行绑定与 prepare
 ```
 
 核心原则：
 
-- `project` 只保存“怎么跑这个项目”，不要变成新的训练框架。
+- `Project` 保存 repo/recipe 身份；`Target` 保存“在哪、用什么环境准备和运行”。
+  自动探测到的 `project_profile` 是 observation，不是 desired Target。
 - 实验参数放在项目自己的 `configs/` 或 `scripts/`，不要塞进 `.aexp.yaml`。
-- `run` 只记录“这次实际跑了什么”，包括 resolved cwd/env/python/gpu/logs/metrics/events。
+- `run` 记录实际执行和 Project/Target/Recipe provenance，并生成版本化 Manifest。
+- artifact glob 是声明；indexed inventory 和 downloaded file 是不同状态。
 - `setup/smoke` 永远不是正式实验结果。
 - 凡是 agent 需要反复记忆的命令细节，都应该收敛成默认值、doctor 建议或 project recipe。
 

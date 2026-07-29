@@ -15,8 +15,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	osexec "os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -29,12 +31,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ziwu/aexp/internal/api"
+	datasetservice "github.com/ziwu/aexp/internal/dataset"
 	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/explore"
+	"github.com/ziwu/aexp/internal/filespace"
+	freezer "github.com/ziwu/aexp/internal/freeze"
 	"github.com/ziwu/aexp/internal/mcp"
 	"github.com/ziwu/aexp/internal/monitor"
+	printerservice "github.com/ziwu/aexp/internal/printer"
+	releaseservice "github.com/ziwu/aexp/internal/release"
+	runioservice "github.com/ziwu/aexp/internal/runio"
 	"github.com/ziwu/aexp/internal/store"
+	"github.com/ziwu/aexp/internal/transfer"
 )
 
 var (
@@ -53,26 +62,40 @@ func main() {
 aexp runs locally and dispatches commands to registered resources over SSH.
 It does not need to be installed on the remote host.
 
-Agent workflow:
-  - Use "aexp run submit" for experiments.
-  - Instrument the training script before launch with "from aexp_events import metric, progress, param, note".
-    Training telemetry must be emitted while the run is executing; do not reconstruct loss/metric events by hand after the run.
-  - Use "aexp run logs/status" to inspect results.
-  - After interpreting a run, attach a lightweight Markdown finding with
-    "aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption".
-    These marks are shown in the web UI so important results survive context loss.`,
+Primary workflow:
+  Project → Asset revision → Run → Project journal → Snapshot/Release → Evidence proposal
+
+  - Publish immutable inputs with "aexp asset publish".
+  - Submit and inspect experiments with "aexp run".
+  - Preserve daily research reasoning with "aexp project journal".
+  - Reference verified outputs with "aexp snapshot create".
+  - Evaluate the Project gate with "aexp release evaluate".
+  - Promote durable claims with "aexp evidence proposal".
+
+Transport, placement, storage, and binding commands remain available as
+deprecated administrator compatibility tools, but are not part of the normal
+research workflow.`,
 		Version:      version,
 		SilenceUsage: true,
 	}
 
 	root.AddCommand(
 		agentCmd(),
+		assetCmd(),
 		doctorCmd(),
 		evidenceCmd(),
 		eventCmd(),
 		matrixCmd(),
 		mcpCmd(),
 		projectCmd(),
+		printerCmd(),
+		storageCmd(),
+		fsCmd(),
+		datasetCmd(),
+		snapshotCmd(),
+		releaseCmd(),
+		freezeCmd(),
+		transferCmd(),
 		syncCmd(),
 		updateCmd(),
 		serveCmd(),
@@ -82,6 +105,10 @@ Agent workflow:
 		runCmd(),
 		execCmd(),
 	)
+	hideCompatibilityCommands(root,
+		"dataset", "exec", "freeze", "fs", "matrix", "printer",
+		"resource", "storage", "sync", "transfer",
+	)
 
 	if filepath.Base(os.Args[0]) == "aexp-event" {
 		root.SetArgs(append([]string{"event"}, os.Args[1:]...))
@@ -90,6 +117,314 @@ Agent workflow:
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func hideCompatibilityCommands(root *cobra.Command, names ...string) {
+	hidden := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		hidden[name] = struct{}{}
+	}
+	for _, command := range root.Commands() {
+		if _, ok := hidden[command.Name()]; ok {
+			command.Hidden = true
+		}
+	}
+}
+
+// --- data center ---
+
+func storageCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "storage", Short: "Manage remote storage targets and Agent-visible files"}
+	cmd.AddCommand(storageAddCmd(), storageListCmd(), storageDoctorCmd(), storageStatCmd(), storageLsCmd(), storageLocationsCmd(), storageCopyCmd())
+	return cmd
+}
+
+func storageAddCmd() *cobra.Command {
+	var resourceName, rootPath string
+	cmd := &cobra.Command{
+		Use: "add <name>", Short: "Register a NAS or remote store without moving data through this Mac", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !strings.HasPrefix(rootPath, "/") {
+				return fmt.Errorf("storage root must be an absolute path on the storage host")
+			}
+			db := openDB()
+			defer db.Close()
+			resource, err := db.GetResourceByName(cmd.Context(), resourceName)
+			if err != nil {
+				return err
+			}
+			if resource == nil {
+				return fmt.Errorf("resource %s not found", resourceName)
+			}
+			existing, err := db.GetStorageTargetByName(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			target := &store.StorageTarget{ID: genID("storage_"), Name: args[0], Kind: store.StorageKindSSHRsync, ResourceID: resource.ID, RootPath: filepath.Clean(rootPath)}
+			if existing != nil {
+				target.ID, target.CreatedAt = existing.ID, existing.CreatedAt
+			}
+			if err := db.SaveStorageTarget(cmd.Context(), target); err != nil {
+				return err
+			}
+			return printJSON(target)
+		},
+	}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Registered resource hosting the NAS (required)")
+	cmd.Flags().StringVar(&rootPath, "root", "", "Absolute dataset root on the NAS (required)")
+	_ = cmd.MarkFlagRequired("resource")
+	_ = cmd.MarkFlagRequired("root")
+	return cmd
+}
+
+func storageListCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "list", Short: "List storage targets", RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		targets, err := db.ListStorageTargets(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(targets)
+		}
+		for _, target := range targets {
+			fmt.Printf("%-20s %-12s %-12s %s\n", target.Name, target.Kind, target.Status, target.RootPath)
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func storageDoctorCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "doctor <name>", Short: "Check NAS reachability, rsync, root access, and free space", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		target, err := db.GetStorageTargetByName(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if target == nil {
+			return fmt.Errorf("storage target %s not found", args[0])
+		}
+		resource, err := db.GetResource(cmd.Context(), target.ResourceID)
+		if err != nil {
+			return err
+		}
+		if resource == nil {
+			return fmt.Errorf("storage resource %s not found", target.ResourceID)
+		}
+		pool := executor.NewSSHPool(10 * time.Second)
+		loadSSHKeys(pool)
+		defer pool.CloseAll()
+		check := fmt.Sprintf("command -v rsync >/dev/null && test -r %s && test -w %s && df -Pk %s | tail -n 1", cliShellQuote(target.RootPath), cliShellQuote(target.RootPath), cliShellQuote(target.RootPath))
+		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		defer cancel()
+		stdout, stderr, checkErr := pool.Exec(ctx, resource.Host, resource.Port, resource.User, resource.AuthRef, check, resource.SocksProxy, resource.ProxyCommand)
+		now := time.Now()
+		target.LastCheckedAt = &now
+		target.LastError = strings.TrimSpace(stderr)
+		target.Status = store.StorageStatusHealthy
+		if checkErr != nil {
+			target.Status = store.StorageStatusUnreachable
+			target.LastError = checkErr.Error()
+		}
+		if err := db.SaveStorageTarget(cmd.Context(), target); err != nil {
+			return err
+		}
+		result := map[string]interface{}{"target": target, "control_plane": "aexp", "local_data_path": false, "details": strings.TrimSpace(stdout)}
+		if asJSON {
+			return printJSON(result)
+		}
+		fmt.Printf("%s: %s\n%s\n", target.Name, target.Status, strings.TrimSpace(stdout))
+		if checkErr != nil {
+			return checkErr
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func datasetCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "dataset", Short: "Manage NAS-backed immutable datasets and compute-node caches"}
+	cmd.AddCommand(datasetIngestCmd(), datasetRegisterCmd(), datasetListCmd(), datasetStatusCmd(), datasetManagedMaterializeCmd(), datasetVerifyCmd(), datasetRepairCmd(), datasetEvictCmd())
+	return cmd
+}
+
+func assetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "asset",
+		Short: "Publish and inspect immutable research file revisions",
+		Long:  "Assets are immutable, verified file revisions used as Run inputs or published Run outputs. Dataset revisions use the same compatibility implementation.",
+	}
+	publish := datasetIngestCmd()
+	publish.Use = "publish NAME@REVISION"
+	publish.Short = "Publish and verify an immutable Asset revision"
+	get := assetGetCmd()
+	list := datasetListCmd()
+	list.Use = "list"
+	list.Short = "List published Asset revisions"
+	cmd.AddCommand(publish, get, list)
+	return cmd
+}
+
+func assetGetCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "get NAME@REVISION",
+		Short: "Inspect one immutable Asset revision",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, revision, err := parseDatasetRef(args[0])
+			if err != nil {
+				return err
+			}
+			db := openDB()
+			defer db.Close()
+			asset, err := db.GetDatasetVersionByRef(cmd.Context(), name, revision)
+			if err != nil {
+				return err
+			}
+			if asset == nil {
+				return fmt.Errorf("asset %s not found", args[0])
+			}
+			if asJSON {
+				return printJSON(asset)
+			}
+			fmt.Printf("%s@%s  %s  %s\n", asset.DatasetID, asset.Version, asset.State, asset.LogicalURI)
+			fmt.Printf("manifest %s  files %d  bytes %d\n", asset.ManifestSHA256, asset.FileCount, asset.TotalBytes)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func parseDatasetRef(ref string) (string, string, error) {
+	parts := strings.Split(ref, "@")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("dataset reference must be name@version")
+	}
+	for _, value := range parts {
+		if strings.ContainsAny(value, "/\\\n\r\t") || value == "." || value == ".." {
+			return "", "", fmt.Errorf("invalid dataset reference %q", ref)
+		}
+	}
+	return parts[0], parts[1], nil
+}
+
+func cleanRelativeDataPath(value string) (string, error) {
+	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\n\r\x00") {
+		return "", fmt.Errorf("path must be a non-empty relative path")
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(value))
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path escapes the configured data root")
+	}
+	return cleaned, nil
+}
+
+func datasetRegisterCmd() *cobra.Command {
+	var storageName, storagePath, manifestHash, archiveHash, format string
+	var files, bytes int64
+	cmd := &cobra.Command{Use: "register <name@version>", Short: "Register unverified metadata for a dataset already stored on the NAS", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		name, version, err := parseDatasetRef(args[0])
+		if err != nil {
+			return err
+		}
+		relative, err := cleanRelativeDataPath(storagePath)
+		if err != nil {
+			return err
+		}
+		db := openDB()
+		defer db.Close()
+		target, err := db.GetStorageTargetByName(cmd.Context(), storageName)
+		if err != nil {
+			return err
+		}
+		if target == nil {
+			return fmt.Errorf("storage target %s not found", storageName)
+		}
+		if manifestHash == "" {
+			return fmt.Errorf("--manifest-sha256 is required for immutable registration; use dataset ingest to compute it automatically")
+		}
+		storageURI := (&url.URL{Scheme: "storage", Host: target.Name, Path: "/" + relative}).String()
+		dataset := &store.DatasetVersion{ID: genID("dataset_"), DatasetID: name, Version: version, StorageTargetID: target.ID, StoragePath: relative, LogicalURI: storageURI, Revision: manifestHash, ManifestSHA256: manifestHash, ArchiveSHA256: archiveHash, Format: format, FileCount: files, TotalBytes: bytes, State: store.DatasetStateRegistered}
+		stored, created, err := db.CreateDatasetVersionImmutable(cmd.Context(), dataset)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"dataset": stored, "created": created})
+	}}
+	cmd.Flags().StringVar(&storageName, "storage", "", "Storage target name (required)")
+	cmd.Flags().StringVar(&storagePath, "path", "", "Path relative to the target root (required)")
+	cmd.Flags().StringVar(&manifestHash, "manifest-sha256", "", "Dataset manifest SHA256")
+	cmd.Flags().StringVar(&archiveHash, "archive-sha256", "", "Archive SHA256 when path names a single archive")
+	cmd.Flags().StringVar(&format, "format", "directory", "Dataset format")
+	cmd.Flags().Int64Var(&files, "files", 0, "Known file count")
+	cmd.Flags().Int64Var(&bytes, "bytes", 0, "Known total bytes")
+	_ = cmd.MarkFlagRequired("storage")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func datasetListCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "list", Short: "List registered dataset versions", RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		datasets, err := db.ListDatasetVersions(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(datasets)
+		}
+		for _, d := range datasets {
+			fmt.Printf("%-28s %-12s %10s  %s\n", d.DatasetID+"@"+d.Version, d.State, byteSize(d.TotalBytes), d.StoragePath)
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func datasetStatusCmd() *cobra.Command {
+	var resourceName string
+	cmd := &cobra.Command{Use: "status <name@version>", Short: "Show dataset materialization state on a compute resource", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		name, version, err := parseDatasetRef(args[0])
+		if err != nil {
+			return err
+		}
+		db := openDB()
+		defer db.Close()
+		dataset, err := db.GetDatasetVersionByRef(cmd.Context(), name, version)
+		if err != nil {
+			return err
+		}
+		if dataset == nil {
+			return fmt.Errorf("dataset %s not found", args[0])
+		}
+		resource, err := db.GetResourceByName(cmd.Context(), resourceName)
+		if err != nil {
+			return err
+		}
+		if resource == nil {
+			return fmt.Errorf("resource %s not found", resourceName)
+		}
+		m, err := db.GetDatasetMaterialization(cmd.Context(), dataset.ID, resource.ID)
+		if err != nil {
+			return err
+		}
+		return printJSON(m)
+	}}
+	cmd.Flags().StringVar(&resourceName, "resource", "", "Compute resource name (required)")
+	_ = cmd.MarkFlagRequired("resource")
+	return cmd
 }
 
 // --- mcp ---
@@ -368,12 +703,40 @@ func serveCmd() *cobra.Command {
 			loadSSHKeys(monitorPool)
 
 			exec := executor.NewExecutor(sshPool, db)
+			remoteFS := filespace.PythonRemoteFS{Runner: filespace.SSHPoolRunner{Pool: sshPool}}
+			fileService := filespace.NewService(db, remoteFS)
+			transferPlanner := transfer.NewPlanner(db, fileService)
+			transferService := transfer.NewService(db, transferPlanner)
+			transferTransport := transfer.NewRsyncTransport(db, remoteFS, transfer.SSHPoolTransferRunner{Pool: sshPool})
+			transferWorker := transfer.NewWorker(db, transferTransport)
+			runIOService := runioservice.NewService(db, fileService, transferPlanner, transferService, transferWorker, remoteFS)
+			exec.SetRunIO(runIOService)
+			runIOManager := runioservice.NewManager(db, runIOService, 2*time.Second, logger)
+			transferManager := transfer.NewManager(db, transferWorker, time.Second, 2, logger)
+			datasetService := datasetservice.NewService(db, transferPlanner, transferService, remoteFS)
+			datasetManager := datasetservice.NewManager(db, datasetService, time.Second, logger)
 			mon := monitor.NewManager(db, monitorPool, 30*time.Second, logger)
+			runReconciler := monitor.NewRunReconciler(db, exec, 15*time.Second, 3*time.Second, 3, logger)
+			printerManager := printerservice.NewManager(db, printerservice.NewCUPS(), time.Second, logger)
 
 			if err := mon.Start(); err != nil {
 				return fmt.Errorf("start monitor: %w", err)
 			}
 			defer mon.Stop()
+			runReconciler.Start()
+			defer runReconciler.Stop()
+			if err := transferManager.Start(); err != nil {
+				return fmt.Errorf("start transfer manager: %w", err)
+			}
+			defer transferManager.Stop()
+			datasetManager.Start()
+			defer datasetManager.Stop()
+			runIOManager.Start()
+			defer runIOManager.Stop()
+			if err := printerManager.Start(); err != nil {
+				return fmt.Errorf("start printer manager: %w", err)
+			}
+			defer printerManager.Stop()
 
 			// Generate API token
 			apiToken, _ := gonanoid.Generate("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 32)
@@ -385,7 +748,8 @@ func serveCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr)
 			}
 
-			srv := api.NewServer(db, exec, mon, logger, apiToken, !requireTokenLocal)
+			srv := api.NewServer(db, exec, mon, logger, apiToken, !requireTokenLocal,
+				api.WithFileSpaceService(fileService), api.WithTransferServices(transferPlanner, transferService), api.WithPrinterManager(printerManager))
 			handler := srv.Handler()
 
 			addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
@@ -954,31 +1318,7 @@ func stopServeListenersByPort(ctx context.Context, port int, dryRun bool) error 
 func agentCmd() *cobra.Command {
 	var asJSON bool
 
-	steps := []string{
-		"Check resources: aexp resource list --verbose",
-		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
-		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
-		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
-		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
-		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
-		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
-		"Preserve finding: aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption",
-		"Record project card: aexp project card <run_id> --question ... --verdict ... --metric ... --important",
-		"Review project memory: aexp project digest --important",
-	}
-	rules := []string{
-		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
-		"Use run submit for experiments; use exec only for inspection/ops.",
-		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
-		"Use --kind formal for paper evidence; never treat setup/smoke runs as real results.",
-		"Training metrics/progress/params belong in aexp_events.py calls inside the training/eval script. Do not emit manual post-hoc event metrics.",
-		"Use short metric names such as train/loss and val/loss; put trial, variant, split, stage, seed, and fold in fields. In sweeps, epoch is trial-local.",
-		"For active training, monitor structured UI events first with run snapshot/events/metrics; avoid tight status/log polling. Poll every 30-60s, then back off up to 120s when nothing changes.",
-		"Always provide --metric-paths and --log-paths for formal runs.",
-		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
-		"After interpreting logs/metrics/artifacts, write a run mark so results survive context loss.",
-		"For project-organized work, use .aexp.yaml project.id; write project cards for decision-changing runs and read project digest before drafting notes.",
-	}
+	steps, rules := agentCardContent()
 
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -1010,6 +1350,36 @@ func agentCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+func agentCardContent() ([]string, []string) {
+	steps := []string{
+		"Check resources: aexp resource list --verbose",
+		"Read current project memory: aexp project journal list <project_id> --next-action-status open --json",
+		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
+		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
+		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
+		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
+		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
+		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
+		"Preserve reasoning: aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...",
+		"Route research evidence: aexp evidence list --project <project_id> --status active --json; choose a clearly matching topic graph or use the primary graph",
+	}
+	rules := []string{
+		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
+		"Use run submit for experiments; use exec only for inspection/ops.",
+		"For project checks, prefer exec --project-env auto so .venv or resource conda_env is activated when available.",
+		"Use --kind formal for paper evidence; never treat setup/smoke runs as real results.",
+		"Training metrics/progress/params belong in aexp_events.py calls inside the training/eval script. Do not emit manual post-hoc event metrics.",
+		"Use short metric names such as train/loss and val/loss; put trial, variant, split, stage, seed, and fold in fields. In sweeps, epoch is trial-local.",
+		"For active training, monitor structured UI events first with run snapshot/events/metrics; avoid tight status/log polling. Poll every 30-60s, then back off up to 120s when nothing changes.",
+		"Always provide --metric-paths and --log-paths for formal runs.",
+		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
+		"After interpreting logs/metrics/artifacts, append a Project journal entry. Linking the Run is optional; use Run marks only for legacy compatibility.",
+		"For project-organized work, use .aexp.yaml project.id. Do not create new Run marks or Project cards for research reasoning.",
+		"Before proposing evidence, list the Project's active graphs. Use a topic graph only when its purpose or routing hints clearly match; otherwise use the primary graph. Explain explicit topic routing with --routing-reason.",
+	}
+	return steps, rules
 }
 
 // --- doctor ---
@@ -1368,8 +1738,11 @@ func cwdEscapesRoot(rootDir, cwd string) bool {
 	if !strings.HasPrefix(cwd, "/") {
 		resolved = strings.TrimRight(rootDir, "/") + "/" + cwd
 	}
-	cleanRoot := filepath.Clean(rootDir)
-	cleanCwd := filepath.Clean(resolved)
+	cleanRoot := path.Clean(rootDir)
+	cleanCwd := path.Clean(resolved)
+	if cleanRoot == "/" {
+		return !strings.HasPrefix(cleanCwd, "/")
+	}
 	return cleanCwd != cleanRoot && !strings.HasPrefix(cleanCwd, cleanRoot+"/")
 }
 
@@ -1671,18 +2044,247 @@ func errString(err error) string {
 func projectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "project",
-		Short: "Detect and validate project runtime profiles",
-		Long: `Project profiles describe how to enter a project on a resource:
-resource + cwd + environment strategy + result/log globs.`,
+		Short: "Inspect Projects and validate their runtime configuration",
+		Long: `A Project is the common scope for Assets, Runs, and one primary
+Evidence Map. Runtime detection and recipes remain Project operations.`,
 	}
+	cmd.AddCommand(projectListDefinitionsCmd())
+	cmd.AddCommand(projectGetDefinitionCmd())
 	cmd.AddCommand(projectDetectCmd())
 	cmd.AddCommand(projectDoctorCmd())
 	cmd.AddCommand(projectInitCmd())
 	cmd.AddCommand(projectRunCmd())
+	cmd.AddCommand(projectJournalCmd())
 	cmd.AddCommand(projectSyncCmd())
 	cmd.AddCommand(projectCardCmd())
 	cmd.AddCommand(projectRunsCmd())
 	cmd.AddCommand(projectDigestCmd())
+	for _, command := range cmd.Commands() {
+		switch command.Name() {
+		case "card", "digest", "runs", "sync":
+			command.Hidden = true
+		}
+	}
+	return cmd
+}
+
+func projectJournalCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "journal",
+		Short: "Write and read the Project work journal",
+		Long: `The Project Journal is the low-friction reasoning layer between Runs and
+curated Evidence Maps. Entries are append-only, may reference zero or more Runs,
+and may carry one explicit next action.`,
+	}
+	cmd.AddCommand(projectJournalCreateCmd())
+	cmd.AddCommand(projectJournalListCmd())
+	cmd.AddCommand(projectJournalShowCmd())
+	cmd.AddCommand(projectJournalNextActionCmd())
+	return cmd
+}
+
+func projectJournalCreateCmd() *cobra.Command {
+	var actor, title, bodyMD, bodyMDFile, nextAction string
+	var runIDs []string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "create PROJECT_ID",
+		Short: "Append an entry to a Project journal",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if bodyMDFile != "" {
+				data, err := os.ReadFile(expandPath(bodyMDFile))
+				if err != nil {
+					return fmt.Errorf("read body md file: %w", err)
+				}
+				bodyMD = string(data)
+			}
+			db := openDB()
+			defer db.Close()
+			entry := store.ProjectJournalEntry{
+				ID:         genID("journal_"),
+				ProjectID:  args[0],
+				Actor:      actor,
+				Title:      title,
+				BodyMD:     bodyMD,
+				NextAction: nextAction,
+				RunIDs:     runIDs,
+			}
+			if err := db.CreateProjectJournalEntry(cmd.Context(), &entry); err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(entry)
+			}
+			fmt.Printf("Journaled %s in project %s\n", entry.ID, entry.ProjectID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Actor writing the entry")
+	cmd.Flags().StringVar(&title, "title", "", "Short entry title")
+	cmd.Flags().StringVar(&bodyMD, "body-md", "", "Markdown body")
+	cmd.Flags().StringVar(&bodyMDFile, "body-md-file", "", "Read Markdown body from a file")
+	cmd.Flags().StringVar(&nextAction, "next-action", "", "One concrete next action")
+	cmd.Flags().StringSliceVar(&runIDs, "run", nil, "Related Run id; repeatable")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectJournalListCmd() *cobra.Command {
+	var runID, query, nextActionStatus string
+	var limit, offset int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list PROJECT_ID",
+		Short: "List a Project journal newest first",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			entries, err := db.ListProjectJournalEntries(cmd.Context(), store.ProjectJournalFilter{
+				ProjectID: args[0], RunID: runID, Query: query,
+				NextActionStatus: nextActionStatus, Limit: limit, Offset: offset,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(entries)
+			}
+			if len(entries) == 0 {
+				fmt.Println("No project journal entries found.")
+				return nil
+			}
+			fmt.Printf("%-14s %-18s %-10s %-36s %s\n", "TIME", "ENTRY_ID", "ACTOR", "TITLE", "RUNS")
+			for _, entry := range entries {
+				fmt.Printf("%-14s %-18s %-10s %-36s %s\n",
+					entry.CreatedAt.Format("01-02 15:04"),
+					truncStr(entry.ID, 18),
+					truncStr(entry.Actor, 10),
+					truncStr(entry.Title, 36),
+					strings.Join(entry.RunIDs, ","),
+				)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&runID, "run", "", "Filter by related Run id")
+	cmd.Flags().StringVar(&query, "query", "", "Search title, body, and next action")
+	cmd.Flags().StringVar(&nextActionStatus, "next-action-status", "", "Filter next action: none, open, or done")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum entries")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Entries to skip")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectJournalShowCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "show ENTRY_ID",
+		Short: "Show one Project journal entry",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			entry, err := db.GetProjectJournalEntry(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if entry == nil {
+				return fmt.Errorf("journal entry %s not found", args[0])
+			}
+			if asJSON {
+				return printJSON(entry)
+			}
+			fmt.Printf("%s\n\n%s\n", entry.Title, entry.BodyMD)
+			if entry.NextAction != "" {
+				fmt.Printf("\nNext (%s): %s\n", entry.NextActionStatus, entry.NextAction)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectJournalNextActionCmd() *cobra.Command {
+	var status string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "next-action ENTRY_ID",
+		Short: "Mark a journal next action open or done",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			entry, err := db.UpdateProjectJournalNextActionStatus(cmd.Context(), args[0], status)
+			if err != nil {
+				return err
+			}
+			if entry == nil {
+				return fmt.Errorf("journal entry %s not found", args[0])
+			}
+			if asJSON {
+				return printJSON(entry)
+			}
+			fmt.Printf("Journal next action %s: %s\n", status, entry.ID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&status, "status", "", "Next action status: open or done")
+	_ = cmd.MarkFlagRequired("status")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectListDefinitionsCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "list", Short: "List canonical Projects", RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		projects, err := db.ListProjectDefinitions(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(projects)
+		}
+		for _, project := range projects {
+			fmt.Printf("%-32s %s\n", project.ID, project.Name)
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func projectGetDefinitionCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "get PROJECT_ID", Short: "Inspect a Project and its primary Evidence Map", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		project, err := db.GetProjectDefinition(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if project == nil {
+			return fmt.Errorf("project %s not found", args[0])
+		}
+		evidenceMap, err := db.GetActivePrimaryEvidenceChain(cmd.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		result := map[string]any{"project": project, "primary_evidence_map": evidenceMap}
+		if asJSON {
+			return printJSON(result)
+		}
+		fmt.Printf("%s  %s\n", project.ID, project.Name)
+		if evidenceMap != nil {
+			fmt.Printf("evidence map %s  revision %d\n", evidenceMap.ID, evidenceMap.Revision)
+		}
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -1702,6 +2304,7 @@ type projectFileConfig struct {
 	Commands         map[string]projectFileCommand
 	ResourceProfiles map[string]projectResourceProfile
 	Sync             projectFileSync
+	FreezeProfiles   map[string]freezer.Profile
 	Warnings         []string
 }
 
@@ -1715,16 +2318,24 @@ type projectFileMeta struct {
 }
 
 type projectFileCommand struct {
-	Name      string
-	Command   string
-	Kind      string
-	GPUIndex  *int
-	NoGPU     bool
-	TargetEnv string
-	UIEvents  string
-	Logs      []string
-	Metrics   []string
-	Artifacts []string
+	Name               string
+	Command            string
+	Kind               string
+	GPUIndex           *int
+	NoGPU              bool
+	TargetEnv          string
+	UIEvents           string
+	Logs               []string
+	Metrics            []string
+	Artifacts          []string
+	Datasets           []string
+	Seeds              []int64
+	SplitProtocol      string
+	EvaluationProtocol string
+	Inputs             []string
+	Outputs            []string
+	InputBindings      []store.RunInputBinding
+	OutputBindings     []store.RunOutputBinding
 }
 
 type projectResourceProfile struct {
@@ -2257,6 +2868,30 @@ Then run:
 			logPaths := mergeProjectLists(cfg.Logs, entry.Logs)
 			metricPaths := mergeProjectLists(cfg.Metrics, entry.Metrics)
 			artifactPaths := mergeProjectLists(cfg.Artifacts, entry.Artifacts)
+			managedInputs := append([]store.RunInputBinding(nil), entry.InputBindings...)
+			for _, spec := range entry.Inputs {
+				binding, parseErr := parseRunInputSpec(spec)
+				if parseErr != nil {
+					return parseErr
+				}
+				managedInputs = append(managedInputs, binding)
+			}
+			managedOutputs := append([]store.RunOutputBinding(nil), entry.OutputBindings...)
+			for _, spec := range entry.Outputs {
+				binding, parseErr := parseRunOutputSpec(spec)
+				if parseErr != nil {
+					return parseErr
+				}
+				managedOutputs = append(managedOutputs, binding)
+			}
+			datasetInputs, err := resolveRunDatasetInputs(cmd.Context(), entry.Datasets)
+			if err != nil {
+				return err
+			}
+			configHash, err := fileSHA256(cfg.Path)
+			if err != nil {
+				return fmt.Errorf("hash project config: %w", err)
+			}
 			if uiEventsPath == "" {
 				uiEventsPath = entry.UIEvents
 			}
@@ -2276,6 +2911,8 @@ Then run:
 			}
 			submitReq := executor.SubmitRequest{
 				ResourceID:          resourceName,
+				ProjectID:           cfg.Project.ID,
+				RecipeName:          commandName,
 				Name:                name,
 				Kind:                kind,
 				GPUIndex:            effectiveGPU,
@@ -2299,6 +2936,13 @@ Then run:
 				GitSourceDir:        filepath.Dir(cfg.Path),
 				AllowDirtyGit:       allowDirtyGit,
 				RecordGitDiff:       recordGitDiff,
+				ProjectConfigSHA256: configHash,
+				Datasets:            datasetInputs,
+				Seeds:               append([]int64(nil), entry.Seeds...),
+				SplitProtocol:       entry.SplitProtocol,
+				EvaluationProtocol:  entry.EvaluationProtocol,
+				Inputs:              managedInputs,
+				Outputs:             managedOutputs,
 			}
 			if dryRun {
 				printProjectConfigWarnings(cfg)
@@ -2403,7 +3047,7 @@ func projectSyncCmd() *cobra.Command {
 func projectCardCmd() *cobra.Command {
 	var configPath, question, verdict, level, supports, weakens, nextAction, proposalReason string
 	var keyMetrics, artifactPaths, relatedRuns []string
-	var important, promote, asJSON bool
+	var important, promote, asJSON, reassignProject bool
 
 	cmd := &cobra.Command{
 		Use:   "card [run_id]",
@@ -2434,9 +3078,12 @@ can later read project digest/runs without scanning raw logs.`,
 					RunID:         args[0],
 					EvidenceLevel: "C",
 				}
+			} else if reassignProject {
+				card, err = db.ReassignProjectRunCard(cmd.Context(), card.RunID, projectID, projectNameFromConfig(cfg), card.UpdatedAt)
+				if err != nil {
+					return err
+				}
 			}
-			card.ProjectID = projectID
-			card.ProjectName = projectNameFromConfig(cfg)
 			if cmd.Flags().Changed("question") {
 				card.Question = question
 			}
@@ -2506,6 +3153,7 @@ can later read project digest/runs without scanning raw logs.`,
 	cmd.Flags().StringVar(&proposalReason, "proposal-reason", "", "Why this deserves promotion")
 	cmd.Flags().StringSliceVar(&relatedRuns, "related-run", nil, "Related run id, repeatable")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&reassignProject, "reassign-project", false, "Explicitly move an existing card to the project in this config")
 	return cmd
 }
 
@@ -2619,13 +3267,19 @@ func projectDigestCmd() *cobra.Command {
 }
 
 type evidenceChainAgentSnapshot struct {
-	ChainID     string                   `json:"chain_id"`
-	Title       string                   `json:"title"`
-	Description string                   `json:"description,omitempty"`
-	Intro       string                   `json:"intro"`
-	UpdatedAt   time.Time                `json:"updated_at"`
-	Nodes       []evidenceChainAgentNode `json:"nodes"`
-	Edges       []evidenceChainAgentEdge `json:"edges"`
+	ChainID      string                          `json:"chain_id"`
+	Title        string                          `json:"title"`
+	Description  string                          `json:"description,omitempty"`
+	RoutingHints store.EvidenceGraphRoutingHints `json:"routing_hints"`
+	ProjectID    string                          `json:"project_id,omitempty"`
+	Role         string                          `json:"role"`
+	Status       string                          `json:"status"`
+	Revision     int64                           `json:"revision"`
+	GraphHash    string                          `json:"graph_hash"`
+	Intro        string                          `json:"intro"`
+	UpdatedAt    time.Time                       `json:"updated_at"`
+	Nodes        []evidenceChainAgentNode        `json:"nodes"`
+	Edges        []evidenceChainAgentEdge        `json:"edges"`
 }
 
 type evidenceChainAgentNode struct {
@@ -2684,28 +3338,65 @@ type evidenceChainMarkSummary struct {
 	Statement string `json:"statement,omitempty"`
 }
 
+type evidenceProposalCLIView struct {
+	store.EvidenceProposal
+	TargetMap *store.EvidenceChain `json:"target_map,omitempty"`
+}
+
+func buildEvidenceProposalCLIView(ctx context.Context, db *store.SQLite, proposal *store.EvidenceProposal) (*evidenceProposalCLIView, error) {
+	if proposal == nil {
+		return nil, nil
+	}
+	view := &evidenceProposalCLIView{EvidenceProposal: *proposal}
+	if proposal.TargetChainID == "" {
+		return view, nil
+	}
+	target, err := db.GetEvidenceChain(ctx, proposal.TargetChainID)
+	if err != nil {
+		return nil, err
+	}
+	view.TargetMap = target
+	return view, nil
+}
+
 func evidenceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "evidence",
-		Short: "Read and edit Evidence Chain reasoning boards",
-		Long: `Read and edit Evidence Chain reasoning boards.
-
-This command is intentionally semantic rather than visual: agents may list
-chains, read an agent-friendly graph snapshot, add cards, and add typed links.
-Agents should not try to arrange the whiteboard for humans; newly created cards
-are only placed on a simple non-overlapping grid so humans can move them later.`,
+		Short: "Inspect a Project Evidence Map and submit reviewable proposals",
+		Long: `Evidence Maps contain Project research reasoning. Agents submit
+revision-aware proposals for review; they do not directly mutate the accepted
+graph. A Project may have one primary graph and multiple topic graphs. Agents
+list the Project graphs first, choose a topic graph only when its purpose and
+routing hints clearly match, or create a new topic. Missing targets remain
+unrouted drafts; the primary graph is never a fallback.`,
 	}
 	cmd.AddCommand(evidenceListCmd())
 	cmd.AddCommand(evidenceCreateCmd())
 	cmd.AddCommand(evidenceShowCmd())
 	cmd.AddCommand(evidenceAddNodeCmd())
 	cmd.AddCommand(evidenceAddEdgeCmd())
+	cmd.AddCommand(evidenceProposeCmd())
+	cmd.AddCommand(evidenceProposalSubmitCmd())
+	cmd.AddCommand(evidenceProposalListCmd())
+	cmd.AddCommand(evidenceProposalGetCmd())
+	cmd.AddCommand(evidenceProposalPlanCmd())
+	cmd.AddCommand(evidenceProposalReviewCmd())
+	cmd.AddCommand(evidenceProposalRerouteCmd())
+	cmd.AddCommand(evidenceMigrateOrphansCmd())
+	cmd.AddCommand(evidencePromotionPlanCmd())
+	cmd.AddCommand(evidencePromotionCreateCmd())
+	for _, command := range cmd.Commands() {
+		switch command.Name() {
+		case "create", "add-node", "add-edge", "list":
+			command.Hidden = true
+		}
+	}
 	return cmd
 }
 
 func evidenceListCmd() *cobra.Command {
-	var query string
-	var limit int
+	var query, projectID, role, status string
+	var limit, offset int
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -2713,7 +3404,9 @@ func evidenceListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := openDB()
 			defer db.Close()
-			chains, err := db.ListEvidenceChains(cmd.Context(), store.EvidenceChainFilter{Query: query, Limit: limit})
+			chains, err := db.ListEvidenceChains(cmd.Context(), store.EvidenceChainFilter{
+				Query: query, ProjectID: projectID, Role: role, Status: status, Limit: limit, Offset: offset,
+			})
 			if err != nil {
 				return err
 			}
@@ -2735,13 +3428,18 @@ func evidenceListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&query, "query", "", "Search chain id, title, or description")
+	cmd.Flags().StringVar(&projectID, "project", "", "Only graphs belonging to this Project")
+	cmd.Flags().StringVar(&role, "role", "", "Only graphs with this role: primary, secondary, or archive")
+	cmd.Flags().StringVar(&status, "status", "", "Only graphs with this status: active or archived")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum chains to list")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Number of graphs to skip")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
 
 func evidenceCreateCmd() *cobra.Command {
-	var description string
+	var description, purpose, projectID string
+	var recipes, keywords []string
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "create [title]",
@@ -2754,10 +3452,28 @@ func evidenceCreateCmd() *cobra.Command {
 			}
 			db := openDB()
 			defer db.Close()
+			projectID = strings.TrimSpace(projectID)
+			if projectID == "" {
+				return fmt.Errorf("--project is required; active Evidence Maps cannot be orphaned")
+			}
+			project, err := db.GetProjectDefinition(cmd.Context(), projectID)
+			if err != nil {
+				return err
+			}
+			if project == nil {
+				return fmt.Errorf("project %q is not registered", projectID)
+			}
 			chain := &store.EvidenceChain{
 				ID:          genID("chain_"),
 				Title:       title,
-				Description: strings.TrimSpace(description),
+				Description: firstNonEmpty(purpose, description),
+				RoutingHints: store.EvidenceGraphRoutingHints{
+					Recipes:  recipes,
+					Keywords: keywords,
+				},
+				ProjectID: projectID,
+				Role:      "secondary",
+				Status:    "active",
 			}
 			if err := db.CreateEvidenceChain(cmd.Context(), chain); err != nil {
 				return err
@@ -2770,6 +3486,10 @@ func evidenceCreateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&description, "description", "", "Short description")
+	cmd.Flags().StringVar(&purpose, "purpose", "", "What research question or evidence belongs in this graph")
+	cmd.Flags().StringVar(&projectID, "project", "", "Canonical Project id (required)")
+	cmd.Flags().StringSliceVar(&recipes, "recipe", nil, "Recipe routing hint (repeatable)")
+	cmd.Flags().StringSliceVar(&keywords, "keyword", nil, "Keyword routing hint (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
@@ -2820,7 +3540,7 @@ board; humans should move and resize cards in the UI.`,
 			}
 			db := openDB()
 			defer db.Close()
-			_, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
+			chain, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
 			if err != nil {
 				return err
 			}
@@ -2872,7 +3592,12 @@ board; humans should move and resize cards in the UI.`,
 				DataJSON:      "{}",
 			}
 			graph.Nodes = append(graph.Nodes, node)
-			if err := db.SaveEvidenceChainGraph(cmd.Context(), args[0], *graph); err != nil {
+			if _, err := db.SaveEvidenceChainGraphCAS(cmd.Context(), args[0], *graph, store.EvidenceGraphSaveOptions{
+				ExpectedRevision: chain.Revision,
+				Actor:            "cli",
+				SourceKind:       "add_node",
+				SourceID:         node.ID,
+			}); err != nil {
 				return err
 			}
 			if saved, ok := evidenceNodeByID(ctxGraph(cmd.Context(), db, args[0]), node.ID); ok {
@@ -2925,7 +3650,7 @@ func evidenceAddEdgeCmd() *cobra.Command {
 			}
 			db := openDB()
 			defer db.Close()
-			_, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
+			chain, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
 			if err != nil {
 				return err
 			}
@@ -2954,7 +3679,12 @@ func evidenceAddEdgeCmd() *cobra.Command {
 				DataJSON:     "{}",
 			}
 			graph.Edges = append(graph.Edges, edge)
-			if err := db.SaveEvidenceChainGraph(cmd.Context(), args[0], *graph); err != nil {
+			if _, err := db.SaveEvidenceChainGraphCAS(cmd.Context(), args[0], *graph, store.EvidenceGraphSaveOptions{
+				ExpectedRevision: chain.Revision,
+				Actor:            "cli",
+				SourceKind:       "add_edge",
+				SourceID:         edge.ID,
+			}); err != nil {
 				return err
 			}
 			if saved, ok := evidenceEdgeByID(ctxGraph(cmd.Context(), db, args[0]), edge.ID); ok {
@@ -2973,6 +3703,490 @@ func evidenceAddEdgeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&edgeType, "type", store.EvidenceEdgeNextStep, "Edge type: supports, does_not_prove, next_step, custom")
 	cmd.Flags().StringVar(&label, "label", "", "Edge label")
 	cmd.Flags().StringVar(&rationale, "rationale", "", "Why this relation should exist")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposeCmd() *cobra.Command {
+	var chainID, patchJSON, reason, routingReason string
+	var baseRevision int64
+	var noGraphImpact, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "propose [run_id]",
+		Short: "Submit a reviewable Research Graph patch or no-impact reason",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			run, err := db.GetRun(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return fmt.Errorf("run %q not found", args[0])
+			}
+			card, err := db.GetProjectRunCard(cmd.Context(), run.ID)
+			if err != nil {
+				return err
+			}
+			if card == nil {
+				card = &store.ProjectRunCard{
+					ID:            "card_" + strings.TrimPrefix(run.ID, "run_"),
+					ProjectID:     run.ProjectID,
+					RunID:         run.ID,
+					EvidenceLevel: "C",
+				}
+			}
+			card.NoGraphImpact = noGraphImpact
+			card.GraphImpactReason = strings.TrimSpace(reason)
+			var patch *store.EvidenceGraphPatch
+			if !noGraphImpact {
+				if strings.TrimSpace(patchJSON) == "" {
+					return fmt.Errorf("--patch-json is required unless --no-graph-impact is set")
+				}
+				var decoded store.EvidenceGraphPatch
+				if err := json.Unmarshal([]byte(patchJSON), &decoded); err != nil {
+					return fmt.Errorf("decode --patch-json: %w", err)
+				}
+				if strings.TrimSpace(chainID) != "" {
+					decoded.ChainID = strings.TrimSpace(chainID)
+				}
+				if strings.TrimSpace(routingReason) != "" {
+					decoded.RoutingReason = strings.TrimSpace(routingReason)
+				}
+				if decoded.ChainID != "" && baseRevision < 0 {
+					chain, err := db.GetEvidenceChain(cmd.Context(), decoded.ChainID)
+					if err != nil {
+						return err
+					}
+					if chain == nil {
+						return fmt.Errorf("evidence chain %q not found", decoded.ChainID)
+					}
+					card.BaseGraphRevision = chain.Revision
+				} else if decoded.ChainID != "" {
+					card.BaseGraphRevision = baseRevision
+				}
+				patch = &decoded
+			}
+			saved, err := db.SubmitEvidenceGraphProposal(cmd.Context(), card, patch)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(saved)
+			}
+			if saved.NoGraphImpact {
+				fmt.Printf("Recorded no graph impact for %s: %s\n", saved.RunID, saved.GraphImpactReason)
+				return nil
+			}
+			fmt.Printf("Submitted graph proposal %s for %s at revision %d\n", saved.ProposalHash, saved.RunID, saved.BaseGraphRevision)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&chainID, "chain", "", "Explicit target graph (default: the Run project's primary Evidence Map)")
+	cmd.Flags().StringVar(&patchJSON, "patch-json", "", "Additive patch JSON with nodes and edges")
+	cmd.Flags().Int64Var(&baseRevision, "base-revision", -1, "Expected revision for an explicit --chain (project primary defaults to current)")
+	cmd.Flags().BoolVar(&noGraphImpact, "no-graph-impact", false, "Record that this run does not change the research graph")
+	cmd.Flags().StringVar(&reason, "reason", "", "Required reason for --no-graph-impact")
+	cmd.Flags().StringVar(&routingReason, "routing-reason", "", "Why this Run belongs in the explicitly selected topic graph")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalSubmitCmd() *cobra.Command {
+	var targetMapID, actor, summary, routingReason, patchJSON string
+	var sourceRunIDs, sourceSnapshotIDs []string
+	var projectLevelImpact, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-submit PROJECT_ID",
+		Short: "Submit an independent, Run-optional Evidence Proposal",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectID := strings.TrimSpace(args[0])
+			if strings.TrimSpace(summary) == "" {
+				return fmt.Errorf("--summary is required")
+			}
+			if strings.TrimSpace(patchJSON) == "" {
+				return fmt.Errorf("--patch-json is required")
+			}
+			var patch store.EvidenceGraphPatch
+			if err := json.Unmarshal([]byte(patchJSON), &patch); err != nil {
+				return fmt.Errorf("decode --patch-json: %w", err)
+			}
+			if strings.TrimSpace(targetMapID) != "" {
+				patch.ChainID = strings.TrimSpace(targetMapID)
+			}
+			if strings.TrimSpace(routingReason) != "" {
+				patch.RoutingReason = strings.TrimSpace(routingReason)
+			}
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.CreateEvidenceProposal(cmd.Context(), &store.EvidenceProposal{
+				ProjectID:          projectID,
+				TargetChainID:      strings.TrimSpace(targetMapID),
+				Actor:              strings.TrimSpace(actor),
+				Summary:            strings.TrimSpace(summary),
+				RoutingReason:      strings.TrimSpace(routingReason),
+				ProjectLevelImpact: projectLevelImpact,
+				SourceRunIDs:       sourceRunIDs,
+				SourceSnapshotIDs:  sourceSnapshotIDs,
+			}, &patch)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			if proposal.Status == store.GraphProposalDraft {
+				fmt.Printf("Saved unrouted Evidence Proposal %s as draft\n", proposal.ID)
+			} else {
+				fmt.Printf("Submitted Evidence Proposal %s to Map %s at revision %d\n", proposal.ID, proposal.TargetChainID, proposal.BaseGraphRevision)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetMapID, "target-map", "", "Explicit target Map id; omit only to save an unrouted draft")
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Proposal author identity")
+	cmd.Flags().StringVar(&summary, "summary", "", "Short human-readable proposal summary")
+	cmd.Flags().StringVar(&routingReason, "routing-reason", "", "Why this Topic Map owns the proposed change")
+	cmd.Flags().StringVar(&patchJSON, "patch-json", "", "Additive patch JSON with nodes and edges")
+	cmd.Flags().StringSliceVar(&sourceRunIDs, "source-run", nil, "Source Run id (repeatable; optional)")
+	cmd.Flags().StringSliceVar(&sourceSnapshotIDs, "source-snapshot", nil, "Source Evidence Snapshot id (repeatable; optional)")
+	cmd.Flags().BoolVar(&projectLevelImpact, "project-level-impact", false, "Declare that a direct Primary Map proposal changes the project-level decision")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalListCmd() *cobra.Command {
+	var status string
+	var limit, offset int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-list PROJECT_ID",
+		Short: "List independent Evidence Proposals for a Project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			proposals, err := db.ListEvidenceProposals(cmd.Context(), store.EvidenceProposalFilter{
+				ProjectID: strings.TrimSpace(args[0]),
+				Status:    strings.TrimSpace(status),
+				Limit:     limit,
+				Offset:    offset,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				views := make([]evidenceProposalCLIView, 0, len(proposals))
+				for index := range proposals {
+					view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, &proposals[index])
+					if viewErr != nil {
+						return viewErr
+					}
+					views = append(views, *view)
+				}
+				return printJSON(views)
+			}
+			for _, proposal := range proposals {
+				fmt.Printf("%s\t%s\t%s\t%s\n", proposal.ID, proposal.Status, proposal.TargetChainID, proposal.Summary)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&status, "status", "", "Filter by draft, pending, accepted, rejected, expired, or conflicted")
+	cmd.Flags().IntVar(&limit, "limit", 80, "Maximum proposals")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Number of proposals to skip")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalGetCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-get PROPOSAL_ID",
+		Short: "Read one independent Evidence Proposal",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.GetEvidenceProposal(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if proposal == nil {
+				return fmt.Errorf("evidence proposal %q not found", args[0])
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			fmt.Printf("%s status=%s project=%s target=%s base=%d\n", proposal.ID, proposal.Status, proposal.ProjectID, proposal.TargetChainID, proposal.BaseGraphRevision)
+			fmt.Println(proposal.Summary)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalPlanCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-plan PROPOSAL_ID_OR_RUN_ID",
+		Short: "Plan proposal acceptance without changing the graph",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.GetEvidenceProposal(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			var plan *store.EvidenceGraphProposalPlan
+			if proposal != nil {
+				plan, err = db.PlanEvidenceProposal(cmd.Context(), args[0])
+			} else {
+				plan, err = db.PlanEvidenceGraphProposal(cmd.Context(), args[0])
+			}
+			if err != nil {
+				return err
+			}
+			if plan == nil {
+				return fmt.Errorf("evidence proposal or project run card for %q not found", args[0])
+			}
+			if asJSON {
+				return printJSON(plan)
+			}
+			fmt.Printf("proposal %s status=%s eligible=%t base=%d current=%d\n", plan.ProposalHash, plan.Status, plan.Eligible, plan.BaseGraphRevision, plan.CurrentGraphRevision)
+			for _, blocker := range plan.Blockers {
+				fmt.Printf("- %s: %s\n", blocker.Code, blocker.Message)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalReviewCmd() *cobra.Command {
+	var action, reviewer string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-review PROPOSAL_ID_OR_RUN_ID",
+		Short: "Accept, reject, or expire a pending graph proposal",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(action) == "" {
+				return fmt.Errorf("--action is required")
+			}
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.GetEvidenceProposal(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if proposal != nil {
+				reviewed, reviewErr := db.ReviewEvidenceProposal(cmd.Context(), args[0], action, reviewer)
+				if reviewErr != nil {
+					return reviewErr
+				}
+				if asJSON {
+					view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, reviewed)
+					if viewErr != nil {
+						return viewErr
+					}
+					return printJSON(view)
+				}
+				fmt.Printf("Evidence Proposal %s is %s\n", reviewed.ID, reviewed.Status)
+				return nil
+			}
+			card, err := db.ReviewEvidenceGraphProposal(cmd.Context(), args[0], action, reviewer)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(card)
+			}
+			fmt.Printf("Graph proposal for %s is %s\n", card.RunID, card.GraphStatus)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&action, "action", "", "Review action: accept, reject, or expire")
+	cmd.Flags().StringVar(&reviewer, "reviewer", "user", "Reviewer identity recorded in the graph revision")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalRerouteCmd() *cobra.Command {
+	var targetMapID, routingReason string
+	var projectLevelImpact, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-reroute PROPOSAL_ID",
+		Short: "Route a draft or pending Proposal to another explicit Map",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(targetMapID) == "" {
+				return fmt.Errorf("--target-map is required")
+			}
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.RerouteEvidenceProposal(
+				cmd.Context(), args[0], targetMapID, routingReason, projectLevelImpact,
+			)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			fmt.Printf("Rerouted Proposal %s to Map %s at revision %d\n", proposal.ID, proposal.TargetChainID, proposal.BaseGraphRevision)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetMapID, "target-map", "", "New explicit target Map id")
+	cmd.Flags().StringVar(&routingReason, "routing-reason", "", "Why the new Topic Map owns the change")
+	cmd.Flags().BoolVar(&projectLevelImpact, "project-level-impact", false, "Declare project-level impact when routing to Primary")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceMigrateOrphansCmd() *cobra.Command {
+	var mappingJSON string
+	var apply, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "migrate-orphans",
+		Short: "Report or migrate active Evidence Maps without Project ownership",
+		Long: `Report every active Evidence Map whose project_id is empty.
+
+No ownership is inferred from titles. --mapping-json explicitly maps Map ids to
+canonical Project ids. During --apply, mapped Maps are bound and every unmapped
+Map is preserved as archived legacy history; nodes, edges, revisions, and hashes
+are never deleted.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mappings := map[string]string{}
+			if strings.TrimSpace(mappingJSON) != "" {
+				if err := json.Unmarshal([]byte(mappingJSON), &mappings); err != nil {
+					return fmt.Errorf("decode --mapping-json: %w", err)
+				}
+			}
+			db := openDB()
+			defer db.Close()
+			var report *store.EvidenceMapOwnershipMigrationReport
+			var err error
+			if apply {
+				report, err = db.ApplyEvidenceMapOwnershipMigration(cmd.Context(), mappings)
+			} else {
+				report, err = db.PlanEvidenceMapOwnershipMigration(cmd.Context(), mappings)
+			}
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(report)
+			}
+			mode := "DRY RUN"
+			if apply {
+				mode = "APPLIED"
+			}
+			fmt.Printf("%s: %d orphan Maps; %d bind; %d archive legacy\n", mode, report.OrphanCount, report.BoundCount, report.ArchivedCount)
+			for _, entry := range report.Entries {
+				fmt.Printf("- %s\t%s\tproject=%s\tnodes=%d\tedges=%d\trevision=%d\n",
+					entry.MapID, entry.Action, entry.ProjectID, entry.NodeCount, entry.EdgeCount, entry.Revision)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&mappingJSON, "mapping-json", "{}", `Explicit Map-to-Project JSON, e.g. {"chain_x":"project_a"}`)
+	cmd.Flags().BoolVar(&apply, "apply", false, "Apply the displayed policy transactionally; default is report-only")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output the migration report as JSON")
+	return cmd
+}
+
+func evidencePromotionPlanCmd() *cobra.Command {
+	var sourceNodeIDs []string
+	var summary, nodeType, actor string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "promotion-plan TOPIC_MAP_ID",
+		Short: "Plan a Topic-to-Primary summary and Map Reference without side effects",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			plan, err := db.PlanEvidencePromotion(cmd.Context(), store.EvidencePromotionRequest{
+				SourceMapID: args[0], SourceNodeIDs: sourceNodeIDs, Summary: summary, NodeType: nodeType, Actor: actor,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(plan)
+			}
+			fmt.Printf("promotion plan %s eligible=%t source=%s@%d target=%s@%d\n",
+				plan.PlanHash, plan.Eligible, plan.SourceMapID, plan.SourceRevision, plan.TargetPrimaryMapID, plan.TargetPrimaryRevision)
+			for _, blocker := range plan.Blockers {
+				fmt.Printf("- %s: %s\n", blocker.Code, blocker.Message)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&sourceNodeIDs, "source-node", nil, "Accepted Topic node id to summarize (repeatable)")
+	cmd.Flags().StringVar(&summary, "summary", "", "Project-level summary")
+	cmd.Flags().StringVar(&nodeType, "node-type", "claim", "Primary summary type: claim, issue, or plan")
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Proposal author identity")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidencePromotionCreateCmd() *cobra.Command {
+	var sourceNodeIDs []string
+	var summary, nodeType, actor, expectedPlanHash string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "promotion-create TOPIC_MAP_ID",
+		Short: "Create a reviewable Primary Proposal from an accepted Topic revision",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(expectedPlanHash) == "" {
+				return fmt.Errorf("--expected-plan-hash is required")
+			}
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.CreateEvidencePromotion(cmd.Context(), store.EvidencePromotionRequest{
+				SourceMapID: args[0], SourceNodeIDs: sourceNodeIDs, Summary: summary, NodeType: nodeType, Actor: actor,
+			}, expectedPlanHash)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			fmt.Printf("Created promotion Proposal %s for Primary Map %s\n", proposal.ID, proposal.TargetChainID)
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&sourceNodeIDs, "source-node", nil, "Accepted Topic node id to summarize (repeatable)")
+	cmd.Flags().StringVar(&summary, "summary", "", "Project-level summary")
+	cmd.Flags().StringVar(&nodeType, "node-type", "claim", "Primary summary type: claim, issue, or plan")
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Proposal author identity")
+	cmd.Flags().StringVar(&expectedPlanHash, "expected-plan-hash", "", "Exact hash returned by promotion-plan")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
@@ -3373,13 +4587,19 @@ func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chai
 	edges := append([]store.EvidenceChainEdge(nil), graph.Edges...)
 	sort.SliceStable(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	snapshot := &evidenceChainAgentSnapshot{
-		ChainID:     chain.ID,
-		Title:       chain.Title,
-		Description: chain.Description,
-		Intro:       fmt.Sprintf("%s: %d nodes, %d typed edges", chain.Title, len(nodes), len(edges)),
-		UpdatedAt:   chain.UpdatedAt,
-		Nodes:       make([]evidenceChainAgentNode, 0, len(nodes)),
-		Edges:       make([]evidenceChainAgentEdge, 0, len(edges)),
+		ChainID:      chain.ID,
+		Title:        chain.Title,
+		Description:  chain.Description,
+		RoutingHints: chain.RoutingHints,
+		ProjectID:    chain.ProjectID,
+		Role:         chain.Role,
+		Status:       chain.Status,
+		Revision:     chain.Revision,
+		GraphHash:    chain.GraphHash,
+		Intro:        fmt.Sprintf("%s: %d nodes, %d typed edges", chain.Title, len(nodes), len(edges)),
+		UpdatedAt:    chain.UpdatedAt,
+		Nodes:        make([]evidenceChainAgentNode, 0, len(nodes)),
+		Edges:        make([]evidenceChainAgentEdge, 0, len(edges)),
 	}
 	for _, node := range nodes {
 		view := evidenceChainAgentNode{
@@ -3454,6 +4674,12 @@ func printEvidenceChainSnapshot(snapshot *evidenceChainAgentSnapshot) {
 	fmt.Printf("# %s (%s)\n", snapshot.Title, snapshot.ChainID)
 	if snapshot.Description != "" {
 		fmt.Println(snapshot.Description)
+	}
+	if len(snapshot.RoutingHints.Recipes) > 0 {
+		fmt.Printf("Recipes: %s\n", strings.Join(snapshot.RoutingHints.Recipes, ", "))
+	}
+	if len(snapshot.RoutingHints.Keywords) > 0 {
+		fmt.Printf("Keywords: %s\n", strings.Join(snapshot.RoutingHints.Keywords, ", "))
 	}
 	fmt.Printf("\nNodes: %d  Edges: %d\n\n", len(snapshot.Nodes), len(snapshot.Edges))
 	for _, node := range snapshot.Nodes {
@@ -3532,21 +4758,11 @@ func evidenceEdgeByID(graph *store.EvidenceChainGraph, id string) (store.Evidenc
 }
 
 func validEvidenceNodeTypeForCLI(t string) bool {
-	switch t {
-	case store.EvidenceNodeRun, store.EvidenceNodeHypothesis, store.EvidenceNodeExperiment, store.EvidenceNodePlan, store.EvidenceNodeConclusion, store.EvidenceNodeNote:
-		return true
-	default:
-		return false
-	}
+	return store.ValidEvidenceNodeType(t)
 }
 
 func validEvidenceEdgeTypeForCLI(t string) bool {
-	switch t {
-	case store.EvidenceEdgeSupports, store.EvidenceEdgeDoesNotProve, store.EvidenceEdgeNextStep, store.EvidenceEdgeCustom:
-		return true
-	default:
-		return false
-	}
+	return store.ValidEvidenceEdgeType(t)
 }
 
 func evidenceNodeExists(nodes []store.EvidenceChainNode, id string) bool {
@@ -3685,12 +4901,14 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 		Path:             resolved,
 		Commands:         map[string]projectFileCommand{},
 		ResourceProfiles: map[string]projectResourceProfile{},
+		FreezeProfiles:   map[string]freezer.Profile{},
 	}
 	section := ""
 	listKey := ""
 	resourceProfileName := ""
 	resourceProfileSubsection := ""
-	lines := strings.Split(string(data), "\n")
+	originalLines := strings.Split(string(data), "\n")
+	lines := normalizeProjectConfigLines(originalLines)
 	for i := 0; i < len(lines); i++ {
 		lineNo := i + 1
 		raw := lines[i]
@@ -3784,7 +5002,355 @@ func loadProjectFileConfig(path string) (*projectFileConfig, error) {
 	if cfg.Sync.Profile == "" {
 		cfg.Sync.Profile = "code"
 	}
+	if err := parseProjectFreezeProfiles(originalLines, cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", resolved, err)
+	}
+	parseProjectCommandInputs(originalLines, cfg)
 	return cfg, nil
+}
+
+func normalizeProjectConfigLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	skipFreeze, inCommands := false, false
+	for _, raw := range lines {
+		trimmed := strings.TrimSpace(stripProjectConfigComment(raw))
+		indent := leadingSpaces(raw)
+		if indent == 0 {
+			skipFreeze = normalizeProjectKey(strings.TrimSuffix(trimmed, ":")) == "freezeprofiles"
+			inCommands = normalizeProjectKey(strings.TrimSuffix(trimmed, ":")) == "commands"
+			if skipFreeze || inCommands {
+				continue
+			}
+		}
+		if skipFreeze {
+			continue
+		}
+		if inCommands && len(raw) >= 2 {
+			out = append(out, raw[2:])
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
+func parseProjectFreezeProfiles(lines []string, cfg *projectFileConfig) error {
+	inFreeze := false
+	profileName, subsection, role := "", "", ""
+	for i, raw := range lines {
+		line := stripProjectConfigComment(raw)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingSpaces(line)
+		trimmed := strings.TrimSpace(line)
+		if indent == 0 {
+			inFreeze = normalizeProjectKey(strings.TrimSuffix(trimmed, ":")) == "freezeprofiles"
+			profileName, subsection, role = "", "", ""
+			continue
+		}
+		if !inFreeze {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			value := cleanProjectConfigValue(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+			p := cfg.FreezeProfiles[profileName]
+			switch subsection {
+			case "workspaceroles":
+				p.WorkspaceRoles = append(p.WorkspaceRoles, value)
+			case "required", "optional":
+				for idx := range p.Rules {
+					if p.Rules[idx].Role == role && p.Rules[idx].Required == (subsection == "required") {
+						p.Rules[idx].Patterns = append(p.Rules[idx].Patterns, value)
+					}
+				}
+			case "aggregateoutputs":
+				p.AggregateOutputs = append(p.AggregateOutputs, value)
+			}
+			cfg.FreezeProfiles[profileName] = p
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			return fmt.Errorf("line %d: expected freeze key: value", i+1)
+		}
+		key = strings.TrimSpace(key)
+		value = cleanProjectConfigValue(value)
+		if isProjectBlockScalar(value) {
+			value, i = collectProjectBlockScalar(lines, i+1, indent)
+		}
+		if indent == 2 {
+			profileName = key
+			cfg.FreezeProfiles[profileName] = freezer.Profile{Name: profileName}
+			subsection, role = "", ""
+			continue
+		}
+		if profileName == "" {
+			return fmt.Errorf("line %d: freeze field without profile", i+1)
+		}
+		p := cfg.FreezeProfiles[profileName]
+		if indent == 4 {
+			switch normalizeProjectKey(key) {
+			case "storage":
+				p.Storage = value
+			case "storageprefix":
+				p.StoragePrefix = value
+			case "workspaceroles":
+				subsection = "workspaceroles"
+			case "required", "optional":
+				subsection = normalizeProjectKey(key)
+			case "aggregate":
+				subsection = "aggregate"
+			case "releasegate":
+				subsection = "releasegate"
+			default:
+				cfg.Warnings = append(cfg.Warnings, "unknown freeze profile field ignored: "+profileName+"."+key)
+			}
+			cfg.FreezeProfiles[profileName] = p
+			continue
+		}
+		if indent == 6 {
+			switch subsection {
+			case "required", "optional":
+				role = key
+				p.Rules = append(p.Rules, freezer.RoleRule{Role: key, Required: subsection == "required"})
+			case "aggregate":
+				if normalizeProjectKey(key) == "command" {
+					p.AggregateCommand = value
+				} else if normalizeProjectKey(key) == "outputs" {
+					subsection = "aggregateoutputs"
+				}
+			case "releasegate":
+				if normalizeProjectKey(key) == "command" {
+					p.GateCommand = value
+				} else if normalizeProjectKey(key) == "report" {
+					p.GateReport = value
+				}
+			}
+			cfg.FreezeProfiles[profileName] = p
+		}
+	}
+	return nil
+}
+
+func parseProjectCommandInputs(lines []string, cfg *projectFileConfig) {
+	inCommands := false
+	command, subsection, listKey := "", "", ""
+	consumedMetadataWarnings := map[string]bool{}
+	var input *store.RunInputBinding
+	var output *store.RunOutputBinding
+	flush := func() {
+		if command == "" {
+			input, output = nil, nil
+			return
+		}
+		entry := ensureProjectCommand(cfg, command)
+		if input != nil && (input.LogicalURI != "" || input.TargetPath != "" || input.Revision != "") {
+			if input.Mode == "" {
+				input.Mode = "copy"
+			}
+			entry.InputBindings = append(entry.InputBindings, *input)
+		}
+		if output != nil && (output.SourcePattern != "" || output.LogicalURI != "") {
+			entry.OutputBindings = append(entry.OutputBindings, *output)
+		}
+		cfg.Commands[command] = entry
+		input, output = nil, nil
+	}
+	for _, raw := range lines {
+		line := stripProjectConfigComment(raw)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingSpaces(line)
+		trimmed := strings.TrimSpace(line)
+		if indent == 0 {
+			flush()
+			key := strings.TrimSuffix(trimmed, ":")
+			inCommands = normalizeProjectKey(key) == "commands"
+			if !inCommands {
+				command = key
+			}
+			subsection, listKey = "", ""
+			continue
+		}
+		base := 0
+		if inCommands {
+			base = 2
+			if indent == 2 {
+				flush()
+				command = strings.TrimSuffix(trimmed, ":")
+				subsection, listKey = "", ""
+				continue
+			}
+		}
+		if command == "" {
+			continue
+		}
+		rel := indent - base
+		if strings.HasPrefix(trimmed, "- ") {
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			if subsection == "inputs" && (listKey == "datasets" || listKey == "seeds") {
+				value := cleanProjectConfigValue(item)
+				entry := ensureProjectCommand(cfg, command)
+				if listKey == "datasets" {
+					entry.Datasets = append(entry.Datasets, value)
+				} else if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+					entry.Seeds = append(entry.Seeds, n)
+				}
+				cfg.Commands[command] = entry
+				continue
+			}
+			if subsection == "inputs" && (listKey == "files" || listKey == "managedinputs" || listKey == "runinputs" || listKey == "") {
+				flush()
+				input = &store.RunInputBinding{}
+				setStructuredInputField(input, item)
+				continue
+			}
+			if subsection == "outputs" {
+				flush()
+				output = &store.RunOutputBinding{}
+				setStructuredOutputField(output, item)
+				continue
+			}
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		normalizedKey := normalizeProjectKey(strings.TrimSpace(key))
+		value = cleanProjectConfigValue(value)
+		if rel == 2 {
+			if normalizedKey == "inputs" || normalizedKey == "managedinputs" || normalizedKey == "runinputs" {
+				flush()
+				subsection, listKey = "inputs", normalizedKey
+				continue
+			}
+			if normalizedKey == "outputs" || normalizedKey == "runoutputs" {
+				flush()
+				subsection, listKey = "outputs", normalizedKey
+				continue
+			}
+			flush()
+			subsection, listKey = "", ""
+			continue
+		}
+		if rel == 4 && subsection == "inputs" && input == nil {
+			listKey = normalizedKey
+			if normalizedKey == "seeds" || normalizedKey == "datasets" {
+				consumedMetadataWarnings[command+"."+strings.TrimSpace(key)] = true
+			}
+			if value != "" && (normalizedKey == "seeds" || normalizedKey == "datasets") {
+				for _, part := range strings.Split(strings.Trim(value, "[]"), ",") {
+					entry := ensureProjectCommand(cfg, command)
+					part = cleanProjectConfigValue(strings.TrimSpace(part))
+					if normalizedKey == "datasets" && part != "" {
+						entry.Datasets = append(entry.Datasets, part)
+						cfg.Commands[command] = entry
+					} else if n, err := strconv.ParseInt(part, 10, 64); err == nil {
+						entry.Seeds = append(entry.Seeds, n)
+						cfg.Commands[command] = entry
+					}
+				}
+			}
+			continue
+		}
+		if input != nil && subsection == "inputs" {
+			setStructuredInputField(input, trimmed)
+		} else if output != nil && subsection == "outputs" {
+			setStructuredOutputField(output, trimmed)
+		}
+	}
+	flush()
+	for name, entry := range cfg.Commands {
+		if len(entry.OutputBindings) > 0 {
+			legacy := entry.Outputs[:0]
+			for _, spec := range entry.Outputs {
+				if strings.Count(spec, "|") >= 3 {
+					legacy = append(legacy, spec)
+				}
+			}
+			entry.Outputs = legacy
+			cfg.Commands[name] = entry
+		}
+	}
+	if hasStructuredBindings(cfg) {
+		cfg.Warnings = filterStructuredBindingWarnings(cfg.Warnings)
+	}
+	cfg.Warnings = filterConsumedProjectMetadataWarnings(cfg.Warnings, consumedMetadataWarnings)
+}
+
+func filterConsumedProjectMetadataWarnings(warnings []string, consumed map[string]bool) []string {
+	filtered := warnings[:0]
+	for _, warning := range warnings {
+		ignored := false
+		for field := range consumed {
+			if warning == "unknown recipe field ignored: "+field || warning == "unknown recipe list ignored: "+field {
+				ignored = true
+				break
+			}
+		}
+		if !ignored {
+			filtered = append(filtered, warning)
+		}
+	}
+	return filtered
+}
+
+func setStructuredInputField(binding *store.RunInputBinding, field string) {
+	key, value, ok := strings.Cut(field, ":")
+	if !ok || binding == nil {
+		return
+	}
+	value = cleanProjectConfigValue(value)
+	switch normalizeProjectKey(key) {
+	case "from", "uri", "logicaluri":
+		binding.LogicalURI = value
+	case "to", "target", "targetpath":
+		binding.TargetPath = value
+	case "revision", "sha256":
+		binding.Revision = value
+	case "mode":
+		binding.Mode = value
+	}
+}
+
+func setStructuredOutputField(binding *store.RunOutputBinding, field string) {
+	key, value, ok := strings.Cut(field, ":")
+	if !ok || binding == nil {
+		return
+	}
+	value = cleanProjectConfigValue(value)
+	switch normalizeProjectKey(key) {
+	case "from", "pattern", "source", "sourcepattern":
+		binding.SourcePattern = value
+	case "to", "uri", "logicaluri":
+		binding.LogicalURI = value
+	case "role":
+		binding.Role = value
+	case "required":
+		binding.Required = parseProjectBool(value)
+	}
+}
+
+func hasStructuredBindings(cfg *projectFileConfig) bool {
+	for _, command := range cfg.Commands {
+		if len(command.InputBindings) > 0 || len(command.OutputBindings) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func filterStructuredBindingWarnings(warnings []string) []string {
+	filtered := warnings[:0]
+	for _, warning := range warnings {
+		if strings.Contains(warning, ".files") || strings.HasSuffix(warning, ".from") || strings.HasSuffix(warning, ".to") || strings.HasSuffix(warning, ".revision") || strings.HasSuffix(warning, ".mode") || strings.HasSuffix(warning, ".role") || strings.HasSuffix(warning, ".required") {
+			continue
+		}
+		filtered = append(filtered, warning)
+	}
+	return filtered
 }
 
 func resolveProjectConfigPath(path string) (string, error) {
@@ -3901,6 +5467,10 @@ func setProjectConfigScalar(cfg *projectFileConfig, section, key, value string) 
 			entry.TargetEnv = value
 		case "uievents":
 			entry.UIEvents = value
+		case "splitprotocol":
+			entry.SplitProtocol = value
+		case "evaluationprotocol", "evalprotocol":
+			entry.EvaluationProtocol = value
 		default:
 			cfg.Warnings = append(cfg.Warnings, "unknown recipe field ignored: "+section+"."+key)
 		}
@@ -3942,6 +5512,10 @@ func addProjectConfigListValue(cfg *projectFileConfig, section, key, value strin
 			entry.Metrics = append(entry.Metrics, value)
 		case "artifacts", "artifactpaths":
 			entry.Artifacts = append(entry.Artifacts, value)
+		case "managedinputs", "runinputs":
+			entry.Inputs = append(entry.Inputs, value)
+		case "outputs", "runoutputs":
+			entry.Outputs = append(entry.Outputs, value)
 		default:
 			cfg.Warnings = append(cfg.Warnings, "unknown recipe list ignored: "+section+"."+key)
 		}
@@ -4217,6 +5791,43 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	if req.UIEventsPath != "" {
 		args = append(args, "--ui-events", req.UIEventsPath)
 	}
+	if req.ProjectConfigSHA256 != "" {
+		args = append(args, "--config-sha256", req.ProjectConfigSHA256)
+	}
+	for _, dataset := range req.Datasets {
+		args = append(args, "--dataset", dataset.DatasetID+"@"+dataset.Version)
+	}
+	for _, seed := range req.Seeds {
+		args = append(args, "--seed", strconv.FormatInt(seed, 10))
+	}
+	if req.SplitProtocol != "" {
+		args = append(args, "--split-protocol", req.SplitProtocol)
+	}
+	if req.EvaluationProtocol != "" {
+		args = append(args, "--evaluation-protocol", req.EvaluationProtocol)
+	}
+	for _, input := range req.Inputs {
+		spec, _ := json.Marshal(struct {
+			From     string `json:"from"`
+			To       string `json:"to"`
+			Revision string `json:"revision"`
+			Mode     string `json:"mode"`
+		}{
+			From: input.LogicalURI, To: input.TargetPath, Revision: input.Revision, Mode: input.Mode,
+		})
+		args = append(args, "--input-json", string(spec))
+	}
+	for _, output := range req.Outputs {
+		spec, _ := json.Marshal(struct {
+			From     string `json:"from"`
+			To       string `json:"to"`
+			Role     string `json:"role"`
+			Required bool   `json:"required"`
+		}{
+			From: output.SourcePattern, To: output.LogicalURI, Role: output.Role, Required: output.Required,
+		})
+		args = append(args, "--output-json", string(spec))
+	}
 	args = append(args, "--shell", "--", req.Args[len(req.Args)-1])
 	fmt.Println("Project run plan")
 	fmt.Println()
@@ -4245,6 +5856,40 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	printStringList("logs", req.LogPaths)
 	printStringList("metrics", req.MetricPaths)
 	printStringList("artifacts", req.ArtifactPaths)
+	if req.ProjectConfigSHA256 != "" {
+		fmt.Printf("config_sha256: %s\n", req.ProjectConfigSHA256)
+	}
+	if len(req.Datasets) > 0 {
+		fmt.Println("datasets:")
+		for _, dataset := range req.Datasets {
+			fmt.Printf("  - %s@%s (%s)\n", dataset.DatasetID, dataset.Version, dataset.ManifestSHA256)
+		}
+	}
+	if len(req.Seeds) > 0 {
+		values := make([]string, 0, len(req.Seeds))
+		for _, seed := range req.Seeds {
+			values = append(values, strconv.FormatInt(seed, 10))
+		}
+		fmt.Printf("seeds:    %s\n", strings.Join(values, ", "))
+	}
+	if len(req.Inputs) > 0 {
+		fmt.Println("managed_inputs:")
+		for _, input := range req.Inputs {
+			fmt.Printf("  - %s -> %s (%s, %s)\n", input.LogicalURI, input.TargetPath, input.Revision, input.Mode)
+		}
+	}
+	if len(req.Outputs) > 0 {
+		fmt.Println("managed_outputs:")
+		for _, output := range req.Outputs {
+			fmt.Printf("  - %s -> %s (role=%s, required=%v)\n", output.SourcePattern, output.LogicalURI, output.Role, output.Required)
+		}
+	}
+	if req.SplitProtocol != "" {
+		fmt.Printf("split_protocol: %s\n", req.SplitProtocol)
+	}
+	if req.EvaluationProtocol != "" {
+		fmt.Printf("evaluation_protocol: %s\n", req.EvaluationProtocol)
+	}
 	if req.UIEventsPath != "" {
 		fmt.Printf("ui_events: %s\n", req.UIEventsPath)
 	} else {
@@ -4315,6 +5960,13 @@ func submitConfiguredRun(ctx context.Context, resourceName string, submitReq exe
 	sshPool := executor.NewSSHPool(10 * time.Second)
 	loadSSHKeys(sshPool)
 	exec := executor.NewExecutor(sshPool, db)
+	remoteFS := filespace.PythonRemoteFS{Runner: filespace.SSHPoolRunner{Pool: sshPool}}
+	fileService := filespace.NewService(db, remoteFS)
+	planner := transfer.NewPlanner(db, fileService)
+	transfers := transfer.NewService(db, planner)
+	transport := transfer.NewRsyncTransport(db, remoteFS, transfer.SSHPoolTransferRunner{Pool: sshPool})
+	worker := transfer.NewWorker(db, transport)
+	exec.SetRunIO(runioservice.NewService(db, fileService, planner, transfers, worker, remoteFS))
 
 	launchCtx := ctx
 	var cancel context.CancelFunc
@@ -4323,7 +5975,7 @@ func submitConfiguredRun(ctx context.Context, resourceName string, submitReq exe
 		defer cancel()
 	}
 	createdID := ""
-	run, err := exec.SubmitWithOptions(launchCtx, submitReq, executor.SubmitOptions{
+	run, err := exec.SubmitVisibleWithOptions(launchCtx, submitReq, executor.SubmitOptions{
 		OnCreated: func(run *store.Run) {
 			createdID = run.ID
 			fmt.Printf("Created run %s on %s\n", run.ID, resourceName)
@@ -4342,8 +5994,63 @@ func submitConfiguredRun(ctx context.Context, resourceName string, submitReq exe
 	}
 	fmt.Printf("Launched run %s on %s\n", run.ID, resourceName)
 	printRunEventGuidance(run)
-	fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --statement \"...\" --body-md-file notes.md --attach plot.png|caption\n", run.ID)
+	printRunJournalGuidance(run)
 	return nil
+}
+
+func resolveRunDatasetInputs(ctx context.Context, refs []string) ([]store.RunDatasetInput, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	db := openDB()
+	defer db.Close()
+	out := make([]store.RunDatasetInput, 0, len(refs))
+	for _, ref := range refs {
+		name, version, err := parseDatasetRef(ref)
+		if err != nil {
+			return nil, err
+		}
+		dataset, err := db.GetDatasetVersionByRef(ctx, name, version)
+		if err != nil {
+			return nil, err
+		}
+		if dataset == nil {
+			return nil, fmt.Errorf("dataset %s is not registered", ref)
+		}
+		input, err := runDatasetInputFromVersion(dataset)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, input)
+	}
+	return out, nil
+}
+
+func runDatasetInputFromVersion(dataset *store.DatasetVersion) (store.RunDatasetInput, error) {
+	if dataset == nil {
+		return store.RunDatasetInput{}, fmt.Errorf("dataset is not registered")
+	}
+	ref := dataset.DatasetID + "@" + dataset.Version
+	if dataset.State != store.DatasetStateVerified {
+		return store.RunDatasetInput{}, fmt.Errorf("dataset %s is %s; formal evidence requires verified bytes (use aexp dataset ingest)", ref, dataset.State)
+	}
+	if strings.TrimSpace(dataset.ID) == "" || strings.TrimSpace(dataset.DatasetID) == "" || strings.TrimSpace(dataset.Version) == "" || strings.TrimSpace(dataset.ManifestSHA256) == "" {
+		return store.RunDatasetInput{}, fmt.Errorf("dataset %s has incomplete immutable identity or manifest SHA-256", ref)
+	}
+	return store.RunDatasetInput{ID: dataset.ID, DatasetID: dataset.DatasetID, Version: dataset.Version, ManifestSHA256: dataset.ManifestSHA256}, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func printRunEventGuidance(run *store.Run) {
@@ -4363,11 +6070,22 @@ func printRunEventGuidance(run *store.Run) {
 	fmt.Println("    metric(\"train/loss\", loss, epoch=epoch, trial=trial_id, variant=variant)")
 	fmt.Println("    training_epoch(epoch, total=max_epochs, trial=trial_id, variant=variant)")
 	fmt.Println("    training_done(epoch=last_epoch, total=max_epochs, best_epoch=best_epoch, early_stopped=early_stopped, trial=trial_id, variant=variant)")
-	fmt.Println("  Do not reconstruct loss/metric/progress events after the run; use run marks for interpretation notes.")
+	fmt.Println("  Do not reconstruct loss/metric/progress events after the run; write post-run interpretation in the Project journal.")
 	fmt.Printf("  Monitor: aexp run snapshot %s --json\n", run.ID)
 	fmt.Printf("  Events:  aexp run events %s --tail 50 --json\n", run.ID)
 	fmt.Printf("  Metrics: aexp run metrics %s --latest --json\n", run.ID)
 	fmt.Println("  Poll every 30-60s, then back off toward 120s if progress has not changed.")
+}
+
+func printRunJournalGuidance(run *store.Run) {
+	if run == nil {
+		return
+	}
+	if strings.TrimSpace(run.ProjectID) == "" {
+		fmt.Println("After inspection: assign this Run to its canonical Project before recording research reasoning in the Project journal.")
+		return
+	}
+	fmt.Printf("After inspection, append project reasoning with:\n  aexp project journal create %s --title \"...\" --body-md-file notes.md --run %s --next-action \"...\"\n", run.ProjectID, run.ID)
 }
 
 func runSyncPushFromProject(ctx context.Context, resourceName, source, target, profile string, excludes []string, dryRun, deleteExtra, noDefaultExcludes bool, timeoutSec int) error {
@@ -5058,7 +6776,6 @@ func datasetSyncExtraArgs(verify bool) []string {
 		"--partial",
 		"--partial-dir=.aexp-rsync-partial",
 		"--human-readable",
-		"--info=progress2",
 	}
 	if verify {
 		args = append(args, "--checksum")
@@ -6486,13 +8203,14 @@ func runCmd() *cobra.Command {
 		Short: "Manage experiment runs",
 		Long: `Manage experiment runs.
 
-For agent-human collaboration, runs are the raw execution records and marks are
-the interpretation layer. After inspecting logs, metrics, or artifacts, write a
-finding with:
+Runs are immutable execution records: command, environment, telemetry, metrics,
+logs, and artifacts. Research interpretation belongs to the Project journal.
+After inspecting a Project Run, append reasoning with:
 
-  aexp run mark <run_id> --title ... --statement ... --body-md-file notes.md --attach plot.png|caption
+  aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...
 
-The web UI shows these findings on the Dashboard and inside each run detail.`,
+Historical "run mark" commands remain callable only for compatibility and are
+hidden from the normal command surface.`,
 	}
 
 	cmd.AddCommand(runSubmitCmd())
@@ -6505,20 +8223,501 @@ The web UI shows these findings on the Dashboard and inside each run detail.`,
 	cmd.AddCommand(runEventQualityCmd())
 	cmd.AddCommand(runSnapshotCmd())
 	cmd.AddCommand(runCancelCmd())
+	cmd.AddCommand(runFreezeCmd())
 	cmd.AddCommand(runArchiveCmd())
 	cmd.AddCommand(runRestoreCmd())
 	cmd.AddCommand(runDeleteCmd())
-	cmd.AddCommand(runMarkCmd())
-	cmd.AddCommand(runMarksCmd())
+	legacyMark := runMarkCmd()
+	legacyMark.Hidden = true
+	legacyMarks := runMarksCmd()
+	legacyMarks.Hidden = true
+	cmd.AddCommand(legacyMark)
+	cmd.AddCommand(legacyMarks)
 
 	return cmd
 }
 
+func runFreezeCmd() *cobra.Command {
+	var profileName, destination, workspace, configPath string
+	var dryRun, asJSON, wait bool
+	cmd := &cobra.Command{Use: "freeze <run_id>", Short: "Freeze paper evidence to authoritative storage", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadProjectFileConfig(configPath)
+		if err != nil {
+			return err
+		}
+		profile, ok := cfg.FreezeProfiles[profileName]
+		if !ok {
+			return fmt.Errorf("freeze profile %q not found in %s", profileName, cfg.Path)
+		}
+		if destination == "" {
+			destination = "storage://" + profile.Storage + "/" + strings.Trim(profile.StoragePrefix, "/")
+		}
+		if workspace != "" {
+			workspace = expandPath(workspace)
+			if !filepath.IsAbs(workspace) {
+				workspace = filepath.Join(filepath.Dir(cfg.Path), workspace)
+			}
+		}
+		db := openDB()
+		defer db.Close()
+		plan, err := freezer.BuildPlan(cmd.Context(), db, args[0], profile, destination, workspace)
+		if err != nil {
+			return err
+		}
+		if dryRun {
+			if asJSON {
+				return printJSON(plan)
+			}
+			printFreezePlan(plan)
+			return nil
+		}
+		if !plan.Eligible {
+			if asJSON {
+				_ = printJSON(plan)
+			}
+			return fmt.Errorf("freeze plan blocked by %d requirement(s)", len(plan.Blockers))
+		}
+		if workspace == "" {
+			return fmt.Errorf("--workspace is required for aggregate and release gate")
+		}
+		record, err := freezer.NewRecord(plan)
+		if err != nil {
+			return err
+		}
+		existing, err := db.GetRunFreeze(cmd.Context(), record.ID)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			if err := db.CreateRunFreeze(cmd.Context(), record); err != nil {
+				return err
+			}
+		} else {
+			record = existing
+		}
+		if record.State == store.RunFreezeQueued || record.State == store.RunFreezeFailed {
+			if wait {
+				if err := runFreezeWorker(cmd.Context(), record.ID); err != nil {
+					return err
+				}
+			} else if err := startFreezeWorker(record.ID); err != nil {
+				return err
+			}
+		}
+		if wait {
+			record, _ = db.GetRunFreeze(cmd.Context(), record.ID)
+		}
+		if asJSON {
+			return printJSON(record)
+		}
+		fmt.Printf("Freeze %s: %s (%s)\n", record.ID, record.State, record.DestinationURI)
+		if !wait {
+			fmt.Printf("Status: aexp freeze status %s --json\n", record.ID)
+		}
+		return nil
+	}}
+	cmd.Flags().StringVar(&profileName, "profile", "paper", "Freeze profile from .aexp.yaml")
+	cmd.Flags().StringVar(&destination, "to", "", "Canonical storage:// destination")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Paper evidence workspace projection")
+	cmd.Flags().StringVar(&configPath, "config", "", "Project config path")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan and validate without writing or transferring")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Run in the foreground and wait for completion")
+	return cmd
+}
+
+func printFreezePlan(plan *freezer.Plan) {
+	fmt.Printf("Freeze plan %s eligible=%v\n", plan.FreezeID, plan.Eligible)
+	fmt.Printf("Destination: %s\nFiles: %d  Bytes: %s\n", plan.DestinationURI, plan.FileCount, byteSize(plan.TotalBytes))
+	for _, b := range plan.Blockers {
+		fmt.Printf("BLOCKED %-28s %s\n", b.Code, b.Message)
+	}
+}
+
+func freezeCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "freeze", Short: "Deprecated compatibility commands for legacy evidence freezes; use snapshot"}
+	cmd.AddCommand(freezeStatusCmd(), freezeListCmd(), freezeManifestCmd(), freezeMaterializeCmd(), freezeWorkerCmd())
+	return cmd
+}
+
+func snapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "snapshot",
+		Short: "Create and inspect immutable references to verified Run outputs",
+		Long:  "Evidence Snapshots reference final RunManifest and already-published output revisions. They never discover or transfer files.",
+	}
+	cmd.AddCommand(snapshotCreateCmd(), snapshotGetCmd(), snapshotListCmd())
+	return cmd
+}
+
+func snapshotCreateCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "create <run_id>",
+		Short: "Create an idempotent Evidence Snapshot for one Run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			snapshot, created, err := db.CreateEvidenceSnapshot(cmd.Context(), args[0])
+			if err != nil {
+				if blocked, ok := err.(*store.EvidenceSnapshotBlockedError); ok && asJSON {
+					return printJSON(map[string]interface{}{"error": "SNAPSHOT_BLOCKED", "blockers": blocked.Blockers})
+				}
+				return err
+			}
+			if asJSON {
+				return printJSON(map[string]interface{}{"snapshot": snapshot, "created": created})
+			}
+			fmt.Printf("%s\t%s\t%s\n", snapshot.ID, snapshot.RunID, snapshot.ManifestSHA256)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func snapshotGetCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "get <snapshot_id>",
+		Short: "Inspect an Evidence Snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			snapshot, err := db.GetEvidenceSnapshot(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if snapshot == nil {
+				return fmt.Errorf("snapshot %s not found", args[0])
+			}
+			if asJSON {
+				return printJSON(snapshot)
+			}
+			fmt.Printf("%s\t%s\t%s\t%s\n", snapshot.ID, snapshot.RunID, snapshot.ProjectID, snapshot.ManifestSHA256)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func snapshotListCmd() *cobra.Command {
+	var runID string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List Evidence Snapshots for one Run",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(runID) == "" {
+				return fmt.Errorf("--run is required")
+			}
+			db := openDB()
+			defer db.Close()
+			items, err := db.ListEvidenceSnapshots(cmd.Context(), runID)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(items)
+			}
+			for _, snapshot := range items {
+				fmt.Printf("%s\t%s\t%s\n", snapshot.ID, snapshot.ProjectID, snapshot.ManifestSHA256)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&runID, "run", "", "Run id")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func releaseCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "release",
+		Short: "Evaluate a Snapshot with the Project's single aggregate and gate commands",
+		Long:  "Every evaluation appends an immutable Release event. Gate rejection records blocked; operational command failure records failed; the Snapshot is never modified.",
+	}
+	cmd.AddCommand(releaseEvaluateCmd(), releaseGetCmd(), releaseListCmd())
+	return cmd
+}
+
+func releaseEvaluateCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "evaluate <snapshot_id>",
+		Short: "Run the configured aggregate and release gate, then append a Release event",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			result, err := (releaseservice.Service{Store: db}).Evaluate(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(result)
+			}
+			fmt.Printf("%s\t%s\t%s\t%d\n", result.ID, result.SnapshotID, result.State, result.Sequence)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func releaseGetCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "get <release_id>",
+		Short: "Inspect one immutable Release event",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			result, err := db.GetEvidenceRelease(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if result == nil {
+				return fmt.Errorf("release %s not found", args[0])
+			}
+			if asJSON {
+				return printJSON(result)
+			}
+			fmt.Printf("%s\t%s\t%s\t%d\n", result.ID, result.SnapshotID, result.State, result.Sequence)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func releaseListCmd() *cobra.Command {
+	var snapshotID string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List immutable Release events for one Snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(snapshotID) == "" {
+				return fmt.Errorf("--snapshot is required")
+			}
+			db := openDB()
+			defer db.Close()
+			items, err := db.ListEvidenceReleases(cmd.Context(), snapshotID)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(items)
+			}
+			for _, result := range items {
+				fmt.Printf("%s\t%s\t%d\n", result.ID, result.State, result.Sequence)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot id")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+
+func freezeMaterializeCmd() *cobra.Command {
+	var destination, expectedPlan, initiator string
+	var wait, asJSON bool
+	cmd := &cobra.Command{Use: "materialize <freeze_id>", Aliases: []string{"restore"}, Short: "Restore frozen raw evidence through the shared TransferJob engine", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		services, cleanup := openFileSpaceCLI()
+		defer cleanup()
+		freeze, err := services.db.GetRunFreeze(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if freeze == nil {
+			return fmt.Errorf("freeze %s not found", args[0])
+		}
+		source, revision, err := freezeRestoreSource(cmd.Context(), services.db, freeze)
+		if err != nil {
+			return err
+		}
+		request := transfer.PlanRequest{Source: source, Destination: destination, SourceRevision: revision, Initiator: initiator, Verification: "manifest"}
+		if expectedPlan == "" {
+			planned, err := services.planner.Build(cmd.Context(), request)
+			if err != nil {
+				return err
+			}
+			expectedPlan = planned.PlanSHA256
+		}
+		job, created, err := services.transfers.Create(cmd.Context(), request, expectedPlan)
+		if err != nil {
+			return err
+		}
+		if wait && job.State != store.TransferCompleted {
+			remote := filespace.PythonRemoteFS{Runner: filespace.SSHPoolRunner{Pool: services.pool}}
+			transport := transfer.NewRsyncTransport(services.db, remote, transfer.SSHPoolTransferRunner{Pool: services.pool})
+			worker := transfer.NewWorker(services.db, transport)
+			if err := worker.Execute(cmd.Context(), job.ID); err != nil {
+				return err
+			}
+			job, err = services.db.GetTransferJob(cmd.Context(), job.ID)
+			if err != nil {
+				return err
+			}
+		}
+		if asJSON {
+			return printJSON(map[string]any{"freeze_id": freeze.ID, "source": source, "transfer": job, "created": created})
+		}
+		fmt.Printf("%s\t%s\t%s\n", freeze.ID, job.ID, job.State)
+		return nil
+	}}
+	cmd.Flags().StringVar(&destination, "to", "", "Destination aexp://, resource://, storage://, or local:// URI (required)")
+	cmd.Flags().StringVar(&expectedPlan, "plan-sha256", "", "Expected plan hash; omitted only for an atomic CLI plan+start")
+	cmd.Flags().StringVar(&initiator, "initiator", "auto", "auto, nas, compute, or mac")
+	cmd.Flags().BoolVar(&wait, "wait", true, "Wait for destination verification")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	_ = cmd.MarkFlagRequired("to")
+	return cmd
+}
+
+func freezeRestoreSource(ctx context.Context, db store.Store, freeze *store.RunFreeze) (string, string, error) {
+	if freeze == nil || freeze.RawTransferID == "" || freeze.FrozenAt == nil {
+		return "", "", fmt.Errorf("freeze raw evidence is not durably frozen")
+	}
+	job, err := db.GetTransferJob(ctx, freeze.RawTransferID)
+	if err != nil || job == nil {
+		if err == nil {
+			err = fmt.Errorf("raw transfer %s not found", freeze.RawTransferID)
+		}
+		return "", "", err
+	}
+	if job.State != store.TransferCompleted {
+		return "", "", fmt.Errorf("raw transfer %s is %s, not completed", job.ID, job.State)
+	}
+	record, err := db.GetTransferPlan(ctx, job.PlanSHA256)
+	if err != nil || record == nil {
+		if err == nil {
+			err = fmt.Errorf("raw transfer plan %s not found", job.PlanSHA256)
+		}
+		return "", "", err
+	}
+	plan, err := transfer.DecodePlan(record)
+	if err != nil {
+		return "", "", err
+	}
+	if plan.Destination.URI == "" || plan.Source.Revision == "" {
+		return "", "", fmt.Errorf("raw transfer plan lacks a durable destination or pinned revision")
+	}
+	return plan.Destination.URI, plan.Source.Revision, nil
+}
+func freezeStatusCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{Use: "status <freeze_id>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		f, err := db.GetRunFreeze(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if f == nil {
+			return fmt.Errorf("freeze %s not found", args[0])
+		}
+		if asJSON {
+			return printJSON(f)
+		}
+		fmt.Printf("%s %s/%s %d/%d files %s\n", f.ID, f.State, f.Stage, f.FilesDone, f.FileCount, f.LastError)
+		return nil
+	}}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+func freezeListCmd() *cobra.Command {
+	var runID string
+	var asJSON bool
+	cmd := &cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		items, err := db.ListRunFreezes(cmd.Context(), runID)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(items)
+		}
+		for _, f := range items {
+			fmt.Printf("%-24s %-14s %-16s %s\n", f.ID, f.State, f.RunID, f.DestinationURI)
+		}
+		return nil
+	}}
+	cmd.Flags().StringVar(&runID, "run", "", "Filter by run ID")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return cmd
+}
+func freezeManifestCmd() *cobra.Command {
+	return &cobra.Command{Use: "manifest <freeze_id>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		db := openDB()
+		defer db.Close()
+		f, err := db.GetRunFreeze(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if f == nil {
+			return fmt.Errorf("freeze %s not found", args[0])
+		}
+		files, err := db.ListRunFreezeFiles(cmd.Context(), f.ID)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]interface{}{"freeze": f, "files": files})
+	}}
+}
+func freezeWorkerCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "worker <freeze_id>", Hidden: true, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return runFreezeWorker(cmd.Context(), args[0]) }}
+	return cmd
+}
+func runFreezeWorker(ctx context.Context, id string) error {
+	db := openDB()
+	defer db.Close()
+	pool := executor.NewSSHPool(15 * time.Second)
+	loadSSHKeys(pool)
+	defer pool.CloseAll()
+	remote := filespace.PythonRemoteFS{Runner: filespace.SSHPoolRunner{Pool: pool}}
+	fileService := filespace.NewService(db, remote)
+	planner := transfer.NewPlanner(db, fileService)
+	transfers := transfer.NewService(db, planner)
+	transport := transfer.NewRsyncTransport(db, remote, transfer.SSHPoolTransferRunner{Pool: pool})
+	worker := transfer.NewWorker(db, transport)
+	return freezer.ExecuteManaged(ctx, freezer.ManagedRuntime{Store: db, Planner: planner, Transfers: transfers, Worker: worker, Writer: remote}, id)
+}
+func startFreezeWorker(id string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logPath := expandPath("~/.aexp/freeze-worker.log")
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	cmd := osexec.Command(exe, "freeze", "worker", id)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	if err := cmd.Start(); err != nil {
+		log.Close()
+		return err
+	}
+	return nil
+}
+
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv, projectEnv, targetEnv, kind, uiEventsPath, forceReason, preemptRunID string
+	var resource, name, cwd, condaEnv, projectEnv, targetEnv, kind, uiEventsPath, forceReason, preemptRunID, configSHA256, splitProtocol, evaluationProtocol string
 	var gpuIndex int
 	var shellMode, force, noGPU, refreshEnv, preemptSave, allowDirtyGit, recordGitDiff bool
 	var logPaths, artifactPaths, metricPaths []string
+	var datasetRefs []string
+	var inputSpecs, outputSpecs, inputJSONSpecs, outputJSONSpecs []string
+	var seeds []int64
 	var launchTimeoutSec int
 	var allowEphemeralPaths bool
 
@@ -6584,6 +8783,38 @@ elsewhere, register the resource with that root_dir first.
 			submitReq.AllowEphemeralPaths = allowEphemeralPaths
 			submitReq.AllowDirtyGit = allowDirtyGit
 			submitReq.RecordGitDiff = recordGitDiff
+			submitReq.ProjectConfigSHA256 = strings.TrimSpace(configSHA256)
+			submitReq.Seeds = append([]int64(nil), seeds...)
+			submitReq.SplitProtocol = strings.TrimSpace(splitProtocol)
+			submitReq.EvaluationProtocol = strings.TrimSpace(evaluationProtocol)
+			for _, spec := range inputSpecs {
+				binding, err := parseRunInputSpec(spec)
+				if err != nil {
+					return err
+				}
+				submitReq.Inputs = append(submitReq.Inputs, binding)
+			}
+			for _, spec := range inputJSONSpecs {
+				binding, err := parseRunInputJSON(spec)
+				if err != nil {
+					return err
+				}
+				submitReq.Inputs = append(submitReq.Inputs, binding)
+			}
+			for _, spec := range outputSpecs {
+				binding, err := parseRunOutputSpec(spec)
+				if err != nil {
+					return err
+				}
+				submitReq.Outputs = append(submitReq.Outputs, binding)
+			}
+			for _, spec := range outputJSONSpecs {
+				binding, err := parseRunOutputJSON(spec)
+				if err != nil {
+					return err
+				}
+				submitReq.Outputs = append(submitReq.Outputs, binding)
+			}
 
 			db := openDB()
 			defer db.Close()
@@ -6593,11 +8824,36 @@ elsewhere, register the resource with that root_dir first.
 				return fmt.Errorf("resource %s not found", resource)
 			}
 			submitReq.ResourceID = res.ID
+			for _, ref := range datasetRefs {
+				datasetName, version, err := parseDatasetRef(ref)
+				if err != nil {
+					return err
+				}
+				dataset, err := db.GetDatasetVersionByRef(cmd.Context(), datasetName, version)
+				if err != nil {
+					return err
+				}
+				if dataset == nil {
+					return fmt.Errorf("dataset %s is not registered", ref)
+				}
+				input, err := runDatasetInputFromVersion(dataset)
+				if err != nil {
+					return err
+				}
+				submitReq.Datasets = append(submitReq.Datasets, input)
+			}
 
 			sshPool := executor.NewSSHPool(10 * time.Second)
 			loadSSHKeys(sshPool)
 
 			exec := executor.NewExecutor(sshPool, db)
+			remoteFS := filespace.PythonRemoteFS{Runner: filespace.SSHPoolRunner{Pool: sshPool}}
+			fileService := filespace.NewService(db, remoteFS)
+			planner := transfer.NewPlanner(db, fileService)
+			transfers := transfer.NewService(db, planner)
+			transport := transfer.NewRsyncTransport(db, remoteFS, transfer.SSHPoolTransferRunner{Pool: sshPool})
+			worker := transfer.NewWorker(db, transport)
+			exec.SetRunIO(runioservice.NewService(db, fileService, planner, transfers, worker, remoteFS))
 
 			launchCtx := cmd.Context()
 			var cancel context.CancelFunc
@@ -6606,7 +8862,7 @@ elsewhere, register the resource with that root_dir first.
 				defer cancel()
 			}
 			createdID := ""
-			run, err := exec.SubmitWithOptions(launchCtx, submitReq, executor.SubmitOptions{
+			run, err := exec.SubmitVisibleWithOptions(launchCtx, submitReq, executor.SubmitOptions{
 				OnCreated: func(run *store.Run) {
 					createdID = run.ID
 					fmt.Printf("Created run %s on %s\n", run.ID, resource)
@@ -6626,7 +8882,7 @@ elsewhere, register the resource with that root_dir first.
 
 			fmt.Printf("Launched run %s on %s\n", run.ID, resource)
 			printRunEventGuidance(run)
-			fmt.Printf("After inspection, record important findings with:\n  aexp run mark %s --title \"...\" --statement \"...\" --body-md-file notes.md --attach plot.png|caption\n", run.ID)
+			printRunJournalGuidance(run)
 			return nil
 		},
 	}
@@ -6649,6 +8905,15 @@ elsewhere, register the resource with that root_dir first.
 	cmd.Flags().StringSliceVar(&logPaths, "log-paths", nil, "Log file globs")
 	cmd.Flags().StringSliceVar(&artifactPaths, "artifact-paths", nil, "Artifact file globs")
 	cmd.Flags().StringSliceVar(&metricPaths, "metric-paths", nil, "Metric file globs")
+	cmd.Flags().StringSliceVar(&datasetRefs, "dataset", nil, "Registered dataset reference name@version (repeatable)")
+	cmd.Flags().Int64SliceVar(&seeds, "seed", nil, "Declared experiment seed (repeatable)")
+	cmd.Flags().StringVar(&configSHA256, "config-sha256", "", "Launch-time project/config SHA-256")
+	cmd.Flags().StringVar(&splitProtocol, "split-protocol", "", "Pinned data split/evaluation split protocol")
+	cmd.Flags().StringVar(&evaluationProtocol, "evaluation-protocol", "", "Pinned metric/evaluation protocol")
+	cmd.Flags().StringSliceVar(&inputSpecs, "input", nil, "Managed input URI|target|revision[|mode] (repeatable)")
+	cmd.Flags().StringArrayVar(&inputJSONSpecs, "input-json", nil, "Managed input JSON object with from/to/revision/mode (repeatable)")
+	cmd.Flags().StringSliceVar(&outputSpecs, "output", nil, "Managed output pattern|URI|role|required (repeatable)")
+	cmd.Flags().StringArrayVar(&outputJSONSpecs, "output-json", nil, "Managed output JSON object with from/to/role/required (repeatable)")
 	cmd.Flags().StringVar(&uiEventsPath, "ui-events", "", "Structured UI event JSONL file (default .aexp/events/<run_id>.jsonl; set off to disable)")
 	cmd.Flags().BoolVar(&allowEphemeralPaths, "allow-ephemeral-paths", false, "Allow cwd/root_dir that look like temporary mounts; use only for disposable smoke/setup runs")
 	cmd.Flags().BoolVar(&allowDirtyGit, "allow-dirty-git", false, "Allow a formal/ablation run from a dirty Git worktree")
@@ -6662,12 +8927,81 @@ elsewhere, register the resource with that root_dir first.
 	return cmd
 }
 
+func parseRunInputSpec(spec string) (store.RunInputBinding, error) {
+	parts := strings.Split(spec, "|")
+	if len(parts) < 3 || len(parts) > 4 {
+		return store.RunInputBinding{}, fmt.Errorf("input %q must be URI|target|revision[|mode]", spec)
+	}
+	binding := store.RunInputBinding{LogicalURI: strings.TrimSpace(parts[0]), TargetPath: strings.TrimSpace(parts[1]), Revision: strings.TrimSpace(parts[2]), Mode: "copy"}
+	if len(parts) == 4 && strings.TrimSpace(parts[3]) != "" {
+		binding.Mode = strings.TrimSpace(parts[3])
+	}
+	if binding.LogicalURI == "" || binding.TargetPath == "" || binding.Revision == "" {
+		return store.RunInputBinding{}, fmt.Errorf("input URI, target and revision are required")
+	}
+	return binding, nil
+}
+
+func parseRunOutputSpec(spec string) (store.RunOutputBinding, error) {
+	parts := strings.Split(spec, "|")
+	if len(parts) != 4 {
+		return store.RunOutputBinding{}, fmt.Errorf("output %q must be pattern|URI|role|required", spec)
+	}
+	required, err := strconv.ParseBool(strings.TrimSpace(parts[3]))
+	if err != nil {
+		return store.RunOutputBinding{}, fmt.Errorf("output required must be true or false: %w", err)
+	}
+	binding := store.RunOutputBinding{SourcePattern: strings.TrimSpace(parts[0]), LogicalURI: strings.TrimSpace(parts[1]), Role: strings.TrimSpace(parts[2]), Required: required}
+	if binding.SourcePattern == "" || binding.LogicalURI == "" {
+		return store.RunOutputBinding{}, fmt.Errorf("output pattern and URI are required")
+	}
+	return binding, nil
+}
+
+func parseRunInputJSON(spec string) (store.RunInputBinding, error) {
+	var value struct {
+		From, URI, LogicalURI  string
+		To, Target, TargetPath string
+		Revision, Mode         string
+	}
+	if err := json.Unmarshal([]byte(spec), &value); err != nil {
+		return store.RunInputBinding{}, fmt.Errorf("invalid input JSON: %w", err)
+	}
+	binding := store.RunInputBinding{LogicalURI: firstNonEmpty(value.From, value.URI, value.LogicalURI), TargetPath: firstNonEmpty(value.To, value.Target, value.TargetPath), Revision: value.Revision, Mode: value.Mode}
+	if binding.Mode == "" {
+		binding.Mode = "copy"
+	}
+	if binding.LogicalURI == "" || binding.TargetPath == "" || binding.Revision == "" {
+		return store.RunInputBinding{}, fmt.Errorf("input JSON requires from, to, and revision")
+	}
+	return binding, nil
+}
+
+func parseRunOutputJSON(spec string) (store.RunOutputBinding, error) {
+	var value struct {
+		From, Pattern, SourcePattern string
+		To, URI, LogicalURI          string
+		Role                         string
+		Required                     bool
+	}
+	if err := json.Unmarshal([]byte(spec), &value); err != nil {
+		return store.RunOutputBinding{}, fmt.Errorf("invalid output JSON: %w", err)
+	}
+	binding := store.RunOutputBinding{SourcePattern: firstNonEmpty(value.From, value.Pattern, value.SourcePattern), LogicalURI: firstNonEmpty(value.To, value.URI, value.LogicalURI), Role: value.Role, Required: value.Required}
+	if binding.SourcePattern == "" || binding.LogicalURI == "" {
+		return store.RunOutputBinding{}, fmt.Errorf("output JSON requires from and to")
+	}
+	return binding, nil
+}
+
 func runListCmd() *cobra.Command {
-	var status, resource string
+	var status, resource, project string
 	var asJSON bool
+	var summary bool
 	var noRefresh bool
-	var trash, deleted bool
+	var trash, deleted, importantOnly bool
 	var refreshTimeoutSec int
+	var limit, offset int
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -6676,7 +9010,7 @@ func runListCmd() *cobra.Command {
 			db := openDB()
 			defer db.Close()
 
-			filter := store.RunFilter{Status: status, Limit: 50, Trash: trash, Deleted: deleted}
+			filter := store.RunFilter{Status: status, ProjectID: project, Limit: limit, Offset: offset, Trash: trash, Deleted: deleted, ImportantOnly: importantOnly}
 			if resource != "" {
 				res, _ := db.GetResourceByName(cmd.Context(), resource)
 				if res != nil {
@@ -6684,6 +9018,13 @@ func runListCmd() *cobra.Command {
 				}
 			}
 
+			if summary {
+				items, err := db.ListRunSummaries(cmd.Context(), filter)
+				if err != nil {
+					return err
+				}
+				return printJSON(items)
+			}
 			runs, err := db.ListRuns(cmd.Context(), filter)
 			if err != nil {
 				return err
@@ -6726,8 +9067,13 @@ func runListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&status, "status", "", "Filter by status")
 	cmd.Flags().StringVar(&resource, "resource", "", "Filter by resource name")
+	cmd.Flags().StringVar(&project, "project", "", "Filter by project id")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum runs to return")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset")
+	cmd.Flags().BoolVar(&summary, "summary", false, "Return low-noise run summaries as JSON")
 	cmd.Flags().BoolVar(&trash, "trash", false, "List runs in trash")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List logically deleted runs")
+	cmd.Flags().BoolVar(&importantOnly, "important", false, "Only runs marked important by a project run card")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&noRefresh, "no-refresh", false, "Do not refresh running/starting runs before listing")
 	cmd.Flags().IntVar(&refreshTimeoutSec, "refresh-timeout", 5, "Timeout per running/starting status refresh in seconds")
@@ -7788,7 +10134,7 @@ func getRunEventSnapshot(ctx context.Context, runID string, tailN int, includeLi
 		return snapshot, err
 	}
 	snapshot := eventSnapshotFromLines(run.ID, run.UIEventsPath, "remote", lines, includeLines)
-	cachePath, cacheErr := eventcache.Write(run.ID, eventCacheLinesFromExecutor(lines))
+	cachePath, cacheErr := eventcache.WriteSnapshot(run.ID, eventCacheLinesFromExecutor(lines))
 	snapshot.CachePath = cachePath
 	if cacheErr != nil {
 		snapshot.CacheError = cacheErr.Error()
@@ -8154,7 +10500,7 @@ func runDeleteCmd() *cobra.Command {
 }
 
 func runIsActive(run *store.Run) bool {
-	return store.IsRunRefreshableStatus(run.Status)
+	return store.IsRunActiveLifecycleStatus(run.Status)
 }
 
 func runMarkCmd() *cobra.Command {
@@ -8164,11 +10510,12 @@ func runMarkCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mark <run_id>",
-		Short: "Attach an agent/human finding to a run",
-		Long: `Attach a Markdown note to a run without changing the run record.
-Use this after reading logs or artifacts so important findings survive context loss.
+		Short: "Legacy compatibility: attach a historical note to one run",
+		Long: `Legacy compatibility command for historical RunMark records.
+Do not use this for new research reasoning. Append a Project journal entry and
+optionally link one or more Runs instead.
 
-Agent note shape:
+Historical note shape:
   --title is the note title.
   --statement is the short one-sentence claim shown in lists.
   --body-md or --body-md-file is the Markdown body shown when the note is opened.
@@ -8276,7 +10623,7 @@ func runMarksCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "marks [run_id]",
-		Short: "List run findings",
+		Short: "Legacy compatibility: list historical RunMark records",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {

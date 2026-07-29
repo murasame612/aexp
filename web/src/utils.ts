@@ -72,7 +72,7 @@ export function runTitle(run: Run): string {
 }
 
 export function isActiveRun(run: Run) {
-  return run.status === "running" || run.status === "starting" || run.status === "queued" || run.status === "created" || run.status === "ssh_unreachable";
+  return run.status === "running" || run.status === "starting" || run.status === "preflighting" || run.status === "queued" || run.status === "created" || run.status === "ssh_unreachable";
 }
 
 export function isCompareEligible(run: Run) {

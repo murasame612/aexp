@@ -10,9 +10,9 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        entryFileNames: "assets/[name].js",
+        entryFileNames: "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: "assets/[name][extname]",
+        assetFileNames: "assets/[name]-[hash][extname]",
         manualChunks: {
           tanstack: ["@tanstack/react-query", "@tanstack/react-table", "@tanstack/react-virtual"],
           chart: ["echarts"],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,6 +15,7 @@ import {
   ExternalLink,
   Grid3X3,
   Heart,
+	HardDrive,
   Languages,
   Network,
   PlayCircle,
@@ -24,33 +25,35 @@ import {
   Settings,
   Star,
   Terminal,
-  Trash2,
-  X
+  Trash2
 } from "lucide-react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import * as echarts from "echarts";
+import { runDataFinalizationPresentation } from "./dataState";
+import { StatusCapsule } from "./StatusCapsule";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   archiveRun,
-  assignRunManualProjectCategory,
   cancelRun,
-  createManualProjectCategory,
+  collectArtifacts,
   createLocalResource,
   deleteBookmark,
   deleteResource,
   deleteRunLogically,
-  getAllRunMarks,
   getArtifacts,
+  getArtifactCollection,
   getBookmarks,
   getExecEvents,
   getLogs,
-  getManualProjectCategories,
-  getManualRunProjectAssignments,
-  getProjects,
+  getProjectDefinitions,
+  getRunJournalEntries,
   getResources,
   getRun,
+	getRunDataBindings,
+	getRunChanges,
+  getRunManifest,
   getRunMarks,
-  getRuns,
+  getActiveRunSummaries,
+  getRunSummaries,
   getStats,
   localResourceDefaults,
   refreshResource,
@@ -60,30 +63,31 @@ import {
   saveResource,
   statusCheck,
   testResource,
-  unassignRunManualProjectCategory,
-  wsURL
 } from "./api";
 import { makeT, type I18nKey } from "./i18n";
 import { useAppStore } from "./store";
 import type {
   Artifact,
+  ArtifactCollection,
   ConfirmState,
   ExecEvent,
   GPUInfo,
-  LogsResponse,
-  ManualProjectCategory,
   MetricPoint,
+	Locale,
+	Paginated,
   ParamPoint,
   ParsedEvents,
   ProgressPoint,
   ProjectRunCard,
+  ProjectDefinition,
   ProjectView,
   Resource,
   Run,
   RunBookmark,
-  RunProjectAssignment,
   RunMark
 } from "./types";
+import { runStatusPresentation } from "./runStatus";
+import { RunObservationMeta } from "./RunObservationMeta";
 import {
   filterExecs,
   filterRuns,
@@ -93,7 +97,6 @@ import {
   fmtTime,
   isActiveRun,
   isCompareEligible,
-  markCountByRun,
   parseGPUs,
   parseJSON,
   runGPU,
@@ -101,23 +104,43 @@ import {
   text,
   uiEventsPath
 } from "./utils";
-import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type MetricSeriesSummary, type ProgressSummary } from "./events";
-import { isEmptyRemotePathSnapshot, logSnapshotError, mergeLogSnapshot } from "./logs";
+import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type ProgressSummary } from "./events";
+import { logSnapshotError } from "./logs";
 import { EvidenceChainBoard } from "./EvidenceChainBoard";
 import { ExperimentMatrixPage } from "./ExperimentMatrixPage";
+import { replaceRunInPage } from "./runCache";
+import { ProjectLaunchpadPage } from "./ProjectLaunchpadPage";
+import { ProjectAssetsPage } from "./ProjectAssetsPage";
+import { ProjectJournalPage } from "./ProjectJournalPage";
+import { useLiveLog } from "./useLiveLog";
+import { Modal } from "./Modal";
+import { metricSeriesColor } from "./metricColors";
+import { DataCenterPage } from "./DataCenterPage";
+import { EvidenceFreezePanel } from "./EvidenceFreezePanel";
+import { SettingsPage } from "./SettingsPage";
+import { catchUpRunChanges, readRunChangeStream, seedRunChangeCheckpoint, type RunChangeCheckpoint } from "./runChanges";
+import { applyRunChange, invalidateRunQueriesOnReturn, runListEnabledForTab, runSummaryKeys } from "./runSync";
+import { projectEvidencePreview } from "./projectPreview";
+import { projectRunFilterOptions, projectScopeFromFilterValue } from "./projectFilters";
+import { parseProjectRoute } from "./projectRoute";
 
-type Tab = "dashboard" | "resources" | "projects" | "matrices" | "evidence" | "runs" | "favorites" | "execs";
+type Tab = "dashboard" | "resources" | "dataCenter" | "launchpad" | "projects" | "journal" | "projectAssets" | "matrices" | "evidence" | "runs" | "favorites" | "execs" | "settings";
+
+const MetricChart = lazy(() => import("./MetricChart").then((module) => ({ default: module.MetricChart })));
+const CompareModal = lazy(() => import("./CompareModal").then((module) => ({ default: module.CompareModal })));
 
 interface RunProjectMeta {
   projectId: string;
   projectName: string;
-  cardTitle: string;
-  cardSummary?: string;
-  evidenceLevel?: string;
-  source?: "manual" | "card";
 }
 
-const pageSize = 100;
+function displayError(cause: unknown): string {
+	if (cause instanceof ApiError) return cause.details || cause.message;
+	return cause instanceof Error ? cause.message : String(cause);
+}
+
+const runPageSize = 20;
+const execPageSize = 100;
 
 export function App() {
   const token = useAppStore((s) => s.token);
@@ -129,6 +152,7 @@ export function App() {
   const clearSelectedRuns = useAppStore((s) => s.clearSelectedRuns);
   const t = useMemo(() => makeT(locale), [locale]);
   const queryClient = useQueryClient();
+	const runChangeCheckpoint = useRef<RunChangeCheckpoint>({ cursor: 0 });
 
   const [tab, setTab] = useState<Tab>(readInitialTab());
   const [tokenDraft, setTokenDraft] = useState(token);
@@ -138,95 +162,222 @@ export function App() {
   const [runStatus, setRunStatus] = useState("");
   const [runResource, setRunResource] = useState("");
   const [runKind, setRunKind] = useState("experiments");
-  const [runProject, setRunProject] = useState("");
+  const [runProject, setRunProject] = useState(() => window.location.pathname.endsWith("/runs") ? readProjectFromPath() : "");
   const [runQuery, setRunQuery] = useState("");
   const [execResource, setExecResource] = useState("");
   const [execActor, setExecActor] = useState("");
   const [execQuery, setExecQuery] = useState("");
   const [projectQuery, setProjectQuery] = useState("");
+  const [evidenceProjectId, setEvidenceProjectId] = useState(readEvidenceProjectFromPath);
+  const [projectDetailID, setProjectDetailID] = useState(readProjectFromPath);
   const [favoriteQuery, setFavoriteQuery] = useState("");
   const [detailRunId, setDetailRunId] = useState<string | null>(readDeepLinkRun());
   const [resourceForm, setResourceForm] = useState<Partial<Resource> | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
-  const [selectedRunListMark, setSelectedRunListMark] = useState<RunMark | null>(null);
-  const [bookmarkEditor, setBookmarkEditor] = useState<{ run: Run; note: string } | null>(null);
-  const [projectEditorRun, setProjectEditorRun] = useState<Run | null>(null);
+  const runProjectScope = projectScopeFromFilterValue(runProject);
 
-  const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), refetchInterval: 5000 });
-  const resources = useQuery({ queryKey: ["resources", token], queryFn: () => getResources(token), refetchInterval: 5000 });
-  const marks = useQuery({ queryKey: ["marks", token], queryFn: () => getAllRunMarks(token), refetchInterval: 10000 });
-  const bookmarks = useQuery({ queryKey: ["bookmarks", token], queryFn: () => getBookmarks(token), refetchInterval: 10000 });
-  const projects = useQuery({ queryKey: ["projects", token], queryFn: () => getProjects(token), refetchInterval: 12000 });
-  const manualProjectCategories = useQuery({ queryKey: ["manual-project-categories", token], queryFn: () => getManualProjectCategories(token), refetchInterval: 12000 });
-  const manualRunProjectAssignments = useQuery({ queryKey: ["manual-run-project-assignments", token], queryFn: () => getManualRunProjectAssignments(token), refetchInterval: 12000 });
+	const needsRuns = runListEnabledForTab(tab);
+	const needsProjects = tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites";
+	const needsResources = tab === "dashboard" || tab === "resources" || tab === "dataCenter" || tab === "launchpad" || Boolean(detailRunId);
+	const needsExecs = tab === "dashboard" || tab === "execs";
+  const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), enabled: tab === "dashboard", refetchInterval: 5000 });
+  const resources = useQuery({ queryKey: ["resources", token], queryFn: () => getResources(token), enabled: needsResources, refetchInterval: 5000 });
+  const bookmarks = useQuery({ queryKey: ["bookmarks", token], queryFn: () => getBookmarks(token), enabled: tab === "runs" || tab === "favorites", refetchInterval: 30000 });
+  const projects = useQuery({ queryKey: ["project-definitions", token], queryFn: () => getProjectDefinitions(token), enabled: needsProjects, refetchInterval: 30000 });
+  const activeRunSummaries = useQuery({
+	queryKey: runSummaryKeys.active(token),
+	queryFn: () => getActiveRunSummaries(token, 100),
+	refetchInterval: 30_000,
+	refetchOnWindowFocus: "always"
+  });
   const runs = useQuery({
-    queryKey: ["runs", token, runPage, runStatus, runResource, runTrash],
+    queryKey: runSummaryKeys.list(token, runPage, runStatus, runResource, runTrash, runProjectScope, runKind, runQuery),
     queryFn: () =>
-      getRuns(token, {
-        limit: pageSize,
-        offset: runPage * pageSize,
+      getRunSummaries(token, {
+        limit: runPageSize,
+        offset: runPage * runPageSize,
         status: runStatus,
         resource: runResource,
+        projectScope: runProjectScope,
+        query: runQuery,
+        kindGroup: runKind,
         trash: runTrash,
         refresh: false
       }),
-    refetchInterval: 5000
+    enabled: needsRuns,
+	refetchInterval: 30_000,
+	refetchOnWindowFocus: "always"
   });
+	const runSyncCursor = needsRuns ? runs.data?.change_cursor : activeRunSummaries.data?.change_cursor;
+	const runChangeCatchup = useQuery({
+	queryKey: ["run-change-catchup", token, runSyncCursor ?? "waiting"],
+	queryFn: () => {
+		runChangeCheckpoint.current = seedRunChangeCheckpoint(runChangeCheckpoint.current, runSyncCursor);
+		return catchUpRunChanges(runChangeCheckpoint.current, (cursor, updatedSince) => getRunChanges(token, cursor, updatedSince));
+	},
+	enabled: runSyncCursor != null,
+	refetchInterval: 30_000,
+	refetchOnWindowFocus: "always"
+	});
   const execs = useQuery({
     queryKey: ["execs", token, execPage, execResource, execActor],
-    queryFn: () => getExecEvents(token, { limit: pageSize, offset: execPage * pageSize, resource_id: execResource, actor: execActor }),
-    refetchInterval: 8000
+    queryFn: () => getExecEvents(token, { limit: execPageSize, offset: execPage * execPageSize, resource_id: execResource, actor: execActor }),
+    enabled: needsExecs,
+    refetchInterval: 15000
   });
 
   const resourceList = resources.data || [];
   const runList = runs.data?.items || [];
   const bookmarkList = bookmarks.data || [];
-  const markList = marks.data || [];
-  const runMarks = useMemo(() => markCountByRun(markList), [markList]);
-  const runMarkPreviews = useMemo(() => marksByRun(markList), [markList]);
   const resourceById = useMemo(() => new Map(resourceList.map((r) => [r.id, r])), [resourceList]);
   const projectList = projects.data || [];
-  const manualCategoryList = manualProjectCategories.data || [];
-  const manualAssignmentList = manualRunProjectAssignments.data || [];
-  const manualCategoryById = useMemo(() => new Map(manualCategoryList.map((category) => [category.id, category])), [manualCategoryList]);
-  const manualAssignmentByRun = useMemo(() => new Map(manualAssignmentList.map((assignment) => [assignment.run_id, assignment])), [manualAssignmentList]);
-  const runProjectById = useMemo(() => buildRunProjectIndex(projectList, t, manualAssignmentByRun, manualCategoryById), [projectList, t, manualAssignmentByRun, manualCategoryById]);
+  const selectedProject = projectList.find((project) => project.id === projectDetailID);
+  const projectWorkspace = Boolean(projectDetailID);
+  const projectWorkspaceName = selectedProject?.name || projectDetailID;
+  const runProjectById = useMemo(() => buildRunProjectIndex(projectList, runList), [projectList, runList]);
   const visibleRuns = useMemo(() => {
-    const filtered = filterRuns(runList, { query: runQuery, kind: runKind, bookmarks: bookmarkList });
-    if (!runProject) return filtered;
-    return filtered.filter((run) => runProjectMatches(runProjectById.get(run.id), runProject));
-  }, [runList, runQuery, runKind, bookmarkList, runProject, runProjectById]);
-  const activeRuns = useMemo(() => runList.filter(isActiveRun), [runList]);
+    if (runKind === "favorites") return filterRuns(runList, { kind: "favorites", bookmarks: bookmarkList });
+    return runList;
+  }, [runList, runKind, bookmarkList]);
+  const activeRuns = activeRunSummaries.data?.items || [];
   const visibleExecs = useMemo(() => filterExecs(execs.data?.items || [], execQuery), [execs.data, execQuery]);
   const favoriteRuns = useMemo(() => filterRuns(runList, { query: favoriteQuery, kind: "favorites", bookmarks: bookmarkList }), [runList, favoriteQuery, bookmarkList]);
   const visibleProjects = useMemo(() => filterProjects(projectList, projectQuery), [projectList, projectQuery]);
   const runProjectOptions = useMemo(
     () => [
       ["", t("allProjects")] as [string, string],
-      ...manualCategoryList.map((category) => [manualProjectFilterValue(category.id), category.name] as [string, string]),
-      ...projectList.map((project) => [projectCardFilterValue(project.project_id), projectDisplayName(project, t)] as [string, string])
+      ...projectRunFilterOptions(projectList)
     ],
-    [manualCategoryList, projectList, t]
+    [projectList, t]
   );
   const selectedRuns = useMemo(() => runList.filter((run) => selectedRunIds.has(run.id) && isCompareEligible(run)), [runList, selectedRunIds]);
+
+	useEffect(() => {
+		if (runSyncCursor != null && runChangeCheckpoint.current.cursor === 0) runChangeCheckpoint.current.cursor = runSyncCursor;
+	}, [runSyncCursor]);
+
+	useEffect(() => {
+		if (!runChangeCatchup.data) return;
+		for (const change of runChangeCatchup.data.changes) applyRunChange(queryClient, token, change);
+		runChangeCheckpoint.current = runChangeCatchup.data.checkpoint;
+	}, [queryClient, runChangeCatchup.data, token]);
 
   const refreshAll = () => {
     void queryClient.invalidateQueries();
   };
 
   const setActiveTab = (next: Tab) => {
+    if (next === "projects" || next === "runs" || next === "settings") setProjectDetailID("");
+    if (next === "runs") {
+      setRunProject("");
+      setRunPage(0);
+    }
     setTab(next);
-    history.replaceState(null, "", pathForTab(next));
+    history.replaceState(null, "", pathForTab(next, evidenceProjectId, projectDetailID));
+  };
+
+  const openProjectJournal = (projectID: string, options?: { runID?: string; compose?: boolean; entryID?: string }) => {
+    setProjectDetailID(projectID);
+    setTab("journal");
+    const params = new URLSearchParams();
+    if (options?.runID) params.set("run", options.runID);
+    if (options?.compose) params.set("compose", "1");
+    if (options?.entryID) params.set("entry", options.entryID);
+    const search = params.toString();
+    history.replaceState(null, "", `${projectJournalPath(projectID)}${search ? `?${search}` : ""}`);
+  };
+
+  const openProjectRuns = (projectID: string) => {
+    setProjectDetailID(projectID);
+    setRunProject(projectID);
+    setRunPage(0);
+    setTab("runs");
+    history.replaceState(null, "", projectRunsPath(projectID));
+  };
+
+  const openProjectAssets = (projectID: string) => {
+    setProjectDetailID(projectID);
+    setTab("projectAssets");
+    history.replaceState(null, "", projectAssetsPath(projectID));
+  };
+
+  const openProjectResearchGraph = (projectID: string) => {
+    setProjectDetailID(projectID);
+    setEvidenceProjectId(projectID);
+    setTab("evidence");
+    history.replaceState(null, "", projectResearchGraphPath(projectID));
   };
 
   useEffect(() => {
-    const syncFromPath = () => setTab(readInitialTab());
+    const syncFromPath = () => {
+      const evidenceID = readEvidenceProjectFromPath();
+      const projectID = readProjectFromPath();
+      setEvidenceProjectId(evidenceID);
+      setProjectDetailID(projectID);
+      if (window.location.pathname.endsWith("/runs") && projectID) {
+        setRunProject(projectID);
+        setRunPage(0);
+      }
+      setTab(readInitialTab());
+    };
     window.addEventListener("popstate", syncFromPath);
     return () => window.removeEventListener("popstate", syncFromPath);
   }, []);
 
-  const authError = [stats.error, resources.error, runs.error].find((err) => err instanceof ApiError && err.status === 401);
+  useEffect(() => {
+    if (window.location.pathname.startsWith("/ui-v2/evidence-chains")) {
+      history.replaceState(null, "", pathForTab("projects"));
+    }
+  }, []);
+
+	useEffect(() => {
+		const initialCursor = runSyncCursor;
+		if (initialCursor == null) return;
+		let stopped = false;
+		let cursor = Math.max(initialCursor, runChangeCheckpoint.current.cursor);
+		let controller: AbortController | null = null;
+		let reconnectNow = false;
+		const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+		const connect = async () => {
+			let retry = 0;
+			while (!stopped) {
+				controller = new AbortController();
+				try {
+					cursor = await readRunChangeStream(token, cursor, (change) => {
+						cursor = Math.max(cursor, change.seq);
+						runChangeCheckpoint.current.cursor = Math.max(runChangeCheckpoint.current.cursor, change.seq);
+						applyRunChange(queryClient, token, change);
+					}, controller.signal);
+					retry = 0;
+					if (!stopped) await wait(1000);
+				} catch {
+					if (stopped) return;
+					void queryClient.invalidateQueries({ queryKey: runSummaryKeys.active(token) });
+					if (!reconnectNow) await wait(Math.min(10_000, 1000 * 2 ** retry++));
+					reconnectNow = false;
+				}
+			}
+		};
+		void connect();
+		const refreshOnReturn = () => {
+			if (!invalidateRunQueriesOnReturn(queryClient, token, detailRunId, document.visibilityState)) return;
+			reconnectNow = true;
+			controller?.abort();
+		};
+		window.addEventListener("online", refreshOnReturn);
+		window.addEventListener("pageshow", refreshOnReturn);
+		document.addEventListener("visibilitychange", refreshOnReturn);
+		return () => {
+			stopped = true;
+			controller?.abort();
+			window.removeEventListener("online", refreshOnReturn);
+			window.removeEventListener("pageshow", refreshOnReturn);
+			document.removeEventListener("visibilitychange", refreshOnReturn);
+		};
+	}, [runSyncCursor, detailRunId, queryClient, token]);
+
+  const authError = [stats.error, resources.error, activeRunSummaries.error, runs.error].find((err) => err instanceof ApiError && err.status === 401);
 
   function askConfirm(next: ConfirmState) {
     setConfirm(next);
@@ -235,7 +386,7 @@ export function App() {
   async function invalidateOperationalData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["resources"] }),
-      queryClient.invalidateQueries({ queryKey: ["runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["run-summaries"] }),
       queryClient.invalidateQueries({ queryKey: ["marks"] }),
       queryClient.invalidateQueries({ queryKey: ["bookmarks"] }),
       queryClient.invalidateQueries({ queryKey: ["projects"] }),
@@ -245,31 +396,9 @@ export function App() {
     ]);
   }
 
-  async function refreshManualProjectData() {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["manual-project-categories"] }),
-      queryClient.invalidateQueries({ queryKey: ["manual-run-project-assignments"] }),
-      queryClient.invalidateQueries({ queryKey: ["projects"] })
-    ]);
-  }
-
-  async function assignManualProject(runID: string, categoryID: string) {
-    if (categoryID) await assignRunManualProjectCategory(token, runID, categoryID);
-    else await unassignRunManualProjectCategory(token, runID);
-    await refreshManualProjectData();
-  }
-
-  async function createAndAssignManualProject(runID: string, name: string) {
-    const normalized = name.trim().toLowerCase();
-    const existing = manualCategoryList.find((category) => category.name.trim().toLowerCase() === normalized);
-    const category = existing || (await createManualProjectCategory(token, { name }));
-    await assignRunManualProjectCategory(token, runID, category.id);
-    await refreshManualProjectData();
-  }
-
   return (
-    <div className={tab === "evidence" ? "app-shell evidence-app-shell" : "app-shell"}>
-      <aside className="side-nav">
+    <div className={projectWorkspace ? "app-shell project-app-shell" : "app-shell global-app-shell"}>
+      {!projectWorkspace ? <aside className="side-nav">
         <div className="brand">
           <img src="/aexp-icon.svg" alt="" />
           <div>
@@ -278,23 +407,23 @@ export function App() {
           </div>
         </div>
         <nav>
-          <NavButton active={tab === "dashboard"} icon={<Activity />} label={t("dashboard")} onClick={() => setActiveTab("dashboard")} />
-          <NavButton active={tab === "resources"} icon={<Server />} label={t("resources")} onClick={() => setActiveTab("resources")} />
-          <NavButton active={tab === "projects"} icon={<Database />} label={t("projects")} onClick={() => setActiveTab("projects")} />
-          <NavButton active={tab === "matrices"} icon={<Grid3X3 />} label={t("matrices")} onClick={() => setActiveTab("matrices")} />
-          <NavButton active={tab === "evidence"} icon={<Network />} label={t("evidenceChains")} onClick={() => setActiveTab("evidence")} />
-          <NavButton active={tab === "runs"} icon={<PlayCircle />} label={t("runs")} onClick={() => setActiveTab("runs")} />
-          <NavButton active={tab === "favorites"} icon={<Star />} label={t("favorites")} onClick={() => setActiveTab("favorites")} />
-          <NavButton active={tab === "execs"} icon={<Terminal />} label={t("execs")} onClick={() => setActiveTab("execs")} />
+          <NavButton active={tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || (tab === "runs" && Boolean(projectDetailID))} icon={<Database />} label={t("projects")} onClick={() => setActiveTab("projects")} />
+          <NavButton active={(tab === "runs" || tab === "favorites") && !projectDetailID} icon={<PlayCircle />} label={t("activeRuns")} onClick={() => setActiveTab("runs")} />
+          <NavButton
+            active={["settings", "resources", "dataCenter", "launchpad", "execs"].includes(tab)}
+            icon={<Settings />}
+            label={t("settings")}
+            onClick={() => setActiveTab("settings")}
+          />
         </nav>
         <a className="legacy-link" href="/">
           <ExternalLink size={15} />
           {t("legacy")}
         </a>
-      </aside>
+      </aside> : null}
 
-      <main className={tab === "evidence" ? "workspace evidence-workspace" : "workspace"}>
-        <header className="topbar">
+      <main className={projectWorkspace ? "workspace project-workspace" : "workspace global-workspace"}>
+        {!projectWorkspace ? <header className="topbar">
           <div>
             <h1>{labelForTab(tab, t)}</h1>
             <p>{authError ? t("invalidToken") : t("tokenMissing")}</p>
@@ -328,17 +457,62 @@ export function App() {
               ) : null}
             </form>
           </div>
-        </header>
+        </header> : null}
+
+        {projectWorkspace ? (
+          <header className="project-header">
+            <button className="project-exit" type="button" onClick={() => setActiveTab("projects")}>
+              <ChevronLeft size={16} />
+              <span>{locale === "zh" ? "退出项目" : "Exit project"}</span>
+            </button>
+            <strong className="project-header-name" title={projectWorkspaceName}>{projectWorkspaceName}</strong>
+            <nav className="project-header-tabs" aria-label={`${projectWorkspaceName} Project`}>
+            <button className={tab === "journal" ? "active" : ""} onClick={() => openProjectJournal(projectDetailID)}>{t("journal")}</button>
+            <button className={tab === "runs" ? "active" : ""} onClick={() => openProjectRuns(projectDetailID)}>{t("runs")}</button>
+            <button className={tab === "projectAssets" ? "active" : ""} onClick={() => openProjectAssets(projectDetailID)}>{t("assets")}</button>
+            <button className={tab === "evidence" ? "active" : ""} onClick={() => openProjectResearchGraph(projectDetailID)}>{t("evidenceChains")}</button>
+            </nav>
+            <div className="project-header-actions">
+              <button className="icon-button" type="button" title="Language" onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
+                <Languages size={17} />
+              </button>
+              <button className="icon-button" type="button" title={t("refresh")} onClick={refreshAll}>
+                <RefreshCcw size={17} />
+              </button>
+            </div>
+          </header>
+        ) : null}
+
+        {["settings", "resources", "dataCenter", "launchpad", "execs"].includes(tab) ? (
+          <nav className="settings-section-nav" aria-label={t("settings")}>
+            <button className={tab === "resources" ? "active" : ""} onClick={() => setActiveTab("resources")}><Server size={15} />{t("resources")}</button>
+            <button className={tab === "dataCenter" ? "active" : ""} onClick={() => setActiveTab("dataCenter")}><HardDrive size={15} />{t("dataCenter")}</button>
+            <button className={tab === "launchpad" ? "active" : ""} onClick={() => setActiveTab("launchpad")}><Cpu size={15} />{t("launchpad")}</button>
+            <button className={tab === "execs" ? "active" : ""} onClick={() => setActiveTab("execs")}><Terminal size={15} />{t("execs")}</button>
+            <button className={tab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}><Settings size={15} />{t("settings")}</button>
+          </nav>
+        ) : null}
 
         <AnimatePresence mode="wait">
-          <motion.section key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.16 }}>
+          <motion.section
+            className={[
+              "app-page",
+              projectWorkspace ? "project-page" : "",
+              projectWorkspace && tab === "evidence" ? "project-page-evidence" : ""
+            ].filter(Boolean).join(" ")}
+            key={tab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.16 }}
+          >
             {tab === "dashboard" && (
               <Dashboard
                 t={t}
+				locale={locale}
                 stats={stats.data}
                 resources={resourceList}
                 activeRuns={activeRuns}
-                marks={markList}
                 execs={visibleExecs.slice(0, 8)}
                 resourceById={resourceById}
                 onOpenRun={setDetailRunId}
@@ -350,6 +524,9 @@ export function App() {
                 t={t}
                 token={token}
                 resources={resourceList}
+				loading={resources.isPending}
+				error={resources.isError ? displayError(resources.error) : null}
+				refreshing={resources.isFetching && !resources.isPending}
                 onEdit={setResourceForm}
                 onRefresh={async (id) => {
                   await refreshResource(token, id);
@@ -377,14 +554,81 @@ export function App() {
                 }}
               />
             )}
-            {tab === "projects" && <ProjectsTab t={t} projects={visibleProjects} query={projectQuery} setQuery={setProjectQuery} resourceById={resourceById} onOpenRun={setDetailRunId} />}
+            {tab === "projects" && (
+              projectWorkspace && !selectedProject ? (
+                <div className="project-route-state">
+                  <AsyncState
+                    label={
+                      projects.isPending
+                        ? t("loading")
+                        : projects.error
+                          ? displayError(projects.error)
+                          : locale === "zh"
+                            ? `没有找到项目 ${projectDetailID}`
+                            : `Project ${projectDetailID} was not found`
+                    }
+                    tone={projects.isPending ? undefined : "bad"}
+                  />
+                </div>
+              ) : (
+                <ProjectsTab
+                  t={t}
+                  projects={visibleProjects}
+                  selectedProject={selectedProject}
+                  query={projectQuery}
+                  setQuery={setProjectQuery}
+                  onOpenProject={openProjectJournal}
+                  onOpenGraph={openProjectResearchGraph}
+                  onOpenRuns={openProjectRuns}
+                  onOpenAssets={openProjectAssets}
+                  onManage={() => setActiveTab("launchpad")}
+                />
+              )
+            )}
+            {tab === "journal" && selectedProject ? (
+              <ProjectJournalPage
+                token={token}
+                locale={locale}
+                project={selectedProject}
+                onOpenRun={setDetailRunId}
+              />
+            ) : null}
+            {tab === "journal" && projectWorkspace && !selectedProject ? (
+              <div className="project-route-state">
+                <AsyncState
+                  label={projects.isPending
+                    ? t("loading")
+                    : projects.error
+                      ? displayError(projects.error)
+                      : locale === "zh"
+                        ? `没有找到项目 ${projectDetailID}`
+                        : `Project ${projectDetailID} was not found`}
+                  tone={projects.isPending ? undefined : "bad"}
+                />
+              </div>
+            ) : null}
+            {tab === "projectAssets" && projectDetailID ? <ProjectAssetsPage token={token} projectId={projectDetailID} /> : null}
+			{tab === "dataCenter" && <DataCenterPage token={token} locale={locale} resources={resourceList} />}
+            {tab === "settings" && <SettingsPage token={token} locale={locale} />}
+            {tab === "launchpad" && <ProjectLaunchpadPage token={token} locale={locale} resources={resourceList} onOpenRun={setDetailRunId} />}
             {tab === "matrices" && <ExperimentMatrixPage token={token} t={t} onOpenRun={setDetailRunId} />}
-            {tab === "evidence" && <EvidenceChainBoard token={token} t={t} onOpenRun={setDetailRunId} />}
+            {tab === "evidence" && (
+              <EvidenceChainBoard
+                token={token}
+                t={t}
+                onOpenRun={setDetailRunId}
+                projectId={evidenceProjectId}
+              />
+            )}
             {tab === "runs" && (
               <RunsTab
                 t={t}
+				locale={locale}
                 resources={resourceList}
                 runs={visibleRuns}
+				loading={runs.isPending}
+				error={runs.isError ? displayError(runs.error) : null}
+				refreshing={runs.isFetching && !runs.isPending}
                 total={runs.data?.total || 0}
                 page={runPage}
                 setPage={setRunPage}
@@ -399,13 +643,18 @@ export function App() {
                   setRunPage(0);
                 }}
                 project={runProject}
+                lockedProject={projectDetailID || undefined}
                 setProject={(value) => {
                   setRunProject(value);
                   setRunPage(0);
+                  if (projectDetailID) {
+                    const nextProjectID = projectScopeFromFilterValue(value);
+                    setProjectDetailID(nextProjectID);
+                    history.replaceState(null, "", nextProjectID ? projectRunsPath(nextProjectID) : "/ui-v2/runs");
+                  }
                 }}
                 projectOptions={runProjectOptions}
                 runProjectById={runProjectById}
-                manualAssignments={manualAssignmentByRun}
                 kind={runKind}
                 setKind={(value) => {
                   setRunKind(value);
@@ -422,11 +671,8 @@ export function App() {
                   setRunPage(0);
                 }}
                 bookmarks={bookmarkList}
-                marks={runMarks}
-                markPreviews={runMarkPreviews}
                 resourceById={resourceById}
                 onOpenRun={setDetailRunId}
-                onOpenMark={setSelectedRunListMark}
                 onCompare={() => setCompareOpen(true)}
                 onArchive={(run) =>
                   askConfirm({
@@ -455,17 +701,15 @@ export function App() {
                     }
                   })
                 }
-                onToggleBookmark={async (run, bookmarked, note) => {
+                onToggleBookmark={async (run, bookmarked) => {
                   if (bookmarked) await deleteBookmark(token, run.id);
-                  else await saveBookmark(token, run.id, note);
+                  else await saveBookmark(token, run.id);
                   await invalidateOperationalData();
                 }}
-                onEditBookmarkNote={(run, note) => setBookmarkEditor({ run, note })}
-                onEditManualProject={setProjectEditorRun}
               />
             )}
             {tab === "favorites" && (
-              <FavoritesTab t={t} runs={favoriteRuns} bookmarks={bookmarkList} query={favoriteQuery} setQuery={setFavoriteQuery} resourceById={resourceById} onOpenRun={setDetailRunId} />
+              <FavoritesTab t={t} locale={locale} runs={favoriteRuns} bookmarks={bookmarkList} query={favoriteQuery} setQuery={setFavoriteQuery} resourceById={resourceById} onOpenRun={setDetailRunId} />
             )}
             {tab === "execs" && (
               <ExecsTab
@@ -491,14 +735,18 @@ export function App() {
       {detailRunId ? (
         <RunDetail
           t={t}
+		  locale={locale}
           token={token}
           runId={detailRunId}
           resourceById={resourceById}
-          manualCategories={manualCategoryList}
-          manualAssignment={manualAssignmentByRun.get(detailRunId)}
           onClose={() => {
             setDetailRunId(null);
-            history.replaceState(null, "", pathForTab(tab));
+            history.replaceState(null, "", pathForTab(tab, evidenceProjectId, projectDetailID));
+          }}
+          onOpenProjectJournal={(run, compose) => {
+            if (!run.project_id) return;
+            setDetailRunId(null);
+            openProjectJournal(run.project_id, { runID: run.id, compose });
           }}
           onCancel={(run) =>
             askConfirm({
@@ -512,11 +760,17 @@ export function App() {
             })
           }
           onStatusCheck={async (run) => {
-            await statusCheck(token, run.id);
-            await invalidateOperationalData();
+			const updated = await statusCheck(token, run.id);
+			queryClient.setQueryData(["run", token, run.id], updated);
+			queryClient.setQueriesData<Paginated<Run>>({ queryKey: ["run-summaries", token, "list"] }, (page) => replaceRunInPage(page, updated));
+			await queryClient.invalidateQueries({ queryKey: runSummaryKeys.active(token) });
+			await Promise.all([
+			  queryClient.invalidateQueries({ queryKey: ["stats", token] }),
+			  queryClient.invalidateQueries({ queryKey: ["resources", token] }),
+			  queryClient.invalidateQueries({ queryKey: ["projects", token] })
+			]);
+			return updated;
           }}
-          onAssignManualProject={assignManualProject}
-          onCreateAndAssignManualProject={createAndAssignManualProject}
         />
       ) : null}
 
@@ -539,41 +793,8 @@ export function App() {
         />
       ) : null}
 
-      {compareOpen ? <CompareModal t={t} token={token} runs={selectedRuns} onClose={() => setCompareOpen(false)} /> : null}
-      {bookmarkEditor ? (
-        <BookmarkNoteModal
-          t={t}
-          initialNote={bookmarkEditor.note}
-          run={bookmarkEditor.run}
-          onClose={() => setBookmarkEditor(null)}
-          onSave={async (note) => {
-            await saveBookmark(token, bookmarkEditor.run.id, note);
-            setBookmarkEditor(null);
-            await invalidateOperationalData();
-          }}
-        />
-      ) : null}
-      {projectEditorRun ? (
-        <ManualProjectModal
-          t={t}
-          run={projectEditorRun}
-          categories={manualCategoryList}
-          projects={projectList}
-          assignment={manualAssignmentByRun.get(projectEditorRun.id)}
-          projectMeta={runProjectById.get(projectEditorRun.id)}
-          onClose={() => setProjectEditorRun(null)}
-          onAssign={async (categoryID) => {
-            await assignManualProject(projectEditorRun.id, categoryID);
-            setProjectEditorRun(null);
-          }}
-          onCreateAndAssign={async (name) => {
-            await createAndAssignManualProject(projectEditorRun.id, name);
-            setProjectEditorRun(null);
-          }}
-        />
-      ) : null}
+      {compareOpen ? <Suspense fallback={null}><CompareModal t={t} token={token} runs={selectedRuns} onClose={() => setCompareOpen(false)} /></Suspense> : null}
       {confirm ? <ConfirmModal t={t} state={confirm} onClose={() => setConfirm(null)} /> : null}
-      {selectedRunListMark ? <MarkDetailModal mark={selectedRunListMark} token={token} t={t} onClose={() => setSelectedRunListMark(null)} /> : null}
     </div>
   );
 }
@@ -589,20 +810,20 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 
 function Dashboard({
   t,
+	locale,
   stats,
   resources,
   activeRuns,
-  marks,
   execs,
   resourceById,
   onOpenRun,
   onOpenResources
 }: {
   t: T;
+	locale: Locale;
   stats?: { total_resources: number; active_runs: number; total_runs: number };
   resources: Resource[];
   activeRuns: Run[];
-  marks: RunMark[];
   execs: ExecEvent[];
   resourceById: Map<string, Resource>;
   onOpenRun: (id: string) => void;
@@ -630,24 +851,11 @@ function Dashboard({
         </div>
       </Section>
       <Section title={t("activeRuns")}>
-        <div className="run-card-grid dashboard-runs">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
+        <div className="run-card-grid dashboard-runs">{activeRuns.length ? activeRuns.map((run) => <RunCard key={run.id} run={run} locale={locale} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
       </Section>
-      <div className="dashboard-lower">
-        <Section title={t("agentFindings")} className="dashboard-findings-section">
-          {marks.length ? (
-            <div className="dashboard-findings">
-              {marks.slice(0, 5).map((mark) => (
-                <DashboardFinding key={mark.id} mark={mark} onOpenRun={() => onOpenRun(mark.run_id)} />
-              ))}
-            </div>
-          ) : (
-            <Empty t={t} />
-          )}
-        </Section>
-        <Section title={t("recentExec")}>
-          <div className="compact-list">{execs.slice(0, 3).map((event) => <ExecCompact key={event.id} event={event} resourceById={resourceById} />)}</div>
-        </Section>
-      </div>
+      <Section title={t("recentExec")}>
+        <div className="compact-list">{execs.slice(0, 3).map((event) => <ExecCompact key={event.id} event={event} resourceById={resourceById} />)}</div>
+      </Section>
     </div>
   );
 }
@@ -656,6 +864,9 @@ function ResourcesTab({
   t,
   token: _token,
   resources,
+	loading,
+	error,
+	refreshing,
   onEdit,
   onRefresh,
   onTest,
@@ -666,6 +877,9 @@ function ResourcesTab({
   t: T;
   token: string;
   resources: Resource[];
+	loading: boolean;
+	error: string | null;
+	refreshing: boolean;
   onEdit: (resource: Resource) => void;
   onRefresh: (id: string) => Promise<void>;
   onTest: (id: string) => Promise<void>;
@@ -673,8 +887,21 @@ function ResourcesTab({
   onAdd: () => void;
   onFillLocal: () => Promise<void>;
 }) {
+	const [busyByID, setBusyByID] = useState<Record<string, { action: "refresh" | "test"; error?: string } | undefined>>({});
+	async function runAction(id: string, action: "refresh" | "test", fn: (id: string) => Promise<void>) {
+		setBusyByID((current) => ({ ...current, [id]: { action } }));
+		try {
+			await fn(id);
+			setBusyByID((current) => ({ ...current, [id]: undefined }));
+		} catch (cause) {
+			setBusyByID((current) => ({ ...current, [id]: { action, error: displayError(cause) } }));
+		}
+	}
   return (
     <div className="stack">
+	  {loading ? <AsyncState label={t("loading")} /> : null}
+	  {error ? <AsyncState label={error} tone="bad" /> : null}
+	  {refreshing && !loading ? <AsyncState label={t("refreshing")} compact /> : null}
       <div className="toolbar">
         <button className="primary" onClick={onAdd}>
           <Server size={16} />
@@ -683,18 +910,19 @@ function ResourcesTab({
         <button onClick={() => void onFillLocal()}>{t("fillLocal")}</button>
       </div>
       <div className="resource-grid manage-resource-grid">
-        {resources.length ? (
+        {!loading && resources.length ? (
           resources.map((resource) => (
             <ResourceCard
               key={resource.id}
               resource={resource}
               actions={
                 <>
-                  <button className="action-button" title={t("refresh")} onClick={() => void onRefresh(resource.id)}>
-                    <RefreshCcw size={15} />
-                    {t("refresh")}
+				  {busyByID[resource.id]?.error ? <span className="action-error">{busyByID[resource.id]?.error}</span> : null}
+                  <button className="action-button" title={t("refresh")} disabled={Boolean(busyByID[resource.id])} aria-busy={busyByID[resource.id]?.action === "refresh"} onClick={() => void runAction(resource.id, "refresh", onRefresh)}>
+                    <RefreshCcw size={15} className={busyByID[resource.id]?.action === "refresh" ? "spin" : ""} />
+                    {busyByID[resource.id]?.action === "refresh" ? t("refreshing") : t("refresh")}
                   </button>
-                  <button className="action-button primary-action" title={t("test")} onClick={() => void onTest(resource.id)}>
+                  <button className="action-button primary-action" title={t("test")} disabled={Boolean(busyByID[resource.id])} aria-busy={busyByID[resource.id]?.action === "test"} onClick={() => void runAction(resource.id, "test", onTest)}>
                     <Check size={15} />
                     {t("test")}
                   </button>
@@ -710,9 +938,9 @@ function ResourcesTab({
               }
             />
           ))
-        ) : (
+		) : !loading ? (
           <Empty t={t} />
-        )}
+		) : null}
       </div>
     </div>
   );
@@ -720,8 +948,12 @@ function ResourcesTab({
 
 function RunsTab(props: {
   t: T;
+	locale: Locale;
   resources: Resource[];
   runs: Run[];
+	loading: boolean;
+	error: string | null;
+	refreshing: boolean;
   total: number;
   page: number;
   setPage: (page: number) => void;
@@ -730,10 +962,10 @@ function RunsTab(props: {
   resource: string;
   setResource: (resource: string) => void;
   project: string;
+  lockedProject?: string;
   setProject: (project: string) => void;
   projectOptions: [string, string][];
   runProjectById: Map<string, RunProjectMeta>;
-  manualAssignments: Map<string, RunProjectAssignment>;
   kind: string;
   setKind: (kind: string) => void;
   trash: boolean;
@@ -741,18 +973,13 @@ function RunsTab(props: {
   query: string;
   setQuery: (query: string) => void;
   bookmarks: RunBookmark[];
-  marks: Map<string, number>;
-  markPreviews: Map<string, RunMark[]>;
   resourceById: Map<string, Resource>;
   onOpenRun: (id: string) => void;
-  onOpenMark: (mark: RunMark) => void;
   onCompare: () => void;
   onArchive: (run: Run) => void;
   onRestore: (run: Run) => Promise<void>;
   onDelete: (run: Run) => void;
-  onToggleBookmark: (run: Run, bookmarked: boolean, note?: string) => Promise<void>;
-  onEditBookmarkNote: (run: Run, note: string) => void;
-  onEditManualProject: (run: Run) => void;
+  onToggleBookmark: (run: Run, bookmarked: boolean) => Promise<void>;
 }) {
   const selectedRunIds = useAppStore((s) => s.selectedRunIds);
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
@@ -764,20 +991,16 @@ function RunsTab(props: {
       <RunListCard
         key={run.id}
         run={run}
+		locale={props.locale}
         resourceById={props.resourceById}
         projectMeta={props.runProjectById.get(run.id)}
-        manualAssignment={props.manualAssignments.get(run.id)}
-        markCount={props.marks.get(run.id) || 0}
-        markPreviews={props.markPreviews.get(run.id) || []}
+        hideProject={Boolean(props.lockedProject)}
         bookmark={bookmark}
         selected={selectedRunIds.has(run.id)}
         trash={props.trash}
         onOpen={() => props.onOpenRun(run.id)}
-        onOpenMark={props.onOpenMark}
         onSelect={(checked) => toggleSelectedRun(run, checked)}
         onToggleBookmark={() => void props.onToggleBookmark(run, !!bookmark)}
-        onEditBookmarkNote={() => props.onEditBookmarkNote(run, bookmark?.note?.trim() || "")}
-        onEditManualProject={() => props.onEditManualProject(run)}
         onArchive={() => props.onArchive(run)}
         onRestore={() => void props.onRestore(run)}
         onDelete={() => props.onDelete(run)}
@@ -787,6 +1010,9 @@ function RunsTab(props: {
   };
   return (
     <div className="stack">
+	  {props.loading ? <AsyncState label={props.t("loading")} /> : null}
+	  {props.error ? <AsyncState label={props.error} tone="bad" /> : null}
+	  {props.refreshing && !props.loading ? <AsyncState label={props.t("refreshing")} compact /> : null}
       <div className="toolbar dense">
         <Segmented
           value={props.trash ? "trash" : "main"}
@@ -796,9 +1022,9 @@ function RunsTab(props: {
           ]}
           onChange={(value) => props.setTrash(value === "trash")}
         />
-        <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"], ["ssh_unreachable", "ssh_unreachable"], ["container_expired", "container_expired"], ["run_lost_but_events_cached", "lost + cached"]]} />
+        <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["queued", "queued"], ["preflighting", "preflighting"], ["starting", "starting"], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"], ["ssh_unreachable", "ssh_unreachable"], ["container_expired", "container_expired"], ["run_lost_but_events_cached", "lost + cached"]]} />
         <Select value={props.resource} onChange={props.setResource} options={[["", props.t("allResources")], ...props.resources.map((r) => [r.id, r.name] as [string, string])]} />
-        <Select value={props.project} onChange={props.setProject} options={props.projectOptions} />
+        {props.lockedProject ? null : <Select value={props.project} onChange={props.setProject} options={props.projectOptions} />}
         <Select value={props.kind} onChange={props.setKind} options={[["experiments", props.t("experiments")], ["tools", props.t("toolTasks")], ["all", props.t("allKinds")]]} />
         <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
         <button disabled={!selectedCount} onClick={props.onCompare}>
@@ -806,14 +1032,14 @@ function RunsTab(props: {
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
-      {props.runs.length ? (
+	  {!props.loading && props.runs.length ? (
         <div className="run-list">{props.runs.map(renderRun)}</div>
-      ) : (
+	  ) : !props.loading ? (
         <div className="run-list">
           <Empty t={props.t} />
         </div>
-      )}
-      <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
+	  ) : null}
+      <Pager t={props.t} total={props.total} page={props.page} pageSize={runPageSize} setPage={props.setPage} />
     </div>
   );
 }
@@ -821,37 +1047,87 @@ function RunsTab(props: {
 function ProjectsTab({
   t,
   projects,
+  selectedProject,
   query,
   setQuery,
-  resourceById,
-  onOpenRun
+  onOpenProject,
+  onOpenGraph,
+  onOpenRuns,
+  onOpenAssets,
+  onManage
 }: {
   t: T;
-  projects: ProjectView[];
+  projects: ProjectDefinition[];
+  selectedProject?: ProjectDefinition;
   query: string;
   setQuery: (value: string) => void;
-  resourceById: Map<string, Resource>;
-  onOpenRun: (id: string) => void;
+  onOpenProject: (projectID: string) => void;
+  onOpenGraph: (projectID: string) => void;
+  onOpenRuns: (projectID: string) => void;
+  onOpenAssets: (projectID: string) => void;
+  onManage: () => void;
 }) {
+  if (selectedProject) {
+    return <section className="project-overview-page">
+      <span className="panel-kicker">Project Overview</span>
+      <h2>{selectedProject.name}</h2>
+      <code>{selectedProject.id}</code>
+      <p>{selectedProject.description || "这个 Project 是 Runs、Assets 与 Evidence Map 的共同范围。"}</p>
+      <dl>
+        <div><dt>Local root</dt><dd>{selectedProject.local_root || "未配置"}</dd></div>
+        <div><dt>Repository</dt><dd>{selectedProject.source_repo || "未配置"}</dd></div>
+        <div><dt>Default recipe</dt><dd>{selectedProject.default_recipe || "未配置"}</dd></div>
+        <div><dt>Release gate</dt><dd>{selectedProject.gate_command || "未配置"}</dd></div>
+      </dl>
+    </section>;
+  }
   return (
     <div className="stack">
-      <div className="toolbar">
+      <div className="toolbar project-index-toolbar">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search")} />
+        <button type="button" onClick={onManage}><Settings size={15} />{t("launchpad")}</button>
       </div>
-      <div className="project-list">
+      <div className="project-index">
         {projects.length ? (
           projects.map((project) => {
-            const cards = project.cards || [];
+            const projectTitle = project.name || project.id;
             return (
-              <section className="project-row" key={project.project_id}>
-                <ProjectSummary project={project} t={t} />
-                <div className="project-evidence">
-                  <div className="project-evidence-head">
-                    <span className="panel-kicker">{t("evidenceRecords")}</span>
-                    <span className="muted">{cards.length}</span>
+              <section className="project-index-card" key={project.id}>
+                <div className="project-index-identity">
+                  <span className="project-index-mark" aria-hidden="true">{projectTitle.slice(0, 1).toUpperCase()}</span>
+                  <div className="project-index-copy">
+                    <span className="panel-kicker">{t("projects")}</span>
+                    <h2>{projectTitle}</h2>
+                    <p className="mono muted">{project.id}</p>
+                    <p>{project.description === "Imported from the legacy evidence-card project index."
+                      ? t("projectScope")
+                      : project.description || project.local_root || t("projectScope")}</p>
                   </div>
-                  {cards.map((card) => <ProjectEvidenceCard key={card.id} card={card} resourceById={resourceById} onOpenRun={onOpenRun} t={t} />)}
-                  {!cards.length ? <div className="project-empty muted">{t("noPromotedCards")}</div> : null}
+                </div>
+                <button className="project-index-open primary" type="button" onClick={() => onOpenProject(project.id)}>
+                  {t("openProject")}
+                  <ChevronRight size={16} />
+                </button>
+                <div className="project-index-meta">
+                  <div className="project-index-facts">
+                    {project.updated_at ? <span><Clock size={13} />{fmtShortTime(project.updated_at)}</span> : null}
+                    {project.source_repo ? <span>{project.source_repo}</span> : null}
+                    {project.default_recipe ? <span>recipe · {project.default_recipe}</span> : null}
+                  </div>
+                  <nav className="project-index-tabs" aria-label={`${projectTitle} sections`}>
+                    <button className="project-destination runs" type="button" onClick={() => onOpenRuns(project.id)}>
+                    <PlayCircle size={15} />
+                    {t("runs")}
+                    </button>
+                    <button className="project-destination assets" type="button" onClick={() => onOpenAssets(project.id)}>
+                    <Archive size={15} />
+                    {t("assets")}
+                    </button>
+                    <button className="project-destination evidence" type="button" onClick={() => onOpenGraph(project.id)}>
+                    <Network size={15} />
+                    {t("evidenceChains")}
+                    </button>
+                  </nav>
                 </div>
               </section>
             );
@@ -864,7 +1140,7 @@ function ProjectsTab({
   );
 }
 
-function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
+function ProjectSummary({ project, t, onOpenGraph }: { project: ProjectView; t: T; onOpenGraph: (projectID: string) => void }) {
   const cards = project.cards || [];
   const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
   const projectTitle = projectDisplayName(project, t);
@@ -872,7 +1148,8 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
     { label: t("projectCards"), value: project.total_cards ?? cards.length, tone: "neutral" as const },
     { label: t("important"), value: project.important_runs || 0, tone: "accent" as const },
     { label: t("formal"), value: project.formal_runs || 0, tone: "good" as const },
-    { label: t("running"), value: project.running_runs || 0, tone: "warn" as const }
+    { label: t("running"), value: project.running_runs || 0, tone: "warn" as const },
+    { label: "Graph proposals", value: project.pending_graph_proposals || 0, tone: "warn" as const }
   ];
   return (
     <div className="project-summary">
@@ -881,6 +1158,10 @@ function ProjectSummary({ project, t }: { project: ProjectView; t: T }) {
           <h2>{projectTitle}</h2>
           <p className="muted mono">{project.project_id}</p>
         </div>
+        <button type="button" onClick={() => onOpenGraph(project.project_id)}>
+          <Network size={15} />
+          Research Graph
+        </button>
       </div>
       <div className="project-signal-grid">
         {counts.map((item) => (
@@ -920,7 +1201,8 @@ function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: Proje
     card.important ? t("important") : "",
     card.marks?.length ? `${card.marks.length} ${t("marks")}` : "",
     card.artifact_paths ? t("artifacts") : "",
-    card.related_runs ? t("relatedRuns") : ""
+    card.related_runs ? t("relatedRuns") : "",
+    card.graph_status === "pending" ? "待确认研究图建议" : card.graph_status && card.graph_status !== "none" ? `graph: ${card.graph_status}` : ""
   ].filter(Boolean);
   const markSnippets = (card.marks || [])
     .map((mark) => [mark.title, mark.reason || mark.evidence].filter(Boolean).join(": "))
@@ -955,13 +1237,13 @@ function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: Proje
   );
 }
 
-function FavoritesTab({ t, runs, bookmarks: _bookmarks, query, setQuery, resourceById, onOpenRun }: { t: T; runs: Run[]; bookmarks: RunBookmark[]; query: string; setQuery: (value: string) => void; resourceById: Map<string, Resource>; onOpenRun: (id: string) => void }) {
+function FavoritesTab({ t, locale, runs, bookmarks: _bookmarks, query, setQuery, resourceById, onOpenRun }: { t: T; locale: Locale; runs: Run[]; bookmarks: RunBookmark[]; query: string; setQuery: (value: string) => void; resourceById: Map<string, Resource>; onOpenRun: (id: string) => void }) {
   return (
     <div className="stack">
       <div className="toolbar">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search")} />
       </div>
-      <div className="run-card-grid">{runs.length ? runs.map((run) => <RunCard key={run.id} run={run} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
+      <div className="run-card-grid">{runs.length ? runs.map((run) => <RunCard key={run.id} run={run} locale={locale} resourceById={resourceById} onOpen={() => onOpenRun(run.id)} />) : <Empty t={t} />}</div>
     </div>
   );
 }
@@ -991,39 +1273,61 @@ function ExecsTab(props: {
       <div className="exec-list">
         {props.rows.length ? props.rows.map((event) => <ExecListItem key={event.id} event={event} resourceById={props.resourceById} />) : <Empty t={props.t} />}
       </div>
-      <Pager t={props.t} total={props.total} page={props.page} setPage={props.setPage} />
+      <Pager t={props.t} total={props.total} page={props.page} pageSize={execPageSize} setPage={props.setPage} />
     </div>
   );
 }
 
 function RunDetail({
   t,
+	locale,
   token,
   runId,
   resourceById,
-  manualCategories,
-  manualAssignment,
   onClose,
   onCancel,
   onStatusCheck,
-  onAssignManualProject,
-  onCreateAndAssignManualProject
+  onOpenProjectJournal
 }: {
   t: T;
+	locale: Locale;
   token: string;
   runId: string;
   resourceById: Map<string, Resource>;
-  manualCategories: ManualProjectCategory[];
-  manualAssignment?: RunProjectAssignment;
   onClose: () => void;
   onCancel: (run: Run) => void;
-  onStatusCheck: (run: Run) => Promise<void>;
-  onAssignManualProject: (runID: string, categoryID: string) => Promise<void>;
-  onCreateAndAssignManualProject: (runID: string, name: string) => Promise<void>;
+  onStatusCheck: (run: Run) => Promise<Run>;
+  onOpenProjectJournal: (run: Run, compose: boolean) => void;
 }) {
-  const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 5000 });
-  const marks = useQuery({ queryKey: ["run-marks", token, runId], queryFn: () => getRunMarks(token, runId) });
+  const [selectedMark, setSelectedMark] = useState<RunMark | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "evidence" | "raw">("overview");
+  const [legacyMarksOpen, setLegacyMarksOpen] = useState(false);
+  const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 30000, refetchOnWindowFocus: "always" });
+  const marks = useQuery({
+    queryKey: ["run-marks", token, runId],
+    queryFn: () => getRunMarks(token, runId),
+    enabled: detailTab === "raw" && legacyMarksOpen
+  });
+  const journalEntries = useQuery({
+    queryKey: ["run-journal", token, runId],
+    queryFn: () => getRunJournalEntries(token, runId),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: "always"
+  });
   const artifacts = useQuery({ queryKey: ["artifacts", token, runId], queryFn: () => getArtifacts(token, runId) });
+  const artifactCollection = useQuery({ queryKey: ["artifact-collection", token, runId], queryFn: () => getArtifactCollection(token, runId), refetchInterval: (query) => query.state.data?.state === "discovering" ? 1500 : 8000 });
+  const manifest = useQuery({ queryKey: ["run-manifest", token, runId], queryFn: () => getRunManifest(token, runId), retry: false });
+	const dataBindings = useQuery({ queryKey: ["run-data-bindings", token, runId], queryFn: () => getRunDataBindings(token, runId) });
+  const queryClient = useQueryClient();
+  const collectArtifactInventory = useMutation({
+    mutationFn: () => collectArtifacts(token, runId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["artifact-collection", token, runId] }),
+        queryClient.invalidateQueries({ queryKey: ["artifacts", token, runId] })
+      ]);
+    }
+  });
   const logsLive = run.data ? isActiveRun(run.data) : true;
   const [selectedLogSource, setSelectedLogSource] = useState<"terminal" | "stdout" | "stderr" | null>(null);
   const terminal = useLiveLog(token, runId, selectedLogSource === "terminal" ? { source: "terminal" } : null, logsLive);
@@ -1033,10 +1337,23 @@ function RunDetail({
   const eventLog = useLiveLog(token, runId, eventsPath ? { path: eventsPath } : null, logsLive);
   const eventLines = useMemo(() => eventLog.lines.map((line) => line.content), [eventLog.lines]);
   const parsedEvents = useParsedEvents(eventLines);
-  const [selectedMark, setSelectedMark] = useState<RunMark | null>(null);
-  const [detailTab, setDetailTab] = useState<"overview" | "raw">("overview");
+	const [statusCheckBusy, setStatusCheckBusy] = useState(false);
+	const [statusCheckError, setStatusCheckError] = useState<string | null>(null);
   const activeRawLogSource = selectedLogSource || "terminal";
   const selectedLog = activeRawLogSource === "terminal" ? terminal : activeRawLogSource === "stdout" ? stdout : stderr;
+	const statusPresentation = run.data ? runStatusPresentation(run.data, locale) : null;
+	async function refreshCurrentStatus() {
+		if (!run.data || statusCheckBusy) return;
+		setStatusCheckBusy(true);
+		setStatusCheckError(null);
+		try {
+			await onStatusCheck(run.data);
+		} catch (cause) {
+			setStatusCheckError(displayError(cause));
+		} finally {
+			setStatusCheckBusy(false);
+		}
+	}
 
   useEffect(() => {
     history.replaceState(null, "", `/ui-v2/runs/${encodeURIComponent(runId)}`);
@@ -1045,20 +1362,28 @@ function RunDetail({
   useEffect(() => {
     setSelectedLogSource(null);
     setDetailTab("overview");
+    setLegacyMarksOpen(false);
   }, [runId]);
+  const managedInputs = dataBindings.data?.inputs || [];
+  const managedOutputs = dataBindings.data?.outputs || [];
+  const artifactItems = artifacts.data || [];
 
   return (
     <Modal title={run.data ? runTitle(run.data) : runId} onClose={onClose} wide>
       {run.data ? (
         <div className="detail-shell">
+		  {run.isFetching && !run.isPending ? <AsyncState label={t("refreshing")} compact /> : null}
+		  {run.error ? <AsyncState label={displayError(run.error)} tone="bad" compact /> : null}
+		  {statusCheckError ? <AsyncState label={statusCheckError} tone="bad" compact /> : null}
           <section className="run-overview">
             <div className="run-overview-main">
               <div className="detail-summary-head">
                 <span className="panel-kicker">{t("runSummary")}</span>
-                <Pill tone={statusTone(run.data.status)}>{run.data.status}</Pill>
+                <Pill tone={statusPresentation?.tone || statusTone(run.data.status)}>{statusPresentation?.label || run.data.status}</Pill>
               </div>
               <strong>{runTitle(run.data)}</strong>
               <span className="mono muted">{run.data.id}</span>
+			  {statusPresentation?.uncertain ? <div className="run-observation-warning" title={statusPresentation.detail}>{statusPresentation.detail}</div> : null}
             </div>
             <div className="detail-facts">
               <span>
@@ -1067,8 +1392,17 @@ function RunDetail({
               </span>
               <span>
                 <em>{t("kind")}</em>
-                <strong>{run.data.kind || "formal"}</strong>
+                <strong>{run.data.kind || "legacy / unknown"}</strong>
               </span>
+              <span>
+                <em>{t("projects")}</em>
+                <strong>{run.data.project_id || t("unassigned")}</strong>
+              </span>
+			  <span className={runDataFinalizationPresentation(run.data).archiveProblem ? "detail-failure-reason" : ""} title={runDataFinalizationPresentation(run.data).message}>
+				<em>data finalization</em>
+				<strong>{runDataFinalizationPresentation(run.data).state}</strong>
+			  </span>
+			  {run.data.data_finalization_error ? <span className="detail-failure-reason"><em>data error</em><strong>{run.data.data_finalization_error}</strong></span> : null}
               <span>
                 <em>{t("gpu")}</em>
                 <strong>{runGPU(run.data.gpu_index)}</strong>
@@ -1077,6 +1411,22 @@ function RunDetail({
                 <em>{t("time")}</em>
                 <strong>{fmtTime(run.data.created_at)}</strong>
               </span>
+			  <span>
+				<em>{t("freshness")}</em>
+				<strong>{run.data.status_freshness || "unknown"} · {run.data.status_source || "local_cache"}</strong>
+			  </span>
+			  {run.data.status_checked_at ? (
+				<span>
+				  <em>{t("checkedAt")}</em>
+				  <strong>{fmtTime(run.data.status_checked_at)}</strong>
+				</span>
+			  ) : null}
+			  {run.data.status_check_error ? (
+				<span className="detail-failure-reason">
+				  <em>{t("statusCheckError")}</em>
+				  <strong>{run.data.status_check_error}</strong>
+				</span>
+			  ) : null}
               <span>
                 <em>{t("condaEnv")}</em>
                 <strong>{run.data.resolved_env || run.data.conda_env || "-"}</strong>
@@ -1113,9 +1463,9 @@ function RunDetail({
               ) : null}
             </div>
             <div className="detail-side-actions">
-              <button onClick={() => void onStatusCheck(run.data!)}>
-                <RefreshCcw size={16} />
-                {t("refreshStatus")}
+			  <button disabled={statusCheckBusy} aria-busy={statusCheckBusy} onClick={() => void refreshCurrentStatus()}>
+				<RefreshCcw size={16} className={statusCheckBusy ? "spin" : ""} />
+				{statusCheckBusy ? t("refreshing") : t("refreshStatus")}
               </button>
               {isActiveRun(run.data) ? (
                 <button className="danger" onClick={() => onCancel(run.data!)}>
@@ -1128,6 +1478,7 @@ function RunDetail({
             <button className={detailTab === "overview" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "overview"} onClick={() => setDetailTab("overview")}>
               {t("overview")}
             </button>
+			<button className={detailTab === "evidence" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "evidence"} onClick={() => setDetailTab("evidence")}>Evidence Freeze</button>
             <button
               className={detailTab === "raw" ? "active" : ""}
               type="button"
@@ -1149,30 +1500,138 @@ function RunDetail({
                   <Info label="cwd" value={run.data.resolved_cwd || run.data.cwd || "-"} />
                   <Info label="tmux" value={run.data.tmux_session || "-"} />
                   <Info label="run dir" value={run.data.remote_run_dir || "-"} />
+                  <Info label="manifest" value={manifest.data ? `${manifest.data.state} · ${manifest.data.sha256.slice(0, 22)}…` : "legacy / unavailable"} />
                 </section>
-                <Section title={t("artifacts")} className="artifact-panel">
-                  <ArtifactList artifacts={artifacts.data || []} t={t} />
-                </Section>
-                <Section title={t("manualProject")} className="manual-project-panel">
-                  <ProjectAssignmentControl
-                    t={t}
-                    categories={manualCategories}
-                    assignment={manualAssignment}
-                    onAssign={(categoryID) => onAssignManualProject(runId, categoryID)}
-                    onCreateAndAssign={(name) => onCreateAndAssignManualProject(runId, name)}
-                  />
-                </Section>
+                <section className="run-data-surface">
+                  <div className="run-data-surface-head">
+                    <div>
+                      <span className="panel-kicker">{t("dataAndArtifacts")}</span>
+                      <h2>{t("dataAndArtifacts")}</h2>
+                    </div>
+                    <div className="run-data-counts" aria-label={t("dataAndArtifacts")}>
+                      <span>{managedInputs.length} {t("managedInputs")}</span>
+                      <span>{managedOutputs.length} {t("managedOutputs")}</span>
+                      <span>{artifactItems.length} {t("artifacts")}</span>
+                    </div>
+                  </div>
+
+                  <div className="managed-data-block">
+                    <div className="run-data-subhead">
+                      <div>
+                        <Database size={16} />
+                        <h3>{t("managedData")}</h3>
+                      </div>
+                    </div>
+                    {dataBindings.isPending ? <AsyncState label={t("loading")} compact /> : null}
+                    {dataBindings.error ? <div className="action-error">{displayError(dataBindings.error)}</div> : null}
+                    {!dataBindings.isPending && !dataBindings.error && !managedInputs.length && !managedOutputs.length ? (
+                      <div className="managed-data-empty">
+                        <HardDrive size={18} />
+                        <div>
+                          <strong>{t("managedDataEmpty")}</strong>
+                          <span>{t("managedDataEmptyHint")}</span>
+                        </div>
+                      </div>
+                    ) : null}
+                    {managedInputs.length || managedOutputs.length ? (
+                      <div className="managed-data-list">
+                        {managedInputs.map((input) => (
+                          <div className="managed-data-row" key={input.id}>
+                            <span className="data-direction input">{t("input")}</span>
+                            <div>
+                              <strong title={input.logical_uri}>{input.logical_uri}</strong>
+                              <span title={input.target_path}>→ {input.target_path}</span>
+                              <small>{input.state} · {input.revision || t("unpinned")}</small>
+                              {input.last_error ? <span className="action-error">{input.last_error}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                        {managedOutputs.map((output) => (
+                          <div className="managed-data-row" key={output.id}>
+                            <span className="data-direction output">{t("output")}</span>
+                            <div>
+                              <strong title={output.logical_uri}>{output.logical_uri}</strong>
+                              <span title={output.source_pattern}>{output.source_pattern} →</span>
+                              <small>{output.state} · {output.role || "other"} · {output.revision || t("notPublished")}{output.required ? ` · ${t("required")}` : ""}</small>
+                              {output.last_error ? <span className="action-error">{output.last_error}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="artifact-block">
+                    <div className="run-data-subhead artifact-subhead">
+                      <div>
+                        <Archive size={16} />
+                        <h3>{t("artifacts")}</h3>
+                        <span>{artifactCollection.data?.file_count || artifactItems.length} · {formatBytes(artifactCollection.data?.total_bytes || artifactItems.reduce((sum, artifact) => sum + artifact.size, 0))}</span>
+                      </div>
+                      <button
+                        className="artifact-refresh"
+                        type="button"
+                        disabled={collectArtifactInventory.isPending || artifactCollection.data?.state === "discovering"}
+                        onClick={() => collectArtifactInventory.mutate()}
+                      >
+                        <RefreshCcw size={14} className={artifactCollection.data?.state === "discovering" ? "spin" : ""} />
+                        {artifactCollection.data?.state === "discovering" ? t("loading") : t("refresh")}
+                      </button>
+                    </div>
+                    <ArtifactList artifacts={artifactItems} collection={artifactCollection.data} t={t} />
+                    {collectArtifactInventory.error ? <div className="action-error">{displayError(collectArtifactInventory.error)}</div> : null}
+                  </div>
+                </section>
               </div>
               <div className="detail-grid">
                 <div className="detail-main">
+                  {run.data.project_id ? (
+                    <section className="run-journal-backlinks">
+                      <div>
+                        <span className="panel-kicker">{locale === "zh" ? "项目工作日志" : "Project journal"}</span>
+                        <strong>
+                          {journalEntries.data?.length || 0}
+                          {locale === "zh" ? " 条关联日志" : journalEntries.data?.length === 1 ? " linked entry" : " linked entries"}
+                        </strong>
+                        {journalEntries.data?.[0] ? <span>{journalEntries.data[0].title}</span> : (
+                          <span>{locale === "zh" ? "这次实验还没有被写进项目工作日志。" : "This Run is not referenced by the project journal yet."}</span>
+                        )}
+                      </div>
+                      <div>
+                        <button type="button" onClick={() => onOpenProjectJournal(run.data!, false)}>
+                          {locale === "zh" ? "查看日志" : "View journal"}
+                        </button>
+                        <button className="primary" type="button" onClick={() => onOpenProjectJournal(run.data!, true)}>
+                          <Plus size={14} />
+                          {locale === "zh" ? "写工作日志" : "Write journal"}
+                        </button>
+                      </div>
+                    </section>
+                  ) : (
+                    <section className="run-journal-backlinks is-unassigned">
+                      <div>
+                        <span className="panel-kicker">{locale === "zh" ? "项目工作日志" : "Project journal"}</span>
+                        <strong>{locale === "zh" ? "这个 Run 尚未归属项目" : "This Run is not assigned to a Project"}</strong>
+                        <span>
+                          {locale === "zh"
+                            ? "研究推理只写入项目日志；先把 Run 归属到项目，才能关联日志。"
+                            : "Research reasoning belongs in the Project journal. Assign this Run to a Project before linking an entry."}
+                        </span>
+                      </div>
+                      <div>
+                        <button type="button" disabled>
+                          {locale === "zh" ? "需先归属项目" : "Project required"}
+                        </button>
+                      </div>
+                    </section>
+                  )}
                   {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} run={run.data} /> : null}
-                  <Section title={t("agentFindings")} className="findings-section">
-                    {marks.data?.length ? <div className="finding-list">{marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}</div> : <Empty t={t} />}
-                  </Section>
                 </div>
               </div>
             </>
-          ) : (
+          ) : detailTab === "evidence" ? (
+			<EvidenceFreezePanel token={token} run={run.data} />
+		  ) : (
             <div className="detail-grid raw-detail-grid">
               <div className="detail-main">
                 <section className="command-card">
@@ -1202,27 +1661,57 @@ function RunDetail({
                   <LogPanel title={activeRawLogSource} state={selectedLog} />
                 </section>
                 {eventsPath ? <LogPanel title={t("rawEventJson")} state={eventLog} /> : null}
+                <details
+                  className="legacy-run-marks"
+                  open={legacyMarksOpen}
+                  onToggle={(event) => setLegacyMarksOpen(event.currentTarget.open)}
+                >
+                  <summary>
+                    <span>
+                      <strong>{locale === "zh" ? "历史 Run 标注" : "Historical Run notes"}</strong>
+                      <small>{locale === "zh" ? "兼容只读，不再用于新增研究日志" : "Read-only compatibility; not used for new research notes"}</small>
+                    </span>
+                    <span className="legacy-badge">{locale === "zh" ? "旧数据" : "Legacy"}</span>
+                  </summary>
+                  <div className="legacy-run-marks-body">
+                    {marks.isPending ? <AsyncState label={t("loading")} /> : null}
+                    {marks.isError ? <AsyncState label={displayError(marks.error)} tone="bad" /> : null}
+                    {!marks.isPending && !marks.isError && marks.data?.length ? (
+                      <div className="finding-list">
+                        {marks.data.map((mark) => <Finding key={mark.id} mark={mark} onOpen={() => setSelectedMark(mark)} />)}
+                      </div>
+                    ) : null}
+                    {!marks.isPending && !marks.isError && !marks.data?.length ? <Empty t={t} /> : null}
+                  </div>
+                </details>
               </div>
             </div>
           )}
         </div>
-      ) : (
-        <Empty t={t} />
+	  ) : run.isPending ? (
+		<AsyncState label={t("loading")} />
+	  ) : run.isError ? (
+		<AsyncState label={displayError(run.error)} tone="bad" />
+	  ) : (
+		<Empty t={t} />
       )}
       {selectedMark ? <MarkDetailModal mark={selectedMark} token={token} t={t} onClose={() => setSelectedMark(null)} /> : null}
     </Modal>
   );
 }
 
-function ArtifactList({ artifacts, t }: { artifacts: Artifact[]; t: T }) {
-  if (!artifacts.length) return <Empty t={t} />;
+function ArtifactList({ artifacts, collection, t }: { artifacts: Artifact[]; collection?: ArtifactCollection; t: T }) {
+  if (collection?.state === "discovering") return <div className="artifact-state"><RefreshCcw className="spin" size={14} /><span>{t("artifactDiscovering")}</span></div>;
+  if (collection?.state === "failed") return <div className="artifact-state bad"><span>{t("artifactCollectionFailed")}: {collection.error || t("unknownError")}</span></div>;
+  if (!artifacts.length) return <div className="artifact-state"><Archive size={17} /><span>{collection?.state === "indexed" ? t("noArtifactMatches") : t("artifactNotIndexed")}</span></div>;
   return (
     <div className="artifact-list">
+      {collection?.state === "partial" ? <div className="artifact-state bad">{t("partialInventory")}: {collection.error}</div> : null}
       {artifacts.map((artifact) => (
         <div className="artifact-row" key={artifact.id || artifact.path}>
           <div>
-            <strong>{artifact.path}</strong>
-            <span>{[artifact.type || "file", formatBytes(artifact.size), artifact.modified_at ? fmtShortTime(artifact.modified_at) : ""].filter(Boolean).join(" · ")}</span>
+            <strong title={artifact.relative_path || artifact.path}>{artifact.relative_path || artifact.path}</strong>
+            <span title={artifact.sha256 || undefined}>{[artifact.role, artifact.type || "file", formatBytes(artifact.size), artifact.sha256 ? artifact.sha256.slice(0, 18) + "…" : t("checksumUnavailable"), artifact.modified_at ? fmtShortTime(artifact.modified_at) : ""].filter(Boolean).join(" · ")}</span>
           </div>
         </div>
       ))}
@@ -1556,7 +2045,7 @@ function MetricFamilyCard({ family, t, compressed, expanded, layoutKey, onToggle
               <span>{t("range")}: {axisLabel}</span>
               <strong>{t("latest")}: {family.latest ? formatMetricValue(family.latest) : "-"}</strong>
             </div> : null}
-            {hasCurve ? <MetricChart points={family.points} series={family.curveTrends} axisKind={family.axisKind} /> : null}
+            {hasCurve ? <Suspense fallback={<AsyncState label={t("loading")} compact />}><MetricChart points={family.points} series={family.curveTrends} axisKind={family.axisKind} /></Suspense> : null}
             {!hasCurve ? (
               <div className="metric-reference-board">
                 <span>{t("references")}</span>
@@ -1611,91 +2100,6 @@ function MetricFamilyCard({ family, t, compressed, expanded, layoutKey, onToggle
       </AnimatePresence>
     </motion.article>
   );
-}
-
-function CompareModal({ t, token, runs, onClose }: { t: T; token: string; runs: Run[]; onClose: () => void }) {
-  const queries = useQueries({
-    queries: runs.map((run) => ({
-      queryKey: ["compare-events", token, run.id, uiEventsPath(run)],
-      queryFn: async () => {
-        const logs = await getLogs(token, run.id, { path: uiEventsPath(run), limit: 5000, tail: true });
-        const snapshotError = logSnapshotError(logs);
-        if (snapshotError) throw new Error(snapshotError);
-        return { run, parsed: parseEventLines(logs.lines.map((line) => line.content)) };
-      },
-      enabled: !!uiEventsPath(run)
-    }))
-  });
-  const points = queries.flatMap((query) => (query.data?.parsed.metrics || []).map((point) => ({ ...point, series: query.data?.run.name || query.data?.run.id })));
-  return (
-    <Modal title={t("compare")} onClose={onClose} wide>
-      <MetricChart points={points} />
-      <div className="metric-strip">
-        {runs.map((run) => (
-          <div className="metric-tile" key={run.id}>
-            <span>{runTitle(run)}</span>
-            <strong>{run.status}</strong>
-          </div>
-        ))}
-      </div>
-    </Modal>
-  );
-}
-
-function MetricChart({ points, series, compact = false, axisKind = "sample" }: { points: MetricPoint[]; series?: MetricSeriesSummary[]; compact?: boolean; axisKind?: "epoch" | "step" | "sample" }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    const chart = echarts.init(ref.current);
-    const chartSeries = series?.length
-      ? series
-      : summarizeChartSeries(points, axisKind);
-    chart.setOption({
-      animationDuration: 180,
-      color: chartSeries.map((_, index) => metricSeriesColor(index)),
-      grid: compact ? { left: 46, right: 12, top: 12, bottom: 28 } : { left: 46, right: 16, top: 18, bottom: 30 },
-      legend: undefined,
-      tooltip: { trigger: "axis", valueFormatter: (value: unknown) => formatMetric(Number(value)) },
-      xAxis: {
-        type: "value",
-        axisLabel: { color: "#7d858c", fontSize: 10 },
-        axisLine: { lineStyle: { color: "#d7dde2" } },
-        axisTick: { lineStyle: { color: "#d7dde2" } },
-        splitLine: { lineStyle: { color: "#edf1f4" } }
-      },
-      yAxis: {
-        type: "value",
-        scale: true,
-        axisLabel: { color: "#7d858c", fontSize: 10, formatter: (value: number) => formatMetric(value) },
-        axisLine: { show: true, lineStyle: { color: "#d7dde2" } },
-        axisTick: { show: true, lineStyle: { color: "#d7dde2" } },
-        splitLine: { lineStyle: { color: "#edf1f4" } }
-      },
-      series: chartSeries.slice(0, 12).map((row, index) => ({
-        name: row.label,
-        type: "line",
-        smooth: false,
-        lineStyle: { width: compact ? 1.7 : 2 },
-        showSymbol: row.points.length <= 1,
-        symbolSize: row.points.length <= 1 ? 8 : 4,
-        data: row.points.map((point, idx) => ({
-          name: row.fullLabel,
-          value: [metricChartAxis(point, idx, axisKind), point.value],
-          itemStyle: { color: metricSeriesColor(index) }
-        }))
-      }))
-    });
-    const resize = () => chart.resize();
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
-    if (observer) observer.observe(ref.current);
-    window.addEventListener("resize", resize);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", resize);
-      chart.dispose();
-    };
-  }, [points, series, compact, axisKind]);
-  return <div className={compact ? "chart chart-compact" : "chart"} ref={ref} />;
 }
 
 function ResourceModal({ t, token: _token, resource, onClose, onSave, onCreateLocal }: { t: T; token: string; resource: Partial<Resource>; onClose: () => void; onSave: (resource: Partial<Resource>) => Promise<void>; onCreateLocal: (name: string, rootDir: string) => Promise<void> }) {
@@ -1772,214 +2176,6 @@ function ConfirmModal({ t, state, onClose }: { t: T; state: ConfirmState; onClos
   );
 }
 
-function BookmarkNoteModal({ t, run, initialNote, onClose, onSave }: { t: T; run: Run; initialNote: string; onClose: () => void; onSave: (note: string) => Promise<void> }) {
-  const [note, setNote] = useState(initialNote);
-  const [saving, setSaving] = useState(false);
-  return (
-    <Modal title={t("humanMark")} onClose={onClose}>
-      <form
-        className="note-editor-form"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          setSaving(true);
-          try {
-            await onSave(note.trim());
-          } finally {
-            setSaving(false);
-          }
-        }}
-      >
-        <span className="muted mono">{run.id}</span>
-        <strong>{runTitle(run)}</strong>
-        <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={t("bookmarkNoteEmpty")} rows={4} autoFocus />
-        <div className="modal-actions">
-          <button type="button" onClick={onClose}>
-            {t("cancel")}
-          </button>
-          <button className="primary" type="submit" disabled={saving}>
-            {t("save")}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function ManualProjectModal({
-  t,
-  run,
-  categories,
-  projects,
-  assignment,
-  projectMeta,
-  onClose,
-  onAssign,
-  onCreateAndAssign
-}: {
-  t: T;
-  run: Run;
-  categories: ManualProjectCategory[];
-  projects: ProjectView[];
-  assignment?: RunProjectAssignment;
-  projectMeta?: RunProjectMeta;
-  onClose: () => void;
-  onAssign: (categoryID: string) => Promise<void>;
-  onCreateAndAssign: (name: string) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const current = assignment?.category_id || "";
-  const categoryNames = new Set(categories.map((category) => category.name.trim().toLowerCase()));
-  const inheritedProject = !current && projectMeta?.source !== "manual" && projectMeta?.projectId !== "__unassigned__" ? projectMeta : undefined;
-  const projectChoices = projects
-    .map((project) => ({ id: project.project_id, name: projectDisplayName(project, t), count: project.total_cards }))
-    .filter((project) => project.id !== "__unassigned__" && project.id !== inheritedProject?.projectId && project.name.trim() && !categoryNames.has(project.name.trim().toLowerCase()));
-  const choose = async (categoryID: string) => {
-    setSaving(true);
-    try {
-      await onAssign(categoryID);
-    } finally {
-      setSaving(false);
-    }
-  };
-  const create = async () => {
-    const name = draft.trim();
-    if (!name) return;
-    setSaving(true);
-    try {
-      await onCreateAndAssign(name);
-    } finally {
-      setSaving(false);
-    }
-  };
-  const createFromExistingProject = async (name: string) => {
-    setSaving(true);
-    try {
-      await onCreateAndAssign(name);
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Modal title={t("manualProject")} onClose={onClose}>
-      <div className="manual-project-editor">
-        <span className="muted mono">{run.id}</span>
-        <strong>{runTitle(run)}</strong>
-        <div className="manual-project-choice-list">
-          <button className={!current && !inheritedProject ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose("")}>
-            <span>{t("unassignedRuns")}</span>
-          </button>
-          {categories.map((category) => (
-            <button key={category.id} className={current === category.id ? "manual-project-choice active" : "manual-project-choice"} type="button" disabled={saving} onClick={() => void choose(category.id)}>
-              <span>{category.name}</span>
-              {category.run_count ? <em>{category.run_count}</em> : null}
-            </button>
-          ))}
-          {inheritedProject ? (
-            <>
-              <span className="manual-project-choice-heading">{t("projects")}</span>
-              <button className="manual-project-choice project-source active" type="button" disabled={saving} onClick={() => void createFromExistingProject(inheritedProject.projectName)}>
-                <span>{inheritedProject.projectName}</span>
-                <em>{inheritedProject.cardTitle}</em>
-              </button>
-            </>
-          ) : null}
-          {projectChoices.length && !inheritedProject ? <span className="manual-project-choice-heading">{t("projects")}</span> : null}
-          {projectChoices.map((project) => (
-            <button key={project.id} className="manual-project-choice project-source" type="button" disabled={saving} onClick={() => void createFromExistingProject(project.name)}>
-              <span>{project.name}</span>
-              {project.count ? <em>{project.count}</em> : null}
-            </button>
-          ))}
-        </div>
-        <div className="manual-project-create-row">
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
-          <button className="primary" type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
-            <Plus size={14} />
-            {t("createCategory")}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function useLiveLog(token: string, runId: string, query: { source?: string; path?: string } | null, live = true) {
-  const [lines, setLines] = useState<{ content: string; line_no?: number; source?: string }[]>([]);
-  const [state, setState] = useState<"idle" | "live" | "reconnecting" | "error">("idle");
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let closed = false;
-    let ws: WebSocket | null = null;
-    let retryTimer: number | undefined;
-    setLines([]);
-    setError(null);
-    if (!query) {
-      setState("idle");
-      return;
-    }
-    const fetchSnapshot = (attempt = 0) => {
-      getLogs(token, runId, { ...query, limit: query.path ? 5000 : 500, tail: true })
-        .then((logs: LogsResponse) => {
-          if (closed) return;
-          const snapshotError = logSnapshotError(logs);
-          if (snapshotError) {
-            setError(snapshotError);
-            if (attempt < 3) retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 900 * 2 ** attempt);
-            return;
-          }
-          if (isEmptyRemotePathSnapshot(logs) && attempt < 5) {
-            retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 700 * (attempt + 1));
-            return;
-          }
-          setError(null);
-          setLines((prev) => mergeLogSnapshot(logs.lines || [], prev));
-        })
-        .catch((err: unknown) => {
-          if (closed) return;
-          setError(err instanceof Error ? err.message : String(err));
-          setState("error");
-          if (attempt < 3) retryTimer = window.setTimeout(() => fetchSnapshot(attempt + 1), 900 * 2 ** attempt);
-        });
-    };
-    fetchSnapshot();
-    if (!live) {
-      setState("idle");
-      return () => {
-        closed = true;
-        window.clearTimeout(retryTimer);
-      };
-    }
-    const connect = () => {
-      if (closed) return;
-      setState("reconnecting");
-      ws = new WebSocket(wsURL(`/ws/runs/${encodeURIComponent(runId)}/logs`, token, { ...query, snapshot: "false" }));
-      ws.onopen = () => setState("live");
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === "log.line") {
-            setLines((prev) => [...prev.slice(-4999), { content: payload.content || "", line_no: payload.line_no, source: payload.source }]);
-          }
-        } catch {
-          setLines((prev) => [...prev.slice(-4999), { content: String(event.data) }]);
-        }
-      };
-      ws.onclose = () => {
-        if (!closed) window.setTimeout(connect, 1500);
-      };
-      ws.onerror = () => setState("error");
-    };
-    connect();
-    return () => {
-      closed = true;
-      window.clearTimeout(retryTimer);
-      ws?.close();
-    };
-  }, [token, runId, query?.source, query?.path, live]);
-  return { lines, state, error };
-}
-
 function useParsedEvents(lines: string[]): ParsedEvents {
   const [parsed, setParsed] = useState<ParsedEvents>(() => parseEventLines([]));
   const linesKey = useMemo(() => lines.join("\n"), [lines]);
@@ -2018,37 +2214,6 @@ function LogPanel({ title, state, hiddenWhenEmpty }: { title: string; state: Ret
       {state.error ? <div className="log-error">{state.error}</div> : null}
       <pre className="log-pane">{state.lines.map((line) => line.content).join("\n") || "-"}</pre>
     </section>
-  );
-}
-
-let openModalCount = 0;
-
-function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    openModalCount += 1;
-    document.documentElement.classList.add("modal-open");
-    document.body.classList.add("modal-open");
-    return () => {
-      openModalCount = Math.max(0, openModalCount - 1);
-      if (openModalCount === 0) {
-        document.documentElement.classList.remove("modal-open");
-        document.body.classList.remove("modal-open");
-      }
-    };
-  }, []);
-
-  return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <motion.div className={wide ? "modal wide" : "modal"} initial={{ opacity: 0, scale: 0.98, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98, y: 12 }}>
-        <header>
-          <h2>{title}</h2>
-          <button className="icon-button" onClick={onClose}>
-            <X size={18} />
-          </button>
-        </header>
-        {children}
-      </motion.div>
-    </div>
   );
 }
 
@@ -2095,13 +2260,14 @@ function gpuMeters(gpu: GPUInfo, index: number) {
   ];
 }
 
-function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<string, Resource>; onOpen: () => void }) {
+function RunCard({ run, locale, resourceById, onOpen }: { run: Run; locale: Locale; resourceById: Map<string, Resource>; onOpen: () => void }) {
   const kind = run.kind || "formal";
+	const presentation = runStatusPresentation(run, locale);
   return (
     <button className="run-card" onClick={onOpen} title={runTitle(run)}>
       <div className="card-head">
         <strong>{runTitle(run)}</strong>
-        <Pill tone={statusTone(run.status)}>{run.status}</Pill>
+        <StatusCapsule presentation={presentation} />
       </div>
       <div className="run-card-meta">
         <span className="run-resource-chip">{resourceById.get(run.resource_id)?.name || run.resource_id}</span>
@@ -2109,47 +2275,40 @@ function RunCard({ run, resourceById, onOpen }: { run: Run; resourceById: Map<st
         <span className="run-gpu-chip">GPU {runGPU(run.gpu_index)}</span>
       </div>
       <span className="mono muted">{fmtShortTime(run.created_at)}</span>
-      <span className="run-command-line">{run.command}</span>
+	  {presentation.uncertain ? <span className="run-observation-warning compact" title={presentation.detail}>{presentation.detail}</span> : null}
+      <span className="run-command-line">{run.command || run.command_preview}</span>
     </button>
   );
 }
 
 function RunListCard({
   run,
+	locale,
   resourceById,
   projectMeta,
-  manualAssignment,
-  markCount,
-  markPreviews,
+  hideProject,
   bookmark,
   selected,
   trash,
   onOpen,
-  onOpenMark,
   onSelect,
   onToggleBookmark,
-  onEditBookmarkNote,
-  onEditManualProject,
   onArchive,
   onRestore,
   onDelete,
   t
 }: {
   run: Run;
+	locale: Locale;
   resourceById: Map<string, Resource>;
   projectMeta?: RunProjectMeta;
-  manualAssignment?: RunProjectAssignment;
-  markCount: number;
-  markPreviews: RunMark[];
+  hideProject?: boolean;
   bookmark?: RunBookmark;
   selected: boolean;
   trash: boolean;
   onOpen: () => void;
-  onOpenMark: (mark: RunMark) => void;
   onSelect: (checked: boolean) => void;
   onToggleBookmark: () => void;
-  onEditBookmarkNote: () => void;
-  onEditManualProject: () => void;
   onArchive: () => void;
   onRestore: () => void;
   onDelete: () => void;
@@ -2157,15 +2316,12 @@ function RunListCard({
 }) {
   const compareEligible = isCompareEligible(run) && !trash;
   const kind = run.kind || "formal";
+	const presentation = runStatusPresentation(run, locale);
   const resourceName = resourceById.get(run.resource_id)?.name || run.resource_id;
   const gpu = runGPU(run.gpu_index);
   const createdAt = fmtShortTime(run.created_at);
-  const bookmarkNote = bookmark?.note?.trim() || "";
-  const visibleMarks = compactMarkPreviews(markPreviews);
-  const inheritedProjectName = projectMeta?.source !== "manual" ? projectMeta?.projectName : "";
-  const projectAssignmentName = manualAssignment?.category_name || inheritedProjectName || t("unassignedRuns");
-  const projectAssignmentLabel = manualAssignment ? t("manualProject") : inheritedProjectName ? t("projects") : t("manualProject");
-  const hasProjectAssignment = Boolean(manualAssignment || inheritedProjectName);
+  const projectName = projectMeta?.projectName || run.project_id || t("unassignedRuns");
+  const hasProject = Boolean(run.project_id);
   return (
     <article className="run-list-card">
       <div className="run-list-card-head">
@@ -2173,21 +2329,14 @@ function RunListCard({
           <strong>{runTitle(run)}</strong>
           <span className="mono muted">{run.id}</span>
         </button>
-        <Pill tone={statusTone(run.status)}>{run.status}</Pill>
+        <StatusCapsule presentation={presentation} />
       </div>
-      <div className="run-project-stack">
-        {projectMeta ? (
-          <div className={projectMeta.source === "manual" ? "run-project-context manual" : "run-project-context"}>
-            <span className="run-project-name">{projectMeta.projectName}</span>
-            <strong>{projectMeta.cardTitle}</strong>
-            {projectMeta.evidenceLevel ? <Pill tone={projectMeta.evidenceLevel === "A" || projectMeta.evidenceLevel === "B" ? "good" : "neutral"}>L{projectMeta.evidenceLevel}</Pill> : null}
-          </div>
-        ) : null}
-        <button className={hasProjectAssignment ? "run-project-assignment-summary assigned" : "run-project-assignment-summary"} type="button" onClick={onEditManualProject} title={t("manualProject")}>
-          <span>{projectAssignmentLabel}</span>
-          <strong>{projectAssignmentName}</strong>
-        </button>
-      </div>
+      {!hideProject ? <div className="run-project-stack">
+        <div className={`run-project-line${hasProject ? "" : " none"}`}>
+          <span className="run-project-tag">{t("projects")}</span>
+          <strong>{projectName}</strong>
+        </div>
+      </div> : null}
       <div className="run-list-facts">
         <span className="run-fact run-fact-resource" title={`${t("resource")}: ${resourceName}`} aria-label={`${t("resource")}: ${resourceName}`}>
           <Server size={12} className="run-fact-icon" />
@@ -2206,34 +2355,10 @@ function RunListCard({
           <span className="run-fact-value">{createdAt}</span>
         </span>
       </div>
-      {visibleMarks.length || !trash ? (
-        <div className="run-mark-previews" aria-label={t("agentFindings")}>
-          {visibleMarks.map((mark) => {
-            const statement = markStatement(mark);
-            return (
-              <button key={mark.id} className={`run-mark-preview run-mark-preview-${markTone(mark.kind)}`} type="button" onClick={() => onOpenMark(mark)}>
-                <span className="run-mark-preview-meta">
-                  <Pill tone={markTone(mark.kind)}>{mark.kind || "mark"}</Pill>
-                  <span>{mark.actor || "agent"}</span>
-                </span>
-                <span className="run-mark-preview-copy">
-                  <strong>{mark.title || statement || mark.kind || t("notes")}</strong>
-                </span>
-              </button>
-            );
-          })}
-          {!trash ? (
-            <button className={bookmarkNote ? "run-mark-preview run-mark-preview-human has-note" : "run-mark-preview run-mark-preview-human"} type="button" onClick={onEditBookmarkNote}>
-              <span className="run-mark-preview-meta">
-                <Pill tone="accent">{t("humanMark")}</Pill>
-              </span>
-              <span className="run-mark-preview-copy">
-                <strong>{bookmarkNote || t("addHumanMark")}</strong>
-              </span>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      <div className="run-list-observation">
+        {presentation.uncertain ? <div className="run-observation-warning" title={presentation.detail}>{presentation.detail}</div> : null}
+        <RunObservationMeta run={run} locale={locale} showError={false} />
+      </div>
       <div className="run-list-actions">
         {compareEligible ? (
           <label className="run-compare-toggle">
@@ -2274,62 +2399,8 @@ function runKindClass(kind?: string) {
   return "run-kind-other";
 }
 
-function marksByRun(marks: RunMark[]) {
-  const out = new Map<string, RunMark[]>();
-  for (const mark of marks) {
-    const row = out.get(mark.run_id) || [];
-    row.push(mark);
-    out.set(mark.run_id, row);
-  }
-  for (const row of out.values()) {
-    row.sort((a, b) => markCreatedMs(b) - markCreatedMs(a));
-  }
-  return out;
-}
-
-function compactMarkPreviews(marks: RunMark[]) {
-  const seen = new Set<string>();
-  const visible: RunMark[] = [];
-  for (const mark of marks) {
-    if ((mark.actor || "").toLowerCase() === "human") continue;
-    const key = [mark.kind || "", mark.title || "", markStatement(mark) || ""].join("\0").toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    visible.push(mark);
-    if (visible.length >= 1) break;
-  }
-  return visible;
-}
-
-function markCreatedMs(mark: RunMark) {
-  const value = mark.created_at ? Date.parse(mark.created_at) : 0;
-  return Number.isFinite(value) ? value : 0;
-}
-
 function markTone(kind?: string) {
   return kind === "failure" ? "bad" : kind === "key_result" ? "good" : kind === "followup" ? "accent" : "neutral";
-}
-
-function DashboardFinding({ mark, onOpenRun }: { mark: RunMark; onOpenRun?: () => void }) {
-  const statement = markStatement(mark);
-  const tone = markTone(mark.kind);
-  return (
-    <button className={`dashboard-finding dashboard-finding-${tone}`} onClick={onOpenRun} type="button">
-      <div className="dashboard-finding-kicker">
-        <Pill tone={tone}>{mark.kind || "mark"}</Pill>
-        <span className="dashboard-finding-actor">{mark.actor || "agent"}</span>
-        <span className="mono muted">{fmtShortTime(mark.created_at)}</span>
-        <span className="dashboard-finding-run">
-          <span className="mono">{mark.run_id}</span>
-          {onOpenRun ? <ExternalLink size={13} /> : null}
-        </span>
-      </div>
-      <strong className="dashboard-finding-title">{mark.title || mark.kind || mark.run_id}</strong>
-      <div className="dashboard-finding-body">
-        <p>{statement || mark.run_id}</p>
-      </div>
-    </button>
-  );
 }
 
 function Finding({ mark, onOpen }: { mark: RunMark; onOpen?: () => void }) {
@@ -2516,35 +2587,6 @@ function metricAxisLabel(family: MetricFamily, t: T) {
   return `${family.count} ${t("points")}`;
 }
 
-function metricChartAxis(point: MetricPoint, fallback: number, axisKind: "epoch" | "step" | "sample") {
-  if (axisKind === "epoch") return point.epoch ?? fallback;
-  if (axisKind === "step") return point.step ?? fallback;
-  return fallback;
-}
-
-function metricSeriesColor(index: number) {
-  const colors = ["#4d6f91", "#b3522f", "#648a5a", "#9a6a24", "#6e6a9a", "#3f7e82", "#8a5a44", "#58748a"];
-  return colors[index % colors.length];
-}
-
-function summarizeChartSeries(points: MetricPoint[], axisKind: "epoch" | "step" | "sample"): MetricSeriesSummary[] {
-  const grouped = new Map<string, MetricPoint[]>();
-  for (const point of points) {
-    const key = point.series ? `${point.series}/${point.name}` : point.name;
-    grouped.set(key, [...(grouped.get(key) || []), point]);
-  }
-  return Array.from(grouped.entries()).map(([key, rows]) => ({
-    key,
-    label: shortSeriesName(key),
-    fullLabel: key,
-    latest: rows[rows.length - 1],
-    count: rows.length,
-    role: "curve",
-    trend: rows.map((row, index) => ({ axis: metricChartAxis(row, index, axisKind), value: row.value })),
-    points: rows
-  }));
-}
-
 function metricSparklinePoints(points: Array<{ value: number }>, height = 34) {
   if (!points.length) return "";
   const mid = height / 2;
@@ -2616,61 +2658,7 @@ function Segmented({ value, options, onChange }: { value: string; options: { val
   );
 }
 
-function ProjectAssignmentControl({
-  t,
-  categories,
-  assignment,
-  onAssign,
-  onCreateAndAssign
-}: {
-  t: T;
-  categories: ManualProjectCategory[];
-  assignment?: RunProjectAssignment;
-  onAssign: (categoryID: string) => Promise<void>;
-  onCreateAndAssign: (name: string) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const current = assignment?.category_id || "";
-  const options: [string, string][] = [
-    ["", t("unassignedRuns")],
-    ...categories.map((category) => [category.id, category.run_count ? `${category.name} (${category.run_count})` : category.name] as [string, string])
-  ];
-  if (current && !categories.some((category) => category.id === current)) {
-    options.splice(1, 0, [current, assignment?.category_name || current]);
-  }
-  const create = async () => {
-    const name = draft.trim();
-    if (!name) return;
-    setSaving(true);
-    try {
-      await onCreateAndAssign(name);
-      setDraft("");
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <div className="project-assignment-control">
-      <Select
-        value={current}
-        onChange={(value: string) => {
-          setSaving(true);
-          void onAssign(value).finally(() => setSaving(false));
-        }}
-        options={options}
-      />
-      <div className="project-assignment-create">
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("newManualProject")} disabled={saving} />
-        <button type="button" disabled={saving || !draft.trim()} onClick={() => void create()}>
-          {t("newManualProject")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function Pager({ t, total, page, setPage }: { t: T; total: number; page: number; setPage: (page: number) => void }) {
+function Pager({ t, total, page, pageSize, setPage }: { t: T; total: number; page: number; pageSize: number; setPage: (page: number) => void }) {
   const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
   return (
     <div className="pager">
@@ -2711,6 +2699,10 @@ function Empty({ t }: { t: T }) {
   return <div className="empty">{t("noData")}</div>;
 }
 
+function AsyncState({ label, tone, compact }: { label: string; tone?: "bad"; compact?: boolean }) {
+	return <div className={`async-state${tone ? ` ${tone}` : ""}${compact ? " compact" : ""}`}>{label}</div>;
+}
+
 function defaultResource(): Partial<Resource> {
   return { type: "ssh", user: "root", port: 22, status: "unknown" };
 }
@@ -2719,41 +2711,27 @@ function statusTone(status?: string): "good" | "bad" | "warn" | "neutral" | "acc
   const s = (status || "").toLowerCase();
   if (["running", "idle", "ok", "succeeded"].includes(s)) return "good";
   if (["failed", "lost", "unreachable", "container_expired"].includes(s)) return "bad";
-  if (["starting", "queued", "busy", "created", "unknown", "ssh_unreachable", "run_lost_but_events_cached"].includes(s)) return "warn";
+  if (["starting", "queued", "preflighting", "busy", "created", "unknown", "ssh_unreachable", "run_lost_but_events_cached"].includes(s)) return "warn";
   if (["formal", "ablation"].includes(s)) return "accent";
   return "neutral";
 }
 
 function labelForTab(tab: Tab, t: T) {
-  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", projects: "projects", matrices: "matrices", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs" };
+  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", dataCenter: "dataCenter", launchpad: "launchpad", projects: "projects", journal: "journal", projectAssets: "assets", matrices: "matrices", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs", settings: "settings" };
   return t(map[tab]);
 }
 
-function filterProjects(projects: ProjectView[], query: string) {
+function filterProjects(projects: ProjectDefinition[], query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return projects;
   return projects.filter((project) =>
     [
-      project.project_id,
-      project.project_name,
-      ...(project.cards || []).flatMap((card) => [
-        card.id,
-        card.run_id,
-        card.question,
-        card.verdict,
-        card.key_metrics,
-        card.next_action,
-        card.supports_claim,
-        card.weakens_claim,
-        card.artifact_paths,
-        card.related_runs,
-        card.run?.name,
-        card.run?.command,
-        card.run?.resource_id,
-        card.run?.status,
-        card.run?.kind,
-        ...(card.marks || []).flatMap((mark) => [mark.title, mark.reason, mark.evidence, mark.kind, mark.actor])
-      ])
+      project.id,
+      project.name,
+      project.description,
+      project.local_root,
+      project.source_repo,
+      project.default_recipe
     ].some((part) => text(part).toLowerCase().includes(q))
   );
 }
@@ -2762,48 +2740,20 @@ function projectDisplayName(project: ProjectView, t: T) {
   return project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
 }
 
-function manualProjectFilterValue(id: string) {
-  return `manual:${id}`;
-}
-
 function projectCardFilterValue(id: string) {
   return `card:${id}`;
 }
 
-function runProjectMatches(meta: RunProjectMeta | undefined, filterValue: string) {
-  if (!meta) return false;
-  if (filterValue.startsWith("manual:")) return meta.source === "manual" && meta.projectId === filterValue.slice("manual:".length);
-  if (filterValue.startsWith("card:")) return meta.source !== "manual" && meta.projectId === filterValue.slice("card:".length);
-  return meta.projectId === filterValue;
-}
-
-function buildRunProjectIndex(projects: ProjectView[], t: T, manualAssignments?: Map<string, RunProjectAssignment>, manualCategories?: Map<string, ManualProjectCategory>) {
+function buildRunProjectIndex(projects: ProjectDefinition[], runs: Run[]) {
   const out = new Map<string, RunProjectMeta>();
-  for (const assignment of manualAssignments?.values() || []) {
-    const category = manualCategories?.get(assignment.category_id);
-    const categoryName = assignment.category_name || category?.name || assignment.category_id;
-    out.set(assignment.run_id, {
-      projectId: assignment.category_id,
-      projectName: t("manualProject"),
-      cardTitle: categoryName,
-      source: "manual"
+  const projectByID = new Map(projects.map((project) => [project.id, project]));
+  for (const run of runs) {
+    if (!run.project_id) continue;
+    const project = projectByID.get(run.project_id);
+    out.set(run.id, {
+      projectId: run.project_id,
+      projectName: project?.name || run.project_id
     });
-  }
-  for (const project of projects) {
-    const projectName = projectDisplayName(project, t);
-    for (const card of project.cards || []) {
-      if (!card.run_id) continue;
-      const meta: RunProjectMeta = {
-        projectId: project.project_id,
-        projectName,
-        cardTitle: card.verdict || card.question || card.run?.name || card.run_id,
-        cardSummary: card.key_metrics || card.supports_claim || card.weakens_claim || card.next_action || card.proposal_reason || "",
-        evidenceLevel: card.evidence_level,
-        source: "card"
-      };
-      const current = out.get(card.run_id);
-      if (!current || (current.source !== "manual" && (card.should_promote || card.important))) out.set(card.run_id, meta);
-    }
   }
   return out;
 }
@@ -2815,26 +2765,67 @@ function readDeepLinkRun() {
 
 function readInitialTab(): Tab {
   const path = window.location.pathname;
+  if (readEvidenceProjectFromPath()) return "evidence";
+  if (/^\/ui-v2\/projects\/[^/]+\/assets\/?$/.test(path)) return "projectAssets";
+  if (/^\/ui-v2\/projects\/[^/]+\/runs\/?$/.test(path)) return "runs";
+  if (/^\/ui-v2\/projects\/[^/]+(?:\/journal)?\/?$/.test(path)) return "journal";
   if (path.startsWith("/ui-v2/resources")) return "resources";
+	if (path.startsWith("/ui-v2/data-center")) return "dataCenter";
+  if (path.startsWith("/ui-v2/launchpad")) return "launchpad";
   if (path.startsWith("/ui-v2/projects")) return "projects";
   if (path.startsWith("/ui-v2/matrices")) return "matrices";
-  if (path.startsWith("/ui-v2/evidence-chains")) return "evidence";
+  if (path.startsWith("/ui-v2/evidence-chains")) return "projects";
   if (path.startsWith("/ui-v2/runs")) return "runs";
   if (path.startsWith("/ui-v2/favorites")) return "favorites";
   if (path.startsWith("/ui-v2/execs")) return "execs";
-  return "dashboard";
+  if (path.startsWith("/ui-v2/settings")) return "settings";
+  return "projects";
 }
 
-function pathForTab(tab: Tab) {
+function readEvidenceProjectFromPath() {
+  const route = parseProjectRoute(window.location.pathname);
+  return route?.section === "research-graph" ? route.projectId : "";
+}
+
+function readProjectFromPath() {
+  return parseProjectRoute(window.location.pathname)?.projectId || "";
+}
+
+function projectOverviewPath(projectID: string) {
+  return `/ui-v2/projects/${encodeURIComponent(projectID)}`;
+}
+
+function projectJournalPath(projectID: string) {
+  return `${projectOverviewPath(projectID)}/journal`;
+}
+
+function projectRunsPath(projectID: string) {
+  return `${projectOverviewPath(projectID)}/runs`;
+}
+
+function projectAssetsPath(projectID: string) {
+  return `${projectOverviewPath(projectID)}/assets`;
+}
+
+function projectResearchGraphPath(projectID: string) {
+  return `/ui-v2/projects/${encodeURIComponent(projectID)}/research-graph`;
+}
+
+function pathForTab(tab: Tab, evidenceProjectID = "", projectID = "") {
   const map: Record<Tab, string> = {
     dashboard: "/ui-v2/",
     resources: "/ui-v2/resources",
+	dataCenter: "/ui-v2/data-center",
+    launchpad: "/ui-v2/launchpad",
     projects: "/ui-v2/projects",
+    journal: projectID ? projectJournalPath(projectID) : "/ui-v2/projects",
+    projectAssets: "/ui-v2/projects",
     matrices: "/ui-v2/matrices",
-    evidence: "/ui-v2/evidence-chains",
+    evidence: evidenceProjectID ? projectResearchGraphPath(evidenceProjectID) : "/ui-v2/projects",
     runs: "/ui-v2/runs",
     favorites: "/ui-v2/favorites",
-    execs: "/ui-v2/execs"
+    execs: "/ui-v2/execs",
+    settings: "/ui-v2/settings"
   };
   return map[tab];
 }

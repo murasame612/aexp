@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/store"
 )
 
@@ -316,10 +317,23 @@ func TestProjectCardCommandsUseProjectConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(dir, ".aexp.yaml")
+	otherConfigPath := filepath.Join(dir, "other.aexp.yaml")
 	if err := os.WriteFile(configPath, []byte(`
 project:
   id: dam-imputation
   name: Dam Imputation
+resource: mu
+cwd: /remote/project
+train:
+  command: python train.py
+  kind: formal
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherConfigPath, []byte(`
+project:
+  id: other-project
+  name: Other Project
 resource: mu
 cwd: /remote/project
 train:
@@ -357,6 +371,14 @@ train:
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, project := range []*store.ProjectDefinition{
+		{ID: "dam-imputation", Name: "Dam Imputation"},
+		{ID: "other-project", Name: "Other Project"},
+	} {
+		if err := db.CreateProjectDefinition(context.Background(), project); err != nil {
+			t.Fatal(err)
+		}
+	}
 	db.Close()
 
 	out, err := runProjectCardForTest(
@@ -392,6 +414,58 @@ train:
 	for _, want := range []string{"# aexp project digest: dam-imputation", "- question: Does CAF beat IR?", "- metrics: mAP50-95=0.606"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("project digest output missing %q:\n%s", want, out)
+		}
+	}
+
+	if _, err := runProjectCardForTest("--config", otherConfigPath, "run_project_card", "--verdict", "Updated from another cwd."); err != nil {
+		t.Fatalf("cross-project ordinary update failed: %v", err)
+	}
+	db, err = store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, err := db.GetProjectRunCard(context.Background(), "run_project_card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.ProjectID != "dam-imputation" {
+		t.Fatalf("ordinary update drifted card ownership: %#v", card)
+	}
+	db.Close()
+
+	if _, err := runProjectCardForTest("--config", otherConfigPath, "run_project_card", "--reassign-project"); err != nil {
+		t.Fatalf("explicit reassign failed: %v", err)
+	}
+	db, err = store.NewSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, err = db.GetProjectRunCard(context.Background(), "run_project_card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.ProjectID != "other-project" {
+		t.Fatalf("explicit reassign did not change ownership: %#v", card)
+	}
+	db.Close()
+
+	out, err = runProjectRunsForTest("--config", otherConfigPath, "--important")
+	if err != nil {
+		t.Fatalf("reassigned project runs failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"run_project_...", "B", "yes", "Does CAF beat IR?", "Updated from another cwd."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("reassigned project runs output missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = runProjectDigestForTest("--config", otherConfigPath)
+	if err != nil {
+		t.Fatalf("reassigned project digest failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"# aexp project digest: other-project", "- question: Does CAF beat IR?", "- verdict: Updated from another cwd."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("reassigned project digest output missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -465,6 +539,15 @@ func TestRunMarksAcceptsPositionalRunID(t *testing.T) {
 	db, err := store.NewSQLite(dbPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := db.CreateResource(ctx, &store.Resource{ID: "marks_resource", Name: "marks-resource", Type: store.ResourceTypeSSH, Host: "localhost", RootDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{"run_target", "run_other"} {
+		if err := db.CreateRun(ctx, &store.Run{ID: runID, ResourceID: "marks_resource", Status: store.RunStatusSucceeded, Command: "true"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := db.SaveRunMark(context.Background(), &store.RunMark{
 		ID:     "mark_1",
@@ -778,6 +861,189 @@ train:
 	}
 }
 
+func TestLoadProjectFileConfigParsesCommandInputsAndFreezeProfiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aexp.yaml")
+	content := `project:
+  id: paper-project
+commands:
+  train:
+    command: python train.py
+    kind: formal
+    inputs:
+      datasets:
+        - facade@v3
+      seeds:
+        - 41
+        - 42
+freeze_profiles:
+  paper:
+    storage: nas
+    storage_prefix: paper-evidence/project
+    required:
+      metrics:
+        - results/**/per_seed.json
+      predictions:
+        - predictions/**/*.csv
+    optional:
+      masks:
+        - masks/**/*
+    workspace_roles:
+      - metrics
+      - predictions
+    aggregate:
+      command: python scripts/paper/build.py
+      outputs:
+        - derived/tables/**/*.csv
+    release_gate:
+      command: python scripts/paper/gate.py
+      report: release-gate.json
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadProjectFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cfg.Commands["train"]
+	if entry.Command != "python train.py" || len(entry.Datasets) != 1 || len(entry.Seeds) != 2 {
+		t.Fatalf("command inputs: %#v", entry)
+	}
+	for _, warning := range cfg.Warnings {
+		if strings.Contains(warning, "train.datasets") || strings.Contains(warning, "train.seeds") {
+			t.Fatalf("structured provenance produced a false ignored-field warning: %q", warning)
+		}
+	}
+	profile := cfg.FreezeProfiles["paper"]
+	if profile.Storage != "nas" || len(profile.Rules) != 3 || len(profile.WorkspaceRoles) != 2 || len(profile.AggregateOutputs) != 1 || profile.GateCommand == "" {
+		t.Fatalf("freeze profile: %#v", profile)
+	}
+}
+
+func TestProjectRunPlanIncludesReplayableProvenanceFlags(t *testing.T) {
+	req := executor.SubmitRequest{
+		Kind:                store.RunKindFormal,
+		Cwd:                 "/remote/project",
+		ProjectEnv:          executor.ProjectEnvAuto,
+		GPUIndex:            0,
+		ProjectConfigSHA256: "sha256:config",
+		Datasets: []store.RunDatasetInput{{
+			DatasetID:      "private-facade-good810-context2x",
+			Version:        "v1",
+			ManifestSHA256: "sha256:dataset",
+		}},
+		Seeds:              []int64{41, 42},
+		SplitProtocol:      "good810-group-aware-v1",
+		EvaluationProtocol: "locked-test-v1",
+		Inputs: []store.RunInputBinding{{
+			LogicalURI: "storage://nas/datasets/good810/pair-gt.ndjson",
+			TargetPath: "dataset/pair-gt.ndjson",
+			Revision:   "sha256:input",
+			Mode:       "copy",
+		}},
+		Outputs: []store.RunOutputBinding{{
+			SourcePattern: "output/aexp/{run_id}/report.json",
+			LogicalURI:    "storage://nas/runs/{run_id}/report.json",
+			Role:          "metrics",
+			Required:      true,
+		}},
+		Program: "bash",
+		Args:    []string{"-lc", "python train.py"},
+	}
+	out, err := captureStdout(func() error {
+		printProjectRunPlan("/project/.aexp.yaml", "train", "gpu", req)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--dataset' 'private-facade-good810-context2x@v1",
+		"--seed' '41",
+		"--seed' '42",
+		"--config-sha256' 'sha256:config",
+		"--split-protocol' 'good810-group-aware-v1",
+		"--evaluation-protocol' 'locked-test-v1",
+		"--input-json",
+		`"revision":"sha256:input"`,
+		"--output-json",
+		`"required":true`,
+		"datasets:",
+		"seeds:",
+		"managed_inputs:",
+		"managed_outputs:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestLoadProjectFileConfigParsesStructuredRunBindings(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".aexp.yaml")
+	content := `project:
+  id: paper-project
+commands:
+  train:
+    command: python train.py
+    kind: formal
+    split_protocol: split-v3
+    evaluation_protocol: eval-v2
+    inputs:
+      datasets: [facade@v3]
+      seeds: [41, 42]
+      files:
+        - from: aexp://paper-project/data/facade-v3
+          to: data/facade
+          revision: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          mode: copy
+    outputs:
+      - from: results/per_seed.json
+        to: aexp://paper-project/runs/{run_id}/per_seed.json
+        role: metrics
+        required: true
+      - from: checkpoints/best.pt
+        to: aexp://paper-project/runs/{run_id}/best.pt
+        role: checkpoint
+        required: false
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadProjectFileConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cfg.Commands["train"]
+	if len(entry.InputBindings) != 1 || entry.InputBindings[0].LogicalURI != "aexp://paper-project/data/facade-v3" || entry.InputBindings[0].TargetPath != "data/facade" || entry.InputBindings[0].Mode != "copy" {
+		t.Fatalf("inputs=%#v", entry.InputBindings)
+	}
+	if len(entry.OutputBindings) != 2 || !entry.OutputBindings[0].Required || entry.OutputBindings[0].Role != "metrics" || entry.OutputBindings[1].Required {
+		t.Fatalf("outputs=%#v", entry.OutputBindings)
+	}
+	if entry.SplitProtocol != "split-v3" || entry.EvaluationProtocol != "eval-v2" || len(entry.Seeds) != 2 || len(entry.Datasets) != 1 {
+		t.Fatalf("entry=%#v", entry)
+	}
+	for _, warning := range cfg.Warnings {
+		if strings.Contains(warning, ".from") || strings.Contains(warning, ".to") || strings.Contains(warning, ".files") {
+			t.Fatalf("structured binding produced parser warning: %q", warning)
+		}
+	}
+}
+
+func TestParseRunBindingJSONUsesAgentFriendlyFields(t *testing.T) {
+	input, err := parseRunInputJSON(`{"from":"aexp://project/data/raw","to":"data/raw","revision":"sha256:abc","mode":"copy"}`)
+	if err != nil || input.LogicalURI != "aexp://project/data/raw" || input.TargetPath != "data/raw" || input.Revision != "sha256:abc" {
+		t.Fatalf("input=%#v err=%v", input, err)
+	}
+	output, err := parseRunOutputJSON(`{"from":"results/**","to":"aexp://project/runs/{run_id}/results","role":"metrics","required":true}`)
+	if err != nil || output.SourcePattern != "results/**" || output.LogicalURI == "" || output.Role != "metrics" || !output.Required {
+		t.Fatalf("output=%#v err=%v", output, err)
+	}
+}
+
 func TestResolveSyncExcludesUsesProfileIgnoreAndFlags(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".aexpignore"), []byte(`
@@ -900,6 +1166,9 @@ func TestDatasetSyncExtraArgs(t *testing.T) {
 	withoutVerify := datasetSyncExtraArgs(false)
 	if containsString(withoutVerify, "--checksum") {
 		t.Fatalf("no-verify dataset sync should not include checksum: %#v", withoutVerify)
+	}
+	if containsString(withVerify, "--info=progress2") || containsString(withoutVerify, "--info=progress2") {
+		t.Fatalf("legacy dataset sync must remain compatible with macOS rsync 2.6.9: with=%#v without=%#v", withVerify, withoutVerify)
 	}
 }
 

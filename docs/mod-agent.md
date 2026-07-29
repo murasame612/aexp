@@ -56,8 +56,10 @@ aexp mcp uninstall --target all
 - `aexp_archive_run`
 - `aexp_restore_run`
 - `aexp_delete_run`
-- `aexp_mark_run`
-- `aexp_list_run_marks`
+- `aexp_create_project_journal_entry`
+- `aexp_list_project_journal`
+- `aexp_get_project_journal_entry`
+- `aexp_update_project_journal_next_action`
 - `aexp_exec_history`
 - `aexp_exec_show`
 - `aexp_project_detect`

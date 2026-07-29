@@ -27,6 +27,29 @@ export function mergeLogSnapshot(snapshot: LogLine[], current: LogLine[]): LogLi
   return [...snapshot, ...liveOnly];
 }
 
+export function mergeCursorLogLines(current: LogLine[], incoming: LogLine[], reset = false, limit = 5000): LogLine[] {
+	const base = reset ? [] : current;
+	const cursorLines = new Map<string, LogLine>();
+	const legacy: LogLine[] = [];
+	for (const line of [...base, ...incoming]) {
+		if (line.line_no == null) {
+			legacy.push(line);
+			continue;
+		}
+		cursorLines.set(`${line.source || ""}:${line.line_no}`, line);
+	}
+	const ordered = [...cursorLines.values()].sort((a, b) => (a.line_no || 0) - (b.line_no || 0));
+	return [...legacy, ...ordered].slice(-limit);
+}
+
+export function logCursor(lines: LogLine[]): number {
+	let cursor = 0;
+	for (const line of lines) {
+		if (line.line_no != null && line.line_no > cursor) cursor = line.line_no;
+	}
+	return cursor;
+}
+
 function logLineKey(line: LogLine): string {
   if (line.source || line.line_no != null) return `${line.source || ""}:${line.line_no ?? ""}:${line.content}`;
   return line.content;

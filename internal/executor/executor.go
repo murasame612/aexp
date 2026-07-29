@@ -7,13 +7,17 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	osexec "os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -25,32 +29,46 @@ import (
 
 // SubmitRequest contains the parameters for creating a new run.
 type SubmitRequest struct {
-	ResourceID          string            `json:"resource_id"`
-	Name                string            `json:"name"`
-	Kind                string            `json:"kind"`      // smoke, pilot, formal, ablation
-	GPUIndex            int               `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
-	Force               bool              `json:"force"`     // skip GPU slot lock
-	ForceReason         string            `json:"force_reason"`
-	PreemptRunID        string            `json:"preempt_run_id"`
-	PreemptSave         bool              `json:"preempt_save"`
-	Command             string            `json:"command"`
-	Program             string            `json:"program"` // structured: python, bash, etc.
-	Args                []string          `json:"args"`    // structured args
-	Cwd                 string            `json:"cwd"`
-	CondaEnv            string            `json:"conda_env"`
-	ProjectEnv          string            `json:"project_env"` // "", raw, auto
-	TargetEnv           string            `json:"target_env"`  // intended runtime/app env for setup or repair runs
-	LogPaths            []string          `json:"log_paths"`
-	ArtifactPaths       []string          `json:"artifact_paths"`
-	MetricPaths         []string          `json:"metric_paths"`
-	UIEventsPath        string            `json:"ui_events_path"`
-	EnvVars             map[string]string `json:"env_vars"`
-	CreatedBy           string            `json:"created_by"`
-	RefreshProjectEnv   bool              `json:"refresh_project_env"`
-	AllowEphemeralPaths bool              `json:"allow_ephemeral_paths"`
-	GitSourceDir        string            `json:"git_source_dir"`
-	AllowDirtyGit       bool              `json:"allow_dirty_git"`
-	RecordGitDiff       bool              `json:"record_git_diff"`
+	ResourceID          string                   `json:"resource_id"`
+	ProjectID           string                   `json:"project_id"`
+	TargetID            string                   `json:"target_id"`
+	RecipeName          string                   `json:"recipe_name"`
+	ProjectConfigSHA256 string                   `json:"project_config_sha256"`
+	Datasets            []store.RunDatasetInput  `json:"datasets"`
+	Seeds               []int64                  `json:"seeds"`
+	SplitProtocol       string                   `json:"split_protocol"`
+	EvaluationProtocol  string                   `json:"evaluation_protocol"`
+	Inputs              []store.RunInputBinding  `json:"inputs"`
+	Outputs             []store.RunOutputBinding `json:"outputs"`
+	Name                string                   `json:"name"`
+	Kind                string                   `json:"kind"` // smoke, pilot, formal, ablation
+	TaskRole            string                   `json:"task_role"`
+	EvidenceGrade       string                   `json:"evidence_grade"`
+	ExperimentRole      string                   `json:"experiment_role"`
+	GPUIndex            int                      `json:"gpu_index"` // -2 = none, -1 = all, 0+ = specific GPU
+	Force               bool                     `json:"force"`     // skip GPU slot lock
+	ForceReason         string                   `json:"force_reason"`
+	PreemptRunID        string                   `json:"preempt_run_id"`
+	PreemptSave         bool                     `json:"preempt_save"`
+	Command             string                   `json:"command"`
+	Program             string                   `json:"program"` // structured: python, bash, etc.
+	Args                []string                 `json:"args"`    // structured args
+	Cwd                 string                   `json:"cwd"`
+	CondaEnv            string                   `json:"conda_env"`
+	ProjectEnv          string                   `json:"project_env"` // "", raw, auto
+	TargetEnv           string                   `json:"target_env"`  // intended runtime/app env for setup or repair runs
+	LogPaths            []string                 `json:"log_paths"`
+	ArtifactPaths       []string                 `json:"artifact_paths"`
+	MetricPaths         []string                 `json:"metric_paths"`
+	UIEventsPath        string                   `json:"ui_events_path"`
+	EnvVars             map[string]string        `json:"env_vars"`
+	CreatedBy           string                   `json:"created_by"`
+	RefreshProjectEnv   bool                     `json:"refresh_project_env"`
+	AllowEphemeralPaths bool                     `json:"allow_ephemeral_paths"`
+	GitSourceDir        string                   `json:"git_source_dir"`
+	AllowDirtyGit       bool                     `json:"allow_dirty_git"`
+	RecordGitDiff       bool                     `json:"record_git_diff"`
+	reservedRunID       string
 }
 
 // SubmitOptions controls optional submit behavior.
@@ -60,14 +78,51 @@ type SubmitOptions struct {
 
 // Executor manages experiment runs on remote resources.
 type Executor struct {
-	pool  *SSHPool
-	store store.Store
+	pool          *SSHPool
+	runner        remoteCommandRunner
+	store         store.Store
+	runIO         RunIO
+	launchMu      sync.Mutex
+	launchCancels map[string]context.CancelFunc
+	cancelGrace   time.Duration
+}
+
+// RunIO keeps managed data transport behind the same TransferJob boundary as
+// Dataset and Freeze. Executor owns lifecycle sequencing; the adapter owns data.
+type RunIO interface {
+	EnsureInputs(ctx context.Context, run *store.Run, resource *store.Resource) error
+	FinalizeOutputs(ctx context.Context, run *store.Run, resource *store.Resource) error
+}
+
+type RunPreflightBlocker struct {
+	Code    string `json:"code"`
+	Field   string `json:"field,omitempty"`
+	Message string `json:"message"`
+}
+
+type RunPreflightBlockedError struct {
+	Blockers []RunPreflightBlocker `json:"blockers"`
+}
+
+func (e *RunPreflightBlockedError) Error() string {
+	parts := make([]string, 0, len(e.Blockers))
+	for _, blocker := range e.Blockers {
+		parts = append(parts, blocker.Code+": "+blocker.Message)
+	}
+	return "run preflight blocked: " + strings.Join(parts, "; ")
+}
+
+type remoteCommandRunner interface {
+	Exec(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (string, string, error)
+	ExecStream(ctx context.Context, host string, port int, user string, keyPath string, cmd string, socksProxy string, proxyCommand string) (<-chan string, error)
 }
 
 // NewExecutor creates a new executor.
 func NewExecutor(pool *SSHPool, store store.Store) *Executor {
-	return &Executor{pool: pool, store: store}
+	return &Executor{pool: pool, runner: pool, store: store, launchCancels: make(map[string]context.CancelFunc), cancelGrace: 2 * time.Second}
 }
+
+func (e *Executor) SetRunIO(runIO RunIO) { e.runIO = runIO }
 
 // Pool returns the underlying SSH pool.
 func (e *Executor) Pool() *SSHPool {
@@ -76,12 +131,18 @@ func (e *Executor) Pool() *SSHPool {
 
 // exec is a helper that runs a command on a resource, using its proxy settings if configured.
 func (e *Executor) exec(ctx context.Context, r *store.Resource, cmd string) (string, string, error) {
-	return e.pool.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
+	if e.runner == nil {
+		return "", "", fmt.Errorf("remote command runner is unavailable")
+	}
+	return e.runner.Exec(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
 }
 
 // execStream is a helper that streams a command's stdout from a resource.
 func (e *Executor) execStream(ctx context.Context, r *store.Resource, cmd string) (<-chan string, error) {
-	return e.pool.ExecStream(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
+	if e.runner == nil {
+		return nil, fmt.Errorf("remote command runner is unavailable")
+	}
+	return e.runner.ExecStream(ctx, r.Host, r.Port, r.User, r.AuthRef, WithResourceRemotePath(r, cmd), r.SocksProxy, r.ProxyCommand)
 }
 
 const macOSDefaultRemotePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -119,6 +180,363 @@ func (e *Executor) Submit(ctx context.Context, req SubmitRequest) (*store.Run, e
 	return e.SubmitWithOptions(ctx, req, SubmitOptions{})
 }
 
+// SubmitAsync validates and persists a queued run before any remote probe or
+// environment detection. The detached launch keeps progressing after the HTTP
+// request that created it has returned, so all clients can observe the run
+// immediately through the durable run-change ledger.
+func (e *Executor) SubmitAsync(ctx context.Context, req SubmitRequest, opts SubmitOptions) (*store.Run, error) {
+	run, err := e.prepareSubmissionReservation(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	requestJSON, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode queued launch: %w", err)
+	}
+	job := &store.RunLaunchJob{RunID: run.ID, RequestJSON: string(requestJSON), State: store.RunLaunchQueued}
+	if err := e.store.CreateRunWithLaunchJob(ctx, run, job, bindingsForRequest(req, run.ID)); err != nil {
+		return nil, fmt.Errorf("persist queued run and launch: %w", err)
+	}
+	if opts.OnCreated != nil {
+		opts.OnCreated(run)
+	}
+	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": store.RunStatusQueued})
+	go e.launchPersistedSubmission(run.ID)
+	return run, nil
+}
+
+// ResumePendingSubmissions reclaims launch jobs interrupted by a control-plane
+// restart. Run creation and the launch intent are both durable, while the
+// actual SSH work remains bounded and idempotent by tmux session identity.
+func (e *Executor) ResumePendingSubmissions(ctx context.Context) error {
+	if err := e.store.RequeueInterruptedRunLaunchJobs(ctx); err != nil {
+		return err
+	}
+	jobs, err := e.store.ListPendingRunLaunchJobs(ctx)
+	if err != nil {
+		return err
+	}
+	if err := e.reconcileOrphanedLocalRuns(ctx, jobs); err != nil {
+		return err
+	}
+	for i := range jobs {
+		go e.launchPersistedSubmission(jobs[i].RunID)
+	}
+	return nil
+}
+
+func (e *Executor) reconcileOrphanedLocalRuns(ctx context.Context, jobs []store.RunLaunchJob) error {
+	pending := make(map[string]bool, len(jobs))
+	for _, job := range jobs {
+		pending[job.RunID] = true
+	}
+	for _, status := range []string{store.RunStatusCreated, store.RunStatusQueued, store.RunStatusPreflighting} {
+		runs, err := e.store.ListRuns(ctx, store.RunFilter{Status: status})
+		if err != nil {
+			return err
+		}
+		for i := range runs {
+			run := &runs[i]
+			if pending[run.ID] {
+				continue
+			}
+			reason := strings.TrimSpace(run.FailureReason)
+			if reason == "" {
+				reason = "run has no pending launch job and never reached a remote lifecycle state"
+			}
+			failureKind := strings.TrimSpace(run.FailureKind)
+			if failureKind == "" {
+				failureKind = store.RunFailureLaunchOrphaned
+			}
+			if err := e.markLocalLaunchFailure(ctx, run, failureKind, reason); err != nil {
+				return err
+			}
+			e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_launch_orphaned", nil, map[string]string{"error": reason})
+		}
+	}
+	return nil
+}
+
+func (e *Executor) launchPersistedSubmission(runID string) {
+	claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	job, claimed, err := e.store.ClaimRunLaunchJob(claimCtx, runID)
+	claimCancel()
+	if err != nil || !claimed || job == nil {
+		return
+	}
+	runCtx, runCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	run, runErr := e.store.GetRun(runCtx, runID)
+	runCancel()
+	if runErr != nil || run == nil {
+		if runErr == nil {
+			runErr = fmt.Errorf("queued run %s no longer exists", runID)
+		}
+		e.completeLaunchJob(runID, store.RunLaunchFailed, runErr.Error())
+		return
+	}
+	// A reclaimed job may have crossed the remote launch boundary before the
+	// control plane stopped. Lifecycle state is authoritative: never relaunch a
+	// run that is already observable remotely or terminal.
+	if store.IsRunRefreshableStatus(run.Status) {
+		e.completeLaunchJob(runID, store.RunLaunchSucceeded, "")
+		return
+	}
+	if store.IsRunTerminalStatus(run.Status) {
+		state, message := store.RunLaunchFailed, "run became terminal before launch completed: "+run.Status
+		if run.Status == store.RunStatusSucceeded {
+			state, message = store.RunLaunchSucceeded, ""
+		}
+		e.completeLaunchJob(runID, state, message)
+		return
+	}
+	if run.Status != store.RunStatusQueued && run.Status != store.RunStatusPreflighting {
+		e.completeLaunchJob(runID, store.RunLaunchFailed, "run is not launchable from lifecycle state: "+run.Status)
+		return
+	}
+	var req SubmitRequest
+	if err := json.Unmarshal([]byte(job.RequestJSON), &req); err != nil {
+		e.recordLaunchFailure(runID, "", fmt.Errorf("decode queued launch: %w", err))
+		e.completeLaunchJob(runID, store.RunLaunchFailed, err.Error())
+		return
+	}
+	req.reservedRunID = runID
+	launchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	e.launchMu.Lock()
+	e.launchCancels[runID] = cancel
+	e.launchMu.Unlock()
+	_, launchErr := e.SubmitWithOptions(launchCtx, req, SubmitOptions{})
+	cancel()
+	e.launchMu.Lock()
+	delete(e.launchCancels, runID)
+	e.launchMu.Unlock()
+	state := store.RunLaunchSucceeded
+	lastError := ""
+	if launchErr != nil {
+		state = store.RunLaunchFailed
+		var blocked *RunPreflightBlockedError
+		if errors.As(launchErr, &blocked) {
+			state = store.RunLaunchBlocked
+		}
+		lastError = launchErr.Error()
+		e.recordLaunchFailure(runID, req.CreatedBy, launchErr)
+	}
+	e.completeLaunchJob(runID, state, lastError)
+}
+
+func (e *Executor) completeLaunchJob(runID, state, lastError string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = e.store.CompleteRunLaunchJob(ctx, runID, state, lastError)
+}
+
+// SubmitVisibleWithOptions is the synchronous CLI/MCP submission path. It
+// persists and announces the queued run first, then performs preflight and
+// remote launch in the foreground so the calling process cannot exit halfway
+// through an in-memory goroutine.
+func (e *Executor) SubmitVisibleWithOptions(ctx context.Context, req SubmitRequest, opts SubmitOptions) (*store.Run, error) {
+	run, err := e.reserveSubmission(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if opts.OnCreated != nil {
+		opts.OnCreated(run)
+	}
+	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": store.RunStatusQueued})
+	req.reservedRunID = run.ID
+	launched, err := e.SubmitWithOptions(ctx, req, SubmitOptions{})
+	if err != nil {
+		e.recordLaunchFailure(run.ID, req.CreatedBy, err)
+	}
+	return launched, err
+}
+
+func (e *Executor) recordLaunchFailure(runID, createdBy string, launchErr error) {
+	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	persisted, getErr := e.store.GetRun(persistCtx, runID)
+	if getErr == nil && persisted != nil {
+		persisted.StatusCheckError = launchErr.Error()
+		persisted.StatusSource = store.RunStatusSourceLocalCache
+		var blocked *RunPreflightBlockedError
+		if errors.As(launchErr, &blocked) {
+			_ = e.markLocalLaunchFailure(persistCtx, persisted, store.RunFailurePreflightBlocked, launchErr.Error())
+			e.saveAgentEvent(persistCtx, runID, createdBy, "run_preflight_blocked", nil, map[string]string{"error": launchErr.Error()})
+			return
+		}
+		persisted.FailureKind = store.RunFailureUnknown
+		persisted.FailureReason = launchErr.Error()
+		if !store.IsRunTerminalStatus(persisted.Status) {
+			e.updateRunStatus(persistCtx, persisted, store.RunStatusFailed)
+		} else {
+			updated, err := e.store.UpdateRunFailureMetadata(
+				persistCtx, runID, persisted.Status, persisted.FailureKind,
+				persisted.FailureReason, persisted.StatusSource, persisted.StatusCheckError,
+			)
+			if err != nil {
+				warnRunStatusWrite(runID, persisted.Status, err)
+			} else if !updated {
+				warnRunStatusWrite(runID, persisted.Status, fmt.Errorf("terminal status changed before failure metadata was persisted"))
+			}
+		}
+	}
+	e.saveAgentEvent(persistCtx, runID, createdBy, "create_run_failed", nil, map[string]string{"error": launchErr.Error()})
+}
+
+func (e *Executor) markLocalLaunchFailure(ctx context.Context, run *store.Run, failureKind, reason string) error {
+	expectedStatus := run.Status
+	run.Status = store.RunStatusFailed
+	run.StatusSource = store.RunStatusSourceLocalCache
+	run.StatusCheckError = reason
+	run.FailureKind = failureKind
+	run.FailureReason = reason
+	run.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err != nil {
+		warnRunStatusWrite(run.ID, run.Status, err)
+		return err
+	}
+	if !updated {
+		err := fmt.Errorf("run status changed from %s before launch failure was persisted", expectedStatus)
+		warnRunStatusWrite(run.ID, run.Status, err)
+		return err
+	}
+	return nil
+}
+
+func (e *Executor) reserveSubmission(ctx context.Context, req SubmitRequest) (*store.Run, error) {
+	run, err := e.prepareSubmissionReservation(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.store.CreateRunWithBindings(ctx, run, bindingsForRequest(req, run.ID)); err != nil {
+		return nil, fmt.Errorf("create queued run: %w", err)
+	}
+	return run, nil
+}
+
+func (e *Executor) prepareSubmissionReservation(ctx context.Context, req SubmitRequest) (*store.Run, error) {
+	resource, err := e.store.GetResource(ctx, req.ResourceID)
+	if err != nil {
+		return nil, fmt.Errorf("get resource: %w", err)
+	}
+	if resource == nil {
+		return nil, fmt.Errorf("resource %s not found", req.ResourceID)
+	}
+	if req.ProjectEnv != "" && req.ProjectEnv != ProjectEnvRaw && req.ProjectEnv != ProjectEnvAuto {
+		return nil, fmt.Errorf("project_env must be raw or auto")
+	}
+	if req.Cwd != "" {
+		if err := validateCwd(resource.RootDir, req.Cwd); err != nil {
+			return nil, cwdSandboxError(err, resource.RootDir)
+		}
+	}
+	if !req.AllowEphemeralPaths {
+		if err := validatePersistentRunPaths(resource.RootDir, req.Cwd); err != nil {
+			return nil, err
+		}
+	}
+	if req.Program == "" && req.Command != "" {
+		if err := validateCommand(req.Command); err != nil {
+			return nil, fmt.Errorf("command rejected: %w", err)
+		}
+	}
+	if req.Force && strings.TrimSpace(req.ForceReason) == "" {
+		return nil, fmt.Errorf("--force requires --force-reason so the run record explains why the GPU lock was bypassed")
+	}
+	kind, taskRole, evidenceGrade, experimentRole, err := store.NormalizeRunSemantics(req.Kind, req.TaskRole, req.EvidenceGrade, req.ExperimentRole)
+	if err != nil {
+		return nil, err
+	}
+	gpuIndex := req.GPUIndex
+	if gpuIndex < store.GPUIndexNone {
+		gpuIndex = store.GPUIndexAll
+	}
+	runID := genID("run_")
+	argsJSON, _ := json.Marshal(req.Args)
+	datasetsJSON, _ := json.Marshal(req.Datasets)
+	seedsJSON, _ := json.Marshal(req.Seeds)
+	run := &store.Run{
+		ID: runID, ResourceID: req.ResourceID, ProjectID: strings.TrimSpace(req.ProjectID), TargetID: strings.TrimSpace(req.TargetID),
+		RecipeName: strings.TrimSpace(req.RecipeName), ProjectConfigSHA256: strings.TrimSpace(req.ProjectConfigSHA256),
+		DatasetsJSON: string(datasetsJSON), SeedsJSON: string(seedsJSON), SplitProtocol: strings.TrimSpace(req.SplitProtocol), EvaluationProtocol: strings.TrimSpace(req.EvaluationProtocol), DataFinalizationState: dataFinalizationInitialState(req.Outputs), Name: req.Name, Status: store.RunStatusQueued,
+		Kind: kind, TaskRole: taskRole, EvidenceGrade: evidenceGrade, ExperimentRole: experimentRole,
+		GPUIndex: gpuIndex, Cwd: req.Cwd, Command: commandForDB(req), Program: req.Program, ArgsJSON: string(argsJSON),
+		ProjectEnv: req.ProjectEnv, TargetEnv: strings.TrimSpace(req.TargetEnv), ForceReason: strings.TrimSpace(req.ForceReason),
+		PreemptRunID: strings.TrimSpace(req.PreemptRunID), PreemptSave: req.PreemptSave,
+		TmuxSession: "aexp_" + runID, RemoteRunDir: resource.RootDir + "/.aexp/runs/" + runID, CreatedBy: req.CreatedBy,
+	}
+	return run, nil
+}
+
+func bindingsForRequest(req SubmitRequest, runID string) store.RunBindings {
+	bindings := store.RunBindings{
+		Inputs:  append([]store.RunInputBinding(nil), req.Inputs...),
+		Outputs: append([]store.RunOutputBinding(nil), req.Outputs...),
+	}
+	for index := range bindings.Inputs {
+		bindings.Inputs[index].ID = fmt.Sprintf("%s_input_%d", runID, index)
+		bindings.Inputs[index].RunID = runID
+		bindings.Inputs[index].Ordinal = index
+	}
+	for index := range bindings.Outputs {
+		bindings.Outputs[index].ID = fmt.Sprintf("%s_output_%d", runID, index)
+		bindings.Outputs[index].RunID = runID
+		bindings.Outputs[index].Ordinal = index
+		bindings.Outputs[index].SourcePattern = strings.ReplaceAll(bindings.Outputs[index].SourcePattern, "{run_id}", runID)
+		bindings.Outputs[index].LogicalURI = strings.ReplaceAll(bindings.Outputs[index].LogicalURI, "{run_id}", runID)
+	}
+	return bindings
+}
+
+func dataFinalizationInitialState(outputs []store.RunOutputBinding) string {
+	if len(outputs) == 0 {
+		return store.RunDataFinalizationSkipped
+	}
+	return store.RunDataFinalizationPending
+}
+
+func formalPreflightBlockers(ctx context.Context, registry store.Store, req SubmitRequest, kind string, git gitProvenance) ([]RunPreflightBlocker, error) {
+	if kind != store.RunKindFormal && kind != store.RunKindAblation {
+		return nil, nil
+	}
+	blockers := make([]RunPreflightBlocker, 0)
+	if strings.TrimSpace(req.ProjectID) == "" {
+		blockers = append(blockers, RunPreflightBlocker{Code: "project_missing", Field: "project_id", Message: "formal evidence requires a registered Project"})
+	} else {
+		project, err := registry.GetProjectDefinition(ctx, req.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("load project %s: %w", req.ProjectID, err)
+		}
+		if project == nil {
+			blockers = append(blockers, RunPreflightBlocker{Code: "project_not_registered", Field: "project_id", Message: fmt.Sprintf("Project %s is not registered", req.ProjectID)})
+		}
+	}
+	provenanceBlockers, err := store.CheckRunProvenance(ctx, registry, store.RunProvenance{
+		Datasets:            req.Datasets,
+		Seeds:               req.Seeds,
+		ProjectConfigSHA256: req.ProjectConfigSHA256,
+		GitCommit:           git.Commit,
+		GitDirty:            git.Dirty,
+		GitDiffHash:         git.DiffHash,
+		SplitProtocol:       req.SplitProtocol,
+		EvaluationProtocol:  req.EvaluationProtocol,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, blocker := range provenanceBlockers {
+		blockers = append(blockers, RunPreflightBlocker{
+			Code: blocker.Code, Field: blocker.Field, Message: blocker.Message,
+		})
+	}
+	for index, input := range req.Inputs {
+		if strings.TrimSpace(input.Revision) == "" {
+			blockers = append(blockers, RunPreflightBlocker{Code: "input_revision_missing", Field: "inputs", Message: fmt.Sprintf("input %d (%s) requires a pinned revision", index, input.LogicalURI)})
+		}
+	}
+	return blockers, nil
+}
+
 // SubmitWithOptions creates a run record, invokes OnCreated, then starts it remotely.
 func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opts SubmitOptions) (*store.Run, error) {
 	resource, err := e.store.GetResource(ctx, req.ResourceID)
@@ -130,6 +548,29 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	}
 	if req.ProjectEnv != "" && req.ProjectEnv != ProjectEnvRaw && req.ProjectEnv != ProjectEnvAuto {
 		return nil, fmt.Errorf("project_env must be raw or auto")
+	}
+	reserved := strings.TrimSpace(req.reservedRunID) != ""
+	if reserved {
+		queued, getErr := e.store.GetRun(ctx, req.reservedRunID)
+		if getErr != nil {
+			return nil, fmt.Errorf("load queued run %s: %w", req.reservedRunID, getErr)
+		}
+		if queued == nil {
+			return nil, fmt.Errorf("load queued run %s: not found", req.reservedRunID)
+		}
+		expectedStatus := queued.Status
+		queued.Status = store.RunStatusPreflighting
+		queued.StatusCheckError = ""
+		updated, err := e.store.UpdateRunIfStatus(ctx, queued, expectedStatus)
+		if err != nil {
+			warnRunStatusWrite(queued.ID, queued.Status, err)
+			return nil, fmt.Errorf("mark run preflighting: %w", err)
+		}
+		if !updated {
+			err := fmt.Errorf("run status changed from %s before preflight", expectedStatus)
+			warnRunStatusWrite(queued.ID, queued.Status, err)
+			return nil, fmt.Errorf("mark run preflighting: %w", err)
+		}
 	}
 
 	// Path sandbox: cwd must be under root_dir
@@ -193,28 +634,38 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		}
 	}
 
-	kind := req.Kind
-	if kind == "" {
-		kind = store.RunKindFormal
+	kind, taskRole, evidenceGrade, experimentRole, err := store.NormalizeRunSemantics(req.Kind, req.TaskRole, req.EvidenceGrade, req.ExperimentRole)
+	if err != nil {
+		return nil, err
 	}
 
 	// Generate run ID
-	runID := genID("run_")
+	runID := req.reservedRunID
+	if runID == "" {
+		runID = genID("run_")
+	}
 	tmuxSession := "aexp_" + runID
 	remoteRunDir := resource.RootDir + "/.aexp/runs/" + runID
 
-	shouldRecordGitDiff := req.RecordGitDiff && (req.AllowDirtyGit || !runKindRequiresCleanGit(kind))
+	shouldRecordGitDiff := req.RecordGitDiff && (req.AllowDirtyGit || evidenceGrade != store.RunEvidenceGradeFormal)
 	git, err := captureGitProvenance(ctx, req.GitSourceDir, runID, shouldRecordGitDiff)
 	if err != nil {
 		return nil, err
 	}
-	if git.RepoRoot != "" && git.Dirty && runKindRequiresCleanGit(kind) {
+	if git.RepoRoot != "" && git.Dirty && evidenceGrade == store.RunEvidenceGradeFormal {
 		if !req.AllowDirtyGit {
-			return nil, fmt.Errorf("formal experiment requires a clean Git worktree at %s; commit/stash changes or rerun with --allow-dirty-git --record-git-diff", git.RepoRoot)
+			return nil, &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{Code: "git_dirty", Message: fmt.Sprintf("formal experiment requires a clean Git worktree at %s", git.RepoRoot)}}}
 		}
 		if !req.RecordGitDiff {
-			return nil, fmt.Errorf("dirty formal experiment requires --record-git-diff so the run records a patch reference")
+			return nil, &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{Code: "git_diff_missing", Message: "dirty formal experiment requires a recorded Git diff"}}}
 		}
+	}
+	blockers, err := formalPreflightBlockers(ctx, e.store, req, kind, git)
+	if err != nil {
+		return nil, fmt.Errorf("check formal provenance: %w", err)
+	}
+	if len(blockers) > 0 {
+		return nil, &RunPreflightBlockedError{Blockers: blockers}
 	}
 
 	// Determine conda env
@@ -241,13 +692,26 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		}
 	}
 	req.UIEventsPath = normalizeUIEventsPath(req.UIEventsPath, runID, req.Cwd != "" || projectProfile != nil, remoteRunDir)
+	req.LogPaths = replaceRunIDTokens(req.LogPaths, runID)
+	req.MetricPaths = replaceRunIDTokens(req.MetricPaths, runID)
+	req.ArtifactPaths = replaceRunIDTokens(req.ArtifactPaths, runID)
 
 	// Build env vars (GPU env must be injected before command)
 	envVars := copyMap(req.EnvVars)
 	if gpuIndex >= 0 {
 		envVars["CUDA_VISIBLE_DEVICES"] = fmt.Sprintf("%d", gpuIndex)
 	}
+	outputBase := strings.TrimSpace(req.Cwd)
+	if projectProfile != nil && strings.TrimSpace(projectProfile.ResolvedCwd) != "" {
+		outputBase = strings.TrimSpace(projectProfile.ResolvedCwd)
+	}
+	if outputBase == "" {
+		outputBase = "."
+	}
+	outputDir := path.Join(outputBase, "output", "aexp", runID)
+	envVars["AEXP_RUN_ID"] = runID
 	envVars["AEXP_RUN_DIR"] = remoteRunDir
+	envVars["AEXP_OUTPUT_DIR"] = outputDir
 	if req.UIEventsPath != "" {
 		envVars["AEXP_UI_EVENTS"] = req.UIEventsPath
 	}
@@ -261,42 +725,60 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	metricPathsJSON, _ := json.Marshal(req.MetricPaths)
 	envJSON, _ := json.Marshal(envVars)
 	argsJSON, _ := json.Marshal(req.Args)
+	datasetsJSON, _ := json.Marshal(req.Datasets)
+	seedsJSON, _ := json.Marshal(req.Seeds)
 
 	// Create run record
+	initialLaunchStatus := store.RunStatusStarting
+	if reserved {
+		initialLaunchStatus = store.RunStatusPreflighting
+	}
 	run := &store.Run{
-		ID:                runID,
-		ResourceID:        req.ResourceID,
-		Name:              req.Name,
-		Status:            store.RunStatusStarting,
-		Kind:              kind,
-		GPUIndex:          gpuIndex,
-		Cwd:               req.Cwd,
-		Command:           commandForDB(req),
-		Program:           req.Program,
-		ArgsJSON:          string(argsJSON),
-		CondaEnv:          condaEnv,
-		ProjectEnv:        req.ProjectEnv,
-		TargetEnv:         strings.TrimSpace(req.TargetEnv),
-		ForceReason:       req.ForceReason,
-		PreemptRunID:      req.PreemptRunID,
-		PreemptSave:       req.PreemptSave,
-		GitRepoRoot:       git.RepoRoot,
-		GitRemoteURL:      git.RemoteURL,
-		GitBranch:         git.Branch,
-		GitCommit:         git.Commit,
-		GitDirty:          git.Dirty,
-		GitStatus:         git.Status,
-		GitDiffHash:       git.DiffHash,
-		GitDiffPath:       git.DiffPath,
-		GitAllowDirty:     req.AllowDirtyGit,
-		EnvJSON:           string(envJSON),
-		LogPathsJSON:      string(logPathsJSON),
-		ArtifactPathsJSON: string(artifactPathsJSON),
-		MetricPathsJSON:   string(metricPathsJSON),
-		UIEventsPath:      req.UIEventsPath,
-		TmuxSession:       tmuxSession,
-		RemoteRunDir:      remoteRunDir,
-		CreatedBy:         req.CreatedBy,
+		ID:                    runID,
+		ResourceID:            req.ResourceID,
+		ProjectID:             strings.TrimSpace(req.ProjectID),
+		TargetID:              strings.TrimSpace(req.TargetID),
+		RecipeName:            strings.TrimSpace(req.RecipeName),
+		ProjectConfigSHA256:   strings.TrimSpace(req.ProjectConfigSHA256),
+		DatasetsJSON:          string(datasetsJSON),
+		SeedsJSON:             string(seedsJSON),
+		SplitProtocol:         strings.TrimSpace(req.SplitProtocol),
+		EvaluationProtocol:    strings.TrimSpace(req.EvaluationProtocol),
+		DataFinalizationState: dataFinalizationInitialState(req.Outputs),
+		Name:                  req.Name,
+		Status:                initialLaunchStatus,
+		Kind:                  kind,
+		TaskRole:              taskRole,
+		EvidenceGrade:         evidenceGrade,
+		ExperimentRole:        experimentRole,
+		GPUIndex:              gpuIndex,
+		Cwd:                   req.Cwd,
+		Command:               commandForDB(req),
+		Program:               req.Program,
+		ArgsJSON:              string(argsJSON),
+		CondaEnv:              condaEnv,
+		ProjectEnv:            req.ProjectEnv,
+		TargetEnv:             strings.TrimSpace(req.TargetEnv),
+		ForceReason:           req.ForceReason,
+		PreemptRunID:          req.PreemptRunID,
+		PreemptSave:           req.PreemptSave,
+		GitRepoRoot:           git.RepoRoot,
+		GitRemoteURL:          git.RemoteURL,
+		GitBranch:             git.Branch,
+		GitCommit:             git.Commit,
+		GitDirty:              git.Dirty,
+		GitStatus:             git.Status,
+		GitDiffHash:           git.DiffHash,
+		GitDiffPath:           git.DiffPath,
+		GitAllowDirty:         req.AllowDirtyGit,
+		EnvJSON:               string(envJSON),
+		LogPathsJSON:          string(logPathsJSON),
+		ArtifactPathsJSON:     string(artifactPathsJSON),
+		MetricPathsJSON:       string(metricPathsJSON),
+		UIEventsPath:          req.UIEventsPath,
+		TmuxSession:           tmuxSession,
+		RemoteRunDir:          remoteRunDir,
+		CreatedBy:             req.CreatedBy,
 	}
 	if projectProfile != nil {
 		run.ResolvedEnv = projectProfile.ResolvedEnv
@@ -304,29 +786,64 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 		run.ResolvedCwd = projectProfile.ResolvedCwd
 	}
 
-	if err := e.store.CreateRun(ctx, run); err != nil {
+	if reserved {
+		updated, err := e.store.UpdateRunIfStatus(ctx, run, store.RunStatusPreflighting)
+		if err != nil {
+			warnRunStatusWrite(run.ID, run.Status, err)
+			return nil, fmt.Errorf("update preflighted run: %w", err)
+		}
+		if !updated {
+			err := fmt.Errorf("run status changed before preflight metadata was persisted")
+			warnRunStatusWrite(run.ID, run.Status, err)
+			return nil, fmt.Errorf("update preflighted run: %w", err)
+		}
+	} else if err := e.store.CreateRunWithBindings(ctx, run, bindingsForRequest(req, run.ID)); err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
+	}
+	if len(req.Inputs) > 0 {
+		if e.runIO == nil {
+			return nil, &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{Code: "run_io_unavailable", Message: "managed run input service is unavailable"}}}
+		}
+		if err := e.runIO.EnsureInputs(ctx, run, resource); err != nil {
+			var blocked *RunPreflightBlockedError
+			if errors.As(err, &blocked) {
+				return nil, err
+			}
+			return nil, &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{Code: "input_ensure_failed", Message: err.Error()}}}
+		}
+	}
+	manifest, err := e.persistRunManifest(ctx, run, resource, store.RunManifestDraft, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create run manifest: %w", err)
+	}
+	if err := e.store.SaveArtifactCollection(ctx, &store.ArtifactCollection{RunID: run.ID, State: store.ArtifactCollectionDeclared}); err != nil {
+		return nil, fmt.Errorf("create artifact collection: %w", err)
 	}
 
 	// Write agent event immediately (before attempting SSH)
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "starting"})
-	if opts.OnCreated != nil {
+	if !reserved && opts.OnCreated != nil {
 		opts.OnCreated(run)
 	}
 
 	// Ensure wrapper script is deployed
 	if err := e.ensureWrapper(ctx, resource); err != nil {
-		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.failSubmission(ctx, run, fmt.Errorf("deploy wrapper: %w", err))
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error()})
 		return nil, fmt.Errorf("deploy wrapper: %w", err)
 	}
 
 	// Create remote run dir and write command.sh
-	setupCmd := fmt.Sprintf("mkdir -p %s/logs", remoteRunDir)
+	setupCmd := fmt.Sprintf("mkdir -p %s %s", shellQuote(path.Join(remoteRunDir, "logs")), shellQuote(outputDir))
 	if _, stderr, err := e.exec(ctx, resource, setupCmd); err != nil {
-		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.failSubmission(ctx, run, fmt.Errorf("create run dir: %w%s", err, stderrSuffix(stderr)))
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("create run dir: %w", err)
+	}
+	manifestEncoded := base64Encode([]byte(manifest.ManifestJSON))
+	if _, stderr, err := e.exec(ctx, resource, fmt.Sprintf("printf '%%s' %s | base64 -d > %s/manifest.json", shellQuote(manifestEncoded), shellQuote(remoteRunDir))); err != nil {
+		e.failSubmission(ctx, run, fmt.Errorf("write remote run manifest: %w%s", err, stderrSuffix(stderr)))
+		return nil, fmt.Errorf("write remote run manifest: %w%s", err, stderrSuffix(stderr))
 	}
 
 	// Write command.sh to remote (base64 to avoid all quoting issues)
@@ -334,26 +851,49 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	writeCmd := fmt.Sprintf("echo %s | base64 -d > %s/command.sh && chmod +x %s/command.sh",
 		encoded, remoteRunDir, remoteRunDir)
 	if _, stderr, err := e.exec(ctx, resource, writeCmd); err != nil {
-		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.failSubmission(ctx, run, fmt.Errorf("write command.sh: %w", err))
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("write command.sh: %w", err)
 	}
 
 	// Launch tmux session — no quoting issues, just pass run_dir
-	tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s 'bash ~/.aexp/wrapper.sh %s'",
-		tmuxSession, remoteRunDir)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	expectedStatus := run.Status
+	run.Status = store.RunStatusStarting
+	updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err != nil {
+		warnRunStatusWrite(run.ID, run.Status, err)
+		return nil, fmt.Errorf("mark run starting: %w", err)
+	}
+	if !updated {
+		err := fmt.Errorf("run status changed from %s before remote start", expectedStatus)
+		warnRunStatusWrite(run.ID, run.Status, err)
+		return nil, fmt.Errorf("mark run starting: %w", err)
+	}
+	tmuxCmd := fmt.Sprintf("if [ -f %s/exit_code ] || tmux has-session -t %s >/dev/null 2>&1; then :; else tmux new-session -d -s %s 'bash ~/.aexp/wrapper.sh %s'; fi",
+		remoteRunDir, tmuxSession, tmuxSession, remoteRunDir)
 
 	if _, stderr, err := e.exec(ctx, resource, tmuxCmd); err != nil {
-		e.updateRunStatus(ctx, run, store.RunStatusFailed)
+		e.failSubmission(ctx, run, fmt.Errorf("launch tmux: %w", err))
 		e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run_failed", nil, map[string]string{"error": err.Error(), "stderr": stderr})
 		return nil, fmt.Errorf("launch tmux: %w (stderr: %s)", err, stderr)
 	}
 
 	// Update run to running
 	now := sql.NullTime{Time: time.Now(), Valid: true}
+	expectedStatus = run.Status
 	run.Status = store.RunStatusRunning
 	run.StartedAt = now
-	if err := e.store.UpdateRun(ctx, run); err != nil {
+	updated, err = e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err != nil {
+		warnRunStatusWrite(run.ID, run.Status, err)
+		return nil, fmt.Errorf("update run: %w", err)
+	}
+	if !updated {
+		err := fmt.Errorf("run status changed from %s before running was persisted", expectedStatus)
+		warnRunStatusWrite(run.ID, run.Status, err)
 		return nil, fmt.Errorf("update run: %w", err)
 	}
 
@@ -365,6 +905,17 @@ func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opt
 	e.saveAgentEvent(ctx, run.ID, req.CreatedBy, "create_run", req, map[string]string{"run_id": run.ID, "status": "running"})
 
 	return run, nil
+}
+
+func replaceRunIDTokens(values []string, runID string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := append([]string(nil), values...)
+	for index := range out {
+		out[index] = strings.ReplaceAll(out[index], "{run_id}", runID)
+	}
+	return out
 }
 
 type gitProvenance struct {
@@ -540,24 +1091,257 @@ func (e *Executor) RefreshActiveRuns(ctx context.Context, resourceID string, tim
 
 // RefreshRuns refreshes any control-plane-checkable runs in the provided slice.
 func (e *Executor) RefreshRuns(ctx context.Context, runs []store.Run, timeout time.Duration) ([]store.Run, map[string]bool, error) {
+	return e.RefreshRunsWithConcurrency(ctx, runs, timeout, 4)
+}
+
+type RunProbeFailure struct {
+	ResourceID string   `json:"resource_id"`
+	RunIDs     []string `json:"run_ids"`
+	Code       string   `json:"code"`
+	Message    string   `json:"message"`
+	Retryable  bool     `json:"retryable"`
+}
+
+type RunRefreshError struct {
+	Failures []RunProbeFailure `json:"failures"`
+}
+
+type indexedRun struct {
+	index int
+	run   store.Run
+}
+
+func (e *RunRefreshError) Error() string {
+	if e == nil || len(e.Failures) == 0 {
+		return "run refresh failed"
+	}
+	return fmt.Sprintf("run refresh failed for %d resource probe(s): %s", len(e.Failures), e.Failures[0].Message)
+}
+
+func newRunProbeFailure(resourceID string, runs []store.Run, message string) RunProbeFailure {
+	runIDs := make([]string, 0, len(runs))
+	for i := range runs {
+		if store.IsRunRefreshableStatus(runs[i].Status) {
+			runIDs = append(runIDs, runs[i].ID)
+		}
+	}
+	observationErr := store.RunObservationErrorFrom(message)
+	failure := RunProbeFailure{ResourceID: resourceID, RunIDs: runIDs, Code: "remote_unreachable", Message: message, Retryable: true}
+	if observationErr != nil {
+		failure.Code = observationErr.Code
+		failure.Retryable = observationErr.Retryable
+	}
+	return failure
+}
+
+// RefreshRunsWithConcurrency refreshes runs serially within each resource and
+// bounds the number of resources probed in parallel.
+func (e *Executor) RefreshRunsWithConcurrency(ctx context.Context, runs []store.Run, timeout time.Duration, concurrency int) ([]store.Run, map[string]bool, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	cached := map[string]bool{}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	groups := make(map[string][]indexedRun)
 	for i := range runs {
-		if !store.IsRunRefreshableStatus(runs[i].Status) {
-			continue
+		if store.IsRunRefreshableStatus(runs[i].Status) {
+			groups[runs[i].ResourceID] = append(groups[runs[i].ResourceID], indexedRun{index: i, run: runs[i]})
 		}
-		checkCtx, cancel := context.WithTimeout(ctx, timeout)
-		refreshed, err := e.CheckRunStatus(checkCtx, runs[i].ID)
-		cancel()
-		if err != nil || refreshed == nil {
-			cached[runs[i].ID] = true
-			continue
-		}
-		runs[i] = *refreshed
+	}
+
+	cached := map[string]bool{}
+	var cachedMu sync.Mutex
+	var failureMu sync.Mutex
+	failures := make([]RunProbeFailure, 0)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	for _, group := range groups {
+		group := group
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				cachedMu.Lock()
+				for _, item := range group {
+					cached[item.run.ID] = true
+					run := item.run
+					_ = e.recordRunStatusProbeFailure(ctx, nil, &run, "run probe scheduling failed: "+ctx.Err().Error())
+				}
+				cachedMu.Unlock()
+				failureMu.Lock()
+				failures = append(failures, newRunProbeFailure(group[0].run.ResourceID, groupRunsFromIndexed(group), ctx.Err().Error()))
+				failureMu.Unlock()
+				return
+			}
+			checkCtx, cancel := context.WithTimeout(ctx, timeout)
+			groupRuns := make([]store.Run, 0, len(group))
+			for _, item := range group {
+				groupRuns = append(groupRuns, item.run)
+			}
+			refreshedByID, cachedIDs, refreshErr := e.refreshResourceRunGroup(checkCtx, groupRuns)
+			cancel()
+			if refreshErr != nil {
+				failureMu.Lock()
+				failures = append(failures, refreshErr.Failures...)
+				failureMu.Unlock()
+			}
+			for _, item := range group {
+				refreshed, ok := refreshedByID[item.run.ID]
+				if !ok {
+					cachedMu.Lock()
+					cached[item.run.ID] = true
+					cachedMu.Unlock()
+					continue
+				}
+				runs[item.index] = refreshed
+				if cachedIDs[item.run.ID] {
+					cachedMu.Lock()
+					cached[item.run.ID] = true
+					cachedMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if len(failures) > 0 {
+		return runs, cached, &RunRefreshError{Failures: failures}
 	}
 	return runs, cached, nil
+}
+
+func groupRunsFromIndexed(group []indexedRun) []store.Run {
+	runs := make([]store.Run, 0, len(group))
+	for _, item := range group {
+		runs = append(runs, item.run)
+	}
+	return runs
+}
+
+func (e *Executor) refreshResourceRunGroup(ctx context.Context, runs []store.Run) (map[string]store.Run, map[string]bool, *RunRefreshError) {
+	refreshed := make(map[string]store.Run, len(runs))
+	cached := make(map[string]bool)
+	if len(runs) == 0 {
+		return refreshed, cached, nil
+	}
+	resource, err := e.store.GetResource(ctx, runs[0].ResourceID)
+	if err != nil || resource == nil {
+		message := "resource not found"
+		if err != nil {
+			message = "load resource for run probe: " + err.Error()
+		}
+		failureMessage := message
+		for i := range runs {
+			if store.IsRunRefreshableStatus(runs[i].Status) {
+				if recorded := e.recordProbeFailureReason(ctx, nil, &runs[i], message); recorded != message {
+					failureMessage = recorded
+				}
+			}
+			refreshed[runs[i].ID], cached[runs[i].ID] = runs[i], true
+		}
+		return refreshed, cached, &RunRefreshError{Failures: []RunProbeFailure{newRunProbeFailure(runs[0].ResourceID, runs, failureMessage)}}
+	}
+	for i := range runs {
+		if !store.IsRunRefreshableStatus(runs[i].Status) {
+			refreshed[runs[i].ID] = runs[i]
+		}
+	}
+	script := buildResourceRunProbeScript(runs)
+	if script == "" {
+		return refreshed, cached, nil
+	}
+	out, _, probeErr := e.exec(ctx, resource, script)
+	if probeErr != nil {
+		message := "resource batch control probe failed: " + probeErr.Error()
+		failureMessage := message
+		for i := range runs {
+			run := &runs[i]
+			if store.IsRunRefreshableStatus(run.Status) {
+				if recorded := e.recordProbeFailureReason(ctx, resource, run, message); recorded != message {
+					failureMessage = recorded
+				}
+				cached[run.ID] = true
+			}
+			refreshed[run.ID] = *run
+		}
+		return refreshed, cached, &RunRefreshError{Failures: []RunProbeFailure{newRunProbeFailure(resource.ID, runs, failureMessage)}}
+	}
+	type result struct{ state, value string }
+	results := map[string]result{}
+	failures := make([]RunProbeFailure, 0)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) == 3 {
+			results[parts[0]] = result{state: parts[1], value: parts[2]}
+		}
+	}
+	for i := range runs {
+		run := &runs[i]
+		if !store.IsRunRefreshableStatus(run.Status) {
+			continue
+		}
+		expectedStatus := run.Status
+		probe, ok := results[run.ID]
+		if !ok {
+			message := "resource batch probe returned no result for run"
+			message = e.recordProbeFailureReason(ctx, resource, run, message)
+			failures = append(failures, newRunProbeFailure(resource.ID, []store.Run{*run}, message))
+			cached[run.ID] = true
+			refreshed[run.ID] = *run
+			continue
+		}
+		switch probe.state {
+		case "exit":
+			code, parseErr := strconv.Atoi(strings.TrimSpace(probe.value))
+			if parseErr != nil {
+				message := "invalid remote exit code: " + probe.value
+				message = e.recordProbeFailureReason(ctx, resource, run, message)
+				failures = append(failures, newRunProbeFailure(resource.ID, []store.Run{*run}, message))
+				cached[run.ID] = true
+			} else {
+				markRunStatusObserved(run, store.RunStatusSourceRemoteExitCode)
+				e.finishRun(ctx, resource, run, code, expectedStatus)
+			}
+		case "live":
+			previousStatus := run.Status
+			markRunStatusObserved(run, store.RunStatusSourceRemoteTmux)
+			if run.Status == store.RunStatusSSHUnreachable {
+				run.Status = store.RunStatusRunning
+			}
+			if e.persistRunProbe(ctx, run, expectedStatus) && previousStatus == store.RunStatusSSHUnreachable {
+				e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": run.Status, "reason": "remote batch probe confirmed the tmux session is alive"})
+			}
+		case "gone":
+			markRunStatusObserved(run, store.RunStatusSourceRemoteTmux)
+			e.resolveGoneRun(ctx, resource, run, expectedStatus)
+		default:
+			message := "unexpected resource batch probe state: " + probe.state
+			message = e.recordProbeFailureReason(ctx, resource, run, message)
+			failures = append(failures, newRunProbeFailure(resource.ID, []store.Run{*run}, message))
+			cached[run.ID] = true
+		}
+		refreshed[run.ID] = *run
+	}
+	if len(failures) > 0 {
+		return refreshed, cached, &RunRefreshError{Failures: failures}
+	}
+	return refreshed, cached, nil
+}
+
+func buildResourceRunProbeScript(runs []store.Run) string {
+	var script strings.Builder
+	for i := range runs {
+		run := &runs[i]
+		if !store.IsRunRefreshableStatus(run.Status) {
+			continue
+		}
+		exitFile := shellQuote(path.Join(run.RemoteRunDir, "exit_code"))
+		fmt.Fprintf(&script, "if [ -f %s ]; then c=$(cat %s 2>/dev/null); printf '%%s\\texit\\t%%s\\n' %s \"$c\"; elif tmux has-session -t %s >/dev/null 2>&1; then printf '%%s\\tlive\\t0\\n' %s; else printf '%%s\\tgone\\t1\\n' %s; fi\n", exitFile, exitFile, shellQuote(run.ID), shellQuote(run.TmuxSession), shellQuote(run.ID), shellQuote(run.ID))
+	}
+	return script.String()
 }
 
 func (e *Executor) listActiveRuns(ctx context.Context, resourceID string) ([]store.Run, error) {
@@ -584,6 +1368,7 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	if run == nil {
 		return nil, fmt.Errorf("run %s not found", runID)
 	}
+	expectedStatus := run.Status
 
 	// Only check runs that may still represent a live process.
 	if !store.IsRunRefreshableStatus(run.Status) {
@@ -609,7 +1394,8 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 		// Run has finished
 		code := 0
 		fmt.Sscanf(strings.TrimSpace(out), "%d", &code)
-		e.finishRun(ctx, resource, run, code)
+		markRunStatusObserved(run, store.RunStatusSourceRemoteExitCode)
+		e.finishRun(ctx, resource, run, code, expectedStatus)
 		return run, nil
 	}
 
@@ -626,37 +1412,89 @@ func (e *Executor) CheckRunStatus(ctx context.Context, runID string) (*store.Run
 	}
 
 	if tmuxStatus != 0 {
-		if code, ok := e.wrapperExitCodeFromLogs(ctx, resource, run); ok {
-			e.finishRun(ctx, resource, run, code)
-			return run, nil
+		markRunStatusObserved(run, store.RunStatusSourceRemoteTmux)
+		e.resolveGoneRun(ctx, resource, run, expectedStatus)
+	} else {
+		previousStatus := run.Status
+		markRunStatusObserved(run, store.RunStatusSourceRemoteTmux)
+		if run.Status == store.RunStatusSSHUnreachable {
+			run.Status = store.RunStatusRunning
 		}
-		status := store.RunStatusLost
-		reason := "tmux session is gone and no exit_code was written"
-		if ok, err := e.remoteDirExists(ctx, resource, run.RemoteRunDir); err == nil && !ok {
-			status = store.RunStatusContainerExpired
-			reason = "remote run directory disappeared; the container or temporary mount likely expired"
+		store.RefreshRunStatusFreshness(run, time.Now())
+		persisted := e.persistRunProbe(ctx, run, expectedStatus)
+		if persisted && previousStatus == store.RunStatusSSHUnreachable {
+			e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": run.Status, "reason": "remote control channel recovered and tmux session is alive"})
 		}
-		if status == store.RunStatusLost {
-			if snapshot, err := e.writeLastRunSnapshot(ctx, resource, run, status, reason); err == nil && snapshot.EventsCached {
-				status = store.RunStatusLostButEventsCached
-				reason += "; local structured event cache is available"
-			}
-		}
-		e.markRunStatus(ctx, resource, run, status, reason)
-	} else if run.Status == store.RunStatusSSHUnreachable {
-		run.Status = store.RunStatusRunning
-		e.store.UpdateRun(ctx, run)
-		e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": run.Status, "reason": "remote control channel recovered and tmux session is alive"})
 	}
 
 	return run, nil
 }
 
-func (e *Executor) recordRunStatusProbeFailure(ctx context.Context, resource *store.Resource, run *store.Run, reason string) {
-	_, _ = e.writeLastRunSnapshot(ctx, resource, run, run.Status, reason)
+func (e *Executor) resolveGoneRun(ctx context.Context, resource *store.Resource, run *store.Run, expectedStatus string) {
+	if code, ok := e.wrapperExitCodeFromLogs(ctx, resource, run); ok {
+		run.StatusSource = store.RunStatusSourceRemoteProbe
+		e.finishRun(ctx, resource, run, code, expectedStatus)
+		return
+	}
+	status := store.RunStatusLost
+	reason := "tmux session is gone and no exit_code was written"
+	if ok, err := e.remoteDirExists(ctx, resource, run.RemoteRunDir); err == nil && !ok {
+		status = store.RunStatusContainerExpired
+		reason = "remote run directory disappeared; the container or temporary mount likely expired"
+	}
+	if status == store.RunStatusLost {
+		if snapshot, err := e.writeLastRunSnapshot(ctx, resource, run, status, reason); err == nil && snapshot.EventsCached {
+			status = store.RunStatusLostButEventsCached
+			reason += "; local structured event cache is available"
+		}
+	}
+	e.markRunStatus(ctx, resource, run, status, reason, expectedStatus)
 }
 
-func (e *Executor) markRunStatus(ctx context.Context, resource *store.Resource, run *store.Run, status string, reason string) {
+func (e *Executor) recordRunStatusProbeFailure(ctx context.Context, resource *store.Resource, run *store.Run, reason string) error {
+	now := time.Now()
+	run.StatusSource = store.RunStatusSourceLocalCache
+	run.StatusCheckedAt = &now
+	run.StatusCheckError = reason
+	store.RefreshRunStatusFreshness(run, now)
+	persist := func(persistCtx context.Context) (bool, error) {
+		return e.store.UpdateRunStatusObservation(persistCtx, run.ID, run.Status, store.RunStatusObservation{Source: run.StatusSource, CheckedAt: now, Error: reason})
+	}
+	persisted, err := persist(ctx)
+	if err != nil && ctx.Err() != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		persisted, err = persist(persistCtx)
+	}
+	if err != nil {
+		return err
+	}
+	if !persisted {
+		return fmt.Errorf("run %s lifecycle changed before probe failure could be recorded", run.ID)
+	}
+	if resource != nil {
+		_, _ = e.writeLastRunSnapshot(ctx, resource, run, run.Status, reason)
+	}
+	return nil
+}
+
+func (e *Executor) recordProbeFailureReason(ctx context.Context, resource *store.Resource, run *store.Run, reason string) string {
+	if err := e.recordRunStatusProbeFailure(ctx, resource, run, reason); err != nil {
+		return reason + "; persist observation: " + err.Error()
+	}
+	return reason
+}
+
+func markRunStatusObserved(run *store.Run, source string) {
+	now := time.Now()
+	run.StatusSource = source
+	run.StatusObservedAt = &now
+	run.StatusCheckedAt = &now
+	run.StatusCheckError = ""
+	store.RefreshRunStatusFreshness(run, now)
+}
+
+func (e *Executor) markRunStatus(ctx context.Context, resource *store.Resource, run *store.Run, status string, reason string, expectedStatus string) {
 	if run.Status != status {
 		run.Status = status
 	}
@@ -665,10 +1503,263 @@ func (e *Executor) markRunStatus(ctx context.Context, resource *store.Resource, 
 		run.FinishedAt = now
 	}
 	_, _ = e.writeLastRunSnapshot(ctx, resource, run, status, reason)
-	e.store.UpdateRun(ctx, run)
+	if !e.persistRunProbe(ctx, run, expectedStatus) {
+		return
+	}
 	e.saveAgentEvent(ctx, run.ID, run.CreatedBy, "run_status_changed", map[string]string{"run_id": run.ID}, map[string]string{"status": status, "reason": reason})
 	if store.IsRunTerminalStatus(status) && resource != nil {
 		e.checkResourceIdle(ctx, resource)
+		go e.finalizeRunEvidence(run.ID)
+	}
+}
+
+func (e *Executor) persistRunProbe(ctx context.Context, run *store.Run, expectedStatus string) bool {
+	updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err == nil && updated {
+		return true
+	}
+	if err != nil {
+		warnRunStatusWrite(run.ID, run.Status, err)
+	} else {
+		warnRunStatusWrite(run.ID, run.Status, fmt.Errorf("expected current status %s", expectedStatus))
+	}
+	if latest, getErr := e.store.GetRun(ctx, run.ID); getErr == nil && latest != nil {
+		*run = *latest
+	}
+	return false
+}
+
+func warnRunStatusWrite(runID, targetStatus string, err error) {
+	slog.Warn("persist run status failed", "run_id", runID, "target_status", targetStatus, "error", err)
+}
+
+const runManifestSchemaVersion = 2
+
+func (e *Executor) persistRunManifest(ctx context.Context, run *store.Run, resource *store.Resource, state string, artifacts []store.Artifact) (*store.RunManifest, error) {
+	inputs, _ := e.store.ListRunInputBindings(ctx, run.ID)
+	outputs, _ := e.store.ListRunOutputBindings(ctx, run.ID)
+	env := map[string]string{}
+	_ = json.Unmarshal([]byte(run.EnvJSON), &env)
+	for key, value := range env {
+		upper := strings.ToUpper(key)
+		if strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") || strings.HasSuffix(upper, "_KEY") {
+			env[key] = "[redacted]"
+		} else {
+			env[key] = value
+		}
+	}
+	payload := map[string]interface{}{
+		"schema_version": runManifestSchemaVersion,
+		"run": map[string]interface{}{
+			"id": run.ID, "project_id": run.ProjectID, "target_id": run.TargetID, "recipe_name": run.RecipeName,
+			"status": run.Status, "task_role": run.TaskRole, "evidence_grade": run.EvidenceGrade, "experiment_role": run.ExperimentRole,
+			"created_at": run.CreatedAt, "started_at": run.StartedAt, "finished_at": run.FinishedAt, "exit_code": run.ExitCode,
+			"failure_kind": run.FailureKind, "failure_reason": run.FailureReason,
+			"data_finalization_state": run.DataFinalizationState, "data_finalization_error": run.DataFinalizationError, "data_finalization_updated_at": run.DataFinalizationUpdatedAt,
+		},
+		"execution": map[string]interface{}{
+			"command": run.Command, "program": run.Program, "args_json": run.ArgsJSON, "cwd": run.Cwd,
+			"resolved_cwd": run.ResolvedCwd, "resolved_env": run.ResolvedEnv, "resolved_python": run.ResolvedPython,
+			"environment": env,
+		},
+		"git": map[string]interface{}{
+			"repo_root": run.GitRepoRoot, "remote_url": run.GitRemoteURL, "branch": run.GitBranch, "commit": run.GitCommit,
+			"dirty": run.GitDirty, "status": run.GitStatus, "diff_hash": run.GitDiffHash, "diff_path": run.GitDiffPath,
+		},
+		"declared":   map[string]interface{}{"logs_json": run.LogPathsJSON, "metrics_json": run.MetricPathsJSON, "artifacts_json": run.ArtifactPathsJSON, "ui_events_path": run.UIEventsPath},
+		"provenance": map[string]interface{}{"project_config_sha256": run.ProjectConfigSHA256, "datasets_json": run.DatasetsJSON, "seeds_json": run.SeedsJSON, "split_protocol": run.SplitProtocol, "evaluation_protocol": run.EvaluationProtocol},
+		"inputs":     inputs,
+		"outputs":    outputs,
+		"artifacts":  artifacts,
+	}
+	if resource != nil {
+		payload["resource"] = map[string]interface{}{"id": resource.ID, "name": resource.Name, "type": resource.Type, "os_type": resource.OSType, "gpu_indices": resource.GPUIndices}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(raw)
+	manifest := &store.RunManifest{
+		RunID: run.ID, SchemaVersion: runManifestSchemaVersion, State: state, ManifestJSON: string(raw), SHA256: "sha256:" + hex.EncodeToString(digest[:]), Completeness: store.RunManifestCompletenessCurrent,
+	}
+	if existing, _ := e.store.GetRunManifest(ctx, run.ID); existing != nil {
+		manifest.CreatedAt = existing.CreatedAt
+	}
+	if state == store.RunManifestFinal {
+		now := time.Now()
+		manifest.FinalizedAt = &now
+	}
+	if err := e.store.SaveRunManifest(ctx, manifest); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+type remoteArtifactInventory struct {
+	Files  []remoteArtifactFile `json:"files"`
+	Errors []string             `json:"errors"`
+}
+
+type remoteArtifactFile struct {
+	Path     string  `json:"path"`
+	Relative string  `json:"relative_path"`
+	Size     int64   `json:"size"`
+	MTime    float64 `json:"mtime"`
+	SHA256   string  `json:"sha256"`
+	Mime     string  `json:"mime"`
+}
+
+// CollectArtifacts discovers declared artifact globs on the remote target and
+// indexes metadata/checksums locally. It never downloads artifact contents.
+func (e *Executor) CollectArtifacts(ctx context.Context, runID string) (*store.ArtifactCollection, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return nil, firstError(err, fmt.Errorf("run %s not found", runID))
+	}
+	collection := &store.ArtifactCollection{RunID: run.ID, State: store.ArtifactCollectionDiscovering}
+	now := time.Now()
+	collection.StartedAt = &now
+	_ = e.store.SaveArtifactCollection(ctx, collection)
+	fail := func(err error) (*store.ArtifactCollection, error) {
+		finished := time.Now()
+		collection.State, collection.Error, collection.FinishedAt = store.ArtifactCollectionFailed, err.Error(), &finished
+		_ = e.store.SaveArtifactCollection(context.Background(), collection)
+		return collection, err
+	}
+	resource, err := e.store.GetResource(ctx, run.ResourceID)
+	if err != nil || resource == nil {
+		return fail(firstError(err, fmt.Errorf("resource %s not found", run.ResourceID)))
+	}
+	patterns := []string{}
+	if strings.TrimSpace(run.ArtifactPathsJSON) != "" {
+		if err := json.Unmarshal([]byte(run.ArtifactPathsJSON), &patterns); err != nil {
+			return fail(fmt.Errorf("invalid artifact paths: %w", err))
+		}
+	}
+	if outputs, listErr := e.store.ListRunOutputBindings(ctx, run.ID); listErr == nil {
+		seen := make(map[string]bool, len(patterns))
+		for _, pattern := range patterns {
+			seen[pattern] = true
+		}
+		for _, output := range outputs {
+			if pattern := strings.TrimSpace(output.SourcePattern); pattern != "" && !seen[pattern] {
+				patterns = append(patterns, pattern)
+				seen[pattern] = true
+			}
+		}
+	}
+	if len(patterns) == 0 {
+		_ = e.store.SaveArtifacts(ctx, run.ID, nil)
+		finished := time.Now()
+		collection.State, collection.FinishedAt = store.ArtifactCollectionIndexed, &finished
+		_ = e.store.SaveArtifactCollection(ctx, collection)
+		return collection, nil
+	}
+	root := firstNonEmpty(run.ResolvedCwd, run.Cwd, run.RemoteRunDir)
+	patternsRaw, _ := json.Marshal(patterns)
+	python := `import base64,glob,hashlib,json,mimetypes,os,sys
+root=os.path.realpath(base64.b64decode(sys.argv[1]).decode())
+patterns=json.loads(base64.b64decode(sys.argv[2]).decode())
+files=[]; errors=[]; seen=set(); max_files=100000
+for pattern in patterns:
+  candidate=pattern if os.path.isabs(pattern) else os.path.join(root,pattern)
+  for value in glob.glob(candidate,recursive=True):
+    try:
+      real=os.path.realpath(value)
+      if os.path.commonpath([root,real]) != root: errors.append('outside root: '+value); continue
+      if real in seen or not os.path.isfile(real): continue
+      seen.add(real)
+      if len(files)>=max_files: errors.append('artifact limit reached'); break
+      stat=os.stat(real); digest=''
+      h=hashlib.sha256()
+      with open(real,'rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576),b''): h.update(chunk)
+      digest='sha256:'+h.hexdigest()
+      files.append({'path':real,'relative_path':os.path.relpath(real,root),'size':stat.st_size,'mtime':stat.st_mtime,'sha256':digest,'mime':mimetypes.guess_type(real)[0] or ''})
+    except Exception as exc: errors.append(value+': '+str(exc))
+print(json.dumps({'files':files,'errors':errors},separators=(',',':')))`
+	cmd := fmt.Sprintf("PY=$(command -v python3 || command -v python) && test -n \"$PY\" && \"$PY\" -c %s %s %s", shellQuote(python), shellQuote(base64.StdEncoding.EncodeToString([]byte(root))), shellQuote(base64.StdEncoding.EncodeToString(patternsRaw)))
+	out, stderr, err := e.exec(ctx, resource, cmd)
+	if err != nil {
+		return fail(fmt.Errorf("artifact discovery failed: %w%s", err, stderrSuffix(stderr)))
+	}
+	var inventory remoteArtifactInventory
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &inventory); err != nil {
+		return fail(fmt.Errorf("decode artifact inventory: %w", err))
+	}
+	discovered := time.Now()
+	artifacts := make([]store.Artifact, 0, len(inventory.Files))
+	for _, file := range inventory.Files {
+		digest := sha256.Sum256([]byte(run.ID + "\x00" + file.Relative))
+		artifact := store.Artifact{ID: "artifact_" + hex.EncodeToString(digest[:8]), RunID: run.ID, Path: file.Path, RelativePath: file.Relative, SourceURI: "ssh://" + resource.ID + "/" + strings.TrimPrefix(file.Path, "/"), Type: "file", Role: inferArtifactRole(file.Relative), Mime: file.Mime, Size: file.Size, SHA256: file.SHA256, CollectionState: store.ArtifactCollectionIndexed, DiscoveredAt: discovered, ModifiedAt: time.Unix(0, int64(file.MTime*float64(time.Second)))}
+		artifacts = append(artifacts, artifact)
+		collection.TotalBytes += file.Size
+	}
+	if err := e.store.SaveArtifacts(ctx, run.ID, artifacts); err != nil {
+		return fail(err)
+	}
+	collection.FileCount = len(artifacts)
+	collection.State = store.ArtifactCollectionIndexed
+	if len(inventory.Errors) > 0 {
+		collection.State = store.ArtifactCollectionPartial
+		collection.Error = strings.Join(inventory.Errors, "; ")
+	}
+	finished := time.Now()
+	collection.FinishedAt = &finished
+	if err := e.store.SaveArtifactCollection(ctx, collection); err != nil {
+		return collection, err
+	}
+	return collection, nil
+}
+
+func inferArtifactRole(relative string) string {
+	value := strings.ToLower(relative)
+	switch {
+	case strings.Contains(value, "checkpoint") || strings.HasSuffix(value, ".ckpt") || strings.HasSuffix(value, ".pt") || strings.HasSuffix(value, ".pth"):
+		return "checkpoint"
+	case strings.Contains(value, "metric") || strings.HasSuffix(value, ".csv"):
+		return "metric"
+	case strings.HasSuffix(value, ".png") || strings.HasSuffix(value, ".jpg") || strings.HasSuffix(value, ".jpeg") || strings.HasSuffix(value, ".svg"):
+		return "plot"
+	case strings.HasSuffix(value, ".md") || strings.HasSuffix(value, ".pdf") || strings.Contains(value, "report"):
+		return "report"
+	default:
+		return "other"
+	}
+}
+
+func firstError(err error, fallback error) error {
+	if err != nil {
+		return err
+	}
+	return fallback
+}
+
+func (e *Executor) finalizeRunEvidence(runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	_, _ = e.CollectArtifacts(ctx, runID)
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return
+	}
+	resource, _ := e.store.GetResource(ctx, run.ResourceID)
+	if run.Status == store.RunStatusSucceeded && e.runIO != nil {
+		_ = e.runIO.FinalizeOutputs(ctx, run, resource)
+		run, _ = e.store.GetRun(ctx, runID)
+		if run == nil {
+			return
+		}
+	}
+	artifacts, _ := e.store.ListArtifacts(ctx, run.ID)
+	manifest, err := e.persistRunManifest(ctx, run, resource, store.RunManifestFinal, artifacts)
+	if err != nil {
+		return
+	}
+	if resource != nil && run.RemoteRunDir != "" {
+		encoded := base64Encode([]byte(manifest.ManifestJSON))
+		_, _, _ = e.exec(ctx, resource, fmt.Sprintf("printf '%%s' %s | base64 -d > %s/manifest.json", shellQuote(encoded), shellQuote(run.RemoteRunDir)))
 	}
 }
 
@@ -734,7 +1825,7 @@ func (e *Executor) writeLastRunSnapshot(ctx context.Context, resource *store.Res
 	if strings.TrimSpace(run.UIEventsPath) != "" && resource != nil {
 		if remoteLines, err := e.GetLogFileSnapshot(ctx, run.ID, run.UIEventsPath, 1000); err == nil {
 			lines = remoteLines
-			if cachePath, cacheErr := eventcache.Write(run.ID, eventCacheLinesFromLogLines(remoteLines)); cacheErr == nil {
+			if cachePath, cacheErr := eventcache.WriteSnapshot(run.ID, eventCacheLinesFromLogLines(remoteLines)); cacheErr == nil {
 				snapshot.EventCachePath = cachePath
 			}
 		}
@@ -936,7 +2027,7 @@ func parseRemoteStatusCode(out string) (int, bool) {
 	return 0, false
 }
 
-func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run *store.Run, code int) {
+func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run *store.Run, code int, expectedStatus string) {
 	run.ExitCode = sql.NullInt64{Int64: int64(code), Valid: true}
 	now := sql.NullTime{Time: time.Now(), Valid: true}
 	run.FinishedAt = now
@@ -952,8 +2043,11 @@ func (e *Executor) finishRun(ctx context.Context, resource *store.Resource, run 
 		}
 		run.FailureKind, run.FailureReason = classifyRunFailure(code, stdoutTail, stderrTail)
 	}
-	e.store.UpdateRun(ctx, run)
+	if !e.persistRunProbe(ctx, run, expectedStatus) {
+		return
+	}
 	e.checkResourceIdle(ctx, resource)
+	go e.finalizeRunEvidence(run.ID)
 }
 
 func classifyRunFailure(exitCode int, stdoutTail, stderrTail string) (string, string) {
@@ -1030,6 +2124,15 @@ func parseWrapperExitCode(text string) (int, bool) {
 
 // TailLogs returns a channel that streams log lines from a run.
 func (e *Executor) TailLogs(ctx context.Context, runID string, source string, lastN int) (<-chan LogLine, error) {
+	return e.tailLogs(ctx, runID, source, lastN, 0, false)
+}
+
+// TailLogsAfter streams from the first logical line after an absolute cursor.
+func (e *Executor) TailLogsAfter(ctx context.Context, runID string, source string, afterLine int) (<-chan LogLine, error) {
+	return e.tailLogs(ctx, runID, source, 0, afterLine, true)
+}
+
+func (e *Executor) tailLogs(ctx context.Context, runID string, source string, lastN, afterLine int, useCursor bool) (<-chan LogLine, error) {
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {
 		return nil, err
@@ -1055,6 +2158,9 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 	}
 
 	cmd := fmt.Sprintf("tail -F -n %d %s", lastN, shellQuote(logFile))
+	if useCursor {
+		cmd = fmt.Sprintf("tail -F -n +%d %s", afterLine+1, shellQuote(logFile))
+	}
 	ch, err := e.execStream(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
@@ -1063,7 +2169,7 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 	logCh := make(chan LogLine, 64)
 	go func() {
 		defer close(logCh)
-		lineNo := 0
+		lineNo := afterLine
 		for line := range ch {
 			if line == "" {
 				continue
@@ -1082,6 +2188,15 @@ func (e *Executor) TailLogs(ctx context.Context, runID string, source string, la
 
 // TailLogFile streams a project log file from a run. Relative paths resolve from run.Cwd.
 func (e *Executor) TailLogFile(ctx context.Context, runID string, logPath string, lastN int) (<-chan LogLine, error) {
+	return e.tailLogFile(ctx, runID, logPath, lastN, 0, false)
+}
+
+// TailLogFileAfter streams a project log file after an absolute line cursor.
+func (e *Executor) TailLogFileAfter(ctx context.Context, runID string, logPath string, afterLine int) (<-chan LogLine, error) {
+	return e.tailLogFile(ctx, runID, logPath, 0, afterLine, true)
+}
+
+func (e *Executor) tailLogFile(ctx context.Context, runID string, logPath string, lastN, afterLine int, useCursor bool) (<-chan LogLine, error) {
 	run, resource, logFile, label, err := e.resolveRunLogFile(ctx, runID, logPath)
 	if err != nil {
 		return nil, err
@@ -1093,6 +2208,9 @@ func (e *Executor) TailLogFile(ctx context.Context, runID string, logPath string
 	}
 
 	cmd := fmt.Sprintf("tail -F -n %d %s", lastN, shellQuote(logFile))
+	if useCursor {
+		cmd = fmt.Sprintf("tail -F -n +%d %s", afterLine+1, shellQuote(logFile))
+	}
 	ch, err := e.execStream(ctx, resource, cmd)
 	if err != nil {
 		return nil, err
@@ -1101,7 +2219,7 @@ func (e *Executor) TailLogFile(ctx context.Context, runID string, logPath string
 	logCh := make(chan LogLine, 64)
 	go func() {
 		defer close(logCh)
-		lineNo := 0
+		lineNo := afterLine
 		for line := range ch {
 			if line == "" {
 				continue
@@ -1178,6 +2296,62 @@ tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | tail -n %d`, shellQuote(logFile), lastN
 	return lines, nil
 }
 
+// GetLogSnapshotAfter returns the next bounded page after an absolute logical
+// line cursor. Unlike a tail snapshot this can fill gaps older than the UI's
+// in-memory window. reset is true when the file was truncated below afterLine.
+func (e *Executor) GetLogSnapshotAfter(ctx context.Context, runID, source string, afterLine, limit int) ([]LogLine, int, bool, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return nil, 0, false, firstError(err, fmt.Errorf("run %s not found", runID))
+	}
+	resource, err := e.store.GetResource(ctx, run.ResourceID)
+	if err != nil || resource == nil {
+		return nil, 0, false, firstError(err, fmt.Errorf("resource not found"))
+	}
+	if source == "" {
+		source = "stdout"
+	}
+	logFile := path.Join(run.RemoteRunDir, "logs", source+".log")
+	return e.getRemoteLogSnapshotAfter(ctx, resource, run.ID, source, logFile, afterLine, limit, false)
+}
+
+func (e *Executor) GetLogFileSnapshotAfter(ctx context.Context, runID, logPath string, afterLine, limit int) ([]LogLine, int, bool, error) {
+	run, resource, logFile, label, err := e.resolveRunLogFile(ctx, runID, logPath)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return e.getRemoteLogSnapshotAfter(ctx, resource, run.ID, label, logFile, afterLine, limit, true)
+}
+
+func (e *Executor) getRemoteLogSnapshotAfter(ctx context.Context, resource *store.Resource, runID, source, logFile string, afterLine, limit int, missingIsError bool) ([]LogLine, int, bool, error) {
+	if afterLine < 0 {
+		afterLine = 0
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	missing := "exit 0"
+	if missingIsError {
+		missing = `printf '\001AEXP_LOG_MISSING\t%s\n' "$LOG_FILE"; exit 0`
+	}
+	cmd := fmt.Sprintf(`LOG_FILE=%s
+if [ ! -f "$LOG_FILE" ]; then %s; fi
+total=$(tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ')
+printf '\001AEXP_TOTAL_LINES\t%%s\n' "$total"
+if [ "$total" -lt %d ]; then start=1; else start=%d; fi
+printf '\001AEXP_START_LINE\t%%s\n' "$start"
+tr '\r' '\n' < "$LOG_FILE" 2>/dev/null | sed -n "${start},$ p" | head -n %d`, shellQuote(logFile), missing, afterLine, afterLine+1, limit)
+	out, _, err := e.exec(ctx, resource, cmd)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if strings.HasPrefix(out, "\x01AEXP_LOG_MISSING\t") {
+		return nil, 0, false, fmt.Errorf("log file not found: %s", strings.TrimSpace(strings.TrimPrefix(out, "\x01AEXP_LOG_MISSING\t")))
+	}
+	lines, total, err := parseLogSnapshotWithTotal(runID, source, out)
+	return lines, total, total < afterLine, err
+}
+
 // GetLogFileSnapshot returns the last N lines from a project log file.
 func (e *Executor) GetLogFileSnapshot(ctx context.Context, runID string, logPath string, lastN int) ([]LogLine, error) {
 	run, resource, logFile, label, err := e.resolveRunLogFile(ctx, runID, logPath)
@@ -1242,14 +2416,26 @@ func (e *Executor) resolveRunLogFile(ctx context.Context, runID string, logPath 
 }
 
 func parseLogSnapshot(runID string, source string, out string) ([]LogLine, error) {
+	lines, _, err := parseLogSnapshotWithTotal(runID, source, out)
+	return lines, err
+}
+
+func parseLogSnapshotWithTotal(runID string, source string, out string) ([]LogLine, int, error) {
 	totalLines := 0
+	explicitStart := 0
 	contentLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(contentLines) > 0 && strings.HasPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t") {
 		fmt.Sscanf(strings.TrimPrefix(contentLines[0], "\x01AEXP_TOTAL_LINES\t"), "%d", &totalLines)
 		contentLines = contentLines[1:]
 	}
+	if len(contentLines) > 0 && strings.HasPrefix(contentLines[0], "\x01AEXP_START_LINE\t") {
+		fmt.Sscanf(strings.TrimPrefix(contentLines[0], "\x01AEXP_START_LINE\t"), "%d", &explicitStart)
+		contentLines = contentLines[1:]
+	}
 	startLine := 1
-	if totalLines > len(contentLines) {
+	if explicitStart > 0 {
+		startLine = explicitStart
+	} else if totalLines > len(contentLines) {
 		startLine = totalLines - len(contentLines) + 1
 	}
 
@@ -1265,7 +2451,7 @@ func parseLogSnapshot(runID string, source string, out string) ([]LogLine, error
 			Content: content,
 		})
 	}
-	return lines, nil
+	return lines, totalLines, nil
 }
 
 func (e *Executor) preemptRunBeforeSubmit(ctx context.Context, runID, resourceID string) error {
@@ -1297,6 +2483,37 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	if run == nil {
 		return fmt.Errorf("run %s not found", runID)
 	}
+	e.launchMu.Lock()
+	launchCancel := e.launchCancels[runID]
+	e.launchMu.Unlock()
+	if run.Status == store.RunStatusCreated || run.Status == store.RunStatusQueued || run.Status == store.RunStatusPreflighting || (run.Status == store.RunStatusStarting && launchCancel != nil) {
+		expectedStatus := run.Status
+		cancel := launchCancel
+		if cancel != nil {
+			cancel()
+		}
+		run.Status = store.RunStatusCancelled
+		run.StatusCheckError = "launch cancelled before remote process became authoritative"
+		run.FinishedAt = sql.NullTime{Time: time.Now(), Valid: true}
+		updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			current, reloadErr := e.store.GetRun(ctx, runID)
+			if reloadErr != nil {
+				return reloadErr
+			}
+			if current != nil && isFinishedRunStatus(current.Status) {
+				go e.finalizeRunEvidence(current.ID)
+				return fmt.Errorf("run %s already finished (status: %s)", runID, current.Status)
+			}
+			return fmt.Errorf("run %s changed before cancellation", runID)
+		}
+		_ = e.store.CompleteRunLaunchJob(ctx, runID, store.RunLaunchFailed, "cancelled")
+		e.saveAgentEvent(ctx, runID, run.CreatedBy, "stop_run", map[string]string{"run_id": runID}, map[string]string{"status": store.RunStatusCancelled, "stage": "preflight"})
+		return nil
+	}
 	if store.IsRunRefreshableStatus(run.Status) {
 		if refreshed, refreshErr := e.CheckRunStatus(ctx, runID); refreshErr == nil && refreshed != nil {
 			run = refreshed
@@ -1324,7 +2541,11 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 	}
 
 	// Wait a moment, then check
-	time.Sleep(2 * time.Second)
+	grace := e.cancelGrace
+	if grace <= 0 {
+		grace = 2 * time.Second
+	}
+	time.Sleep(grace)
 
 	// Check if session is gone
 	out, _, _ := e.exec(ctx, resource,
@@ -1336,17 +2557,35 @@ func (e *Executor) Cancel(ctx context.Context, runID string) error {
 			fmt.Sprintf("tmux kill-session -t %s 2>/dev/null", run.TmuxSession))
 	}
 
-	// Update run
+	// The remote command may have completed naturally while cancellation was in
+	// flight. Only the lifecycle state observed before SSH is allowed to become
+	// cancelled; a concurrent terminal state wins.
+	expectedStatus := run.Status
 	run.Status = store.RunStatusCancelled
 	now := sql.NullTime{Time: time.Now(), Valid: true}
 	run.FinishedAt = now
-	e.store.UpdateRun(ctx, run)
+	updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		current, reloadErr := e.store.GetRun(ctx, runID)
+		if reloadErr != nil {
+			return reloadErr
+		}
+		if current != nil && isFinishedRunStatus(current.Status) {
+			go e.finalizeRunEvidence(current.ID)
+			return fmt.Errorf("run %s already finished (status: %s)", runID, current.Status)
+		}
+		return fmt.Errorf("run %s changed before cancellation", runID)
+	}
 
 	// Write status to remote
 	e.exec(ctx, resource,
 		fmt.Sprintf("echo 'cancelled' > %s/status", run.RemoteRunDir))
 
 	e.checkResourceIdle(ctx, resource)
+	go e.finalizeRunEvidence(run.ID)
 
 	// Log agent event
 	e.store.SaveAgentEvent(ctx, &store.AgentEvent{
@@ -1604,18 +2843,44 @@ func (e *Executor) ensureWrapper(ctx context.Context, r *store.Resource) error {
 }
 
 func (e *Executor) updateRunStatus(ctx context.Context, run *store.Run, status string) {
+	expectedStatus := run.Status
 	run.Status = status
 	now := sql.NullTime{Time: time.Now(), Valid: true}
 	run.FinishedAt = now
-	if err := e.store.UpdateRun(ctx, run); err != nil && ctx.Err() != nil {
+	updated, err := e.store.UpdateRunIfStatus(ctx, run, expectedStatus)
+	if err != nil && ctx.Err() != nil {
 		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = e.store.UpdateRun(persistCtx, run)
+		updated, err = e.store.UpdateRunIfStatus(persistCtx, run, expectedStatus)
+		cancel()
+	}
+	if err != nil {
+		warnRunStatusWrite(run.ID, status, err)
+		return
+	}
+	if !updated {
+		warnRunStatusWrite(run.ID, status, fmt.Errorf("expected current status %s", expectedStatus))
+		return
+	}
+	if store.IsRunTerminalStatus(status) {
+		go e.finalizeRunEvidence(run.ID)
 	}
 }
 
+func (e *Executor) failSubmission(ctx context.Context, run *store.Run, launchErr error) {
+	if run == nil || launchErr == nil {
+		return
+	}
+	now := time.Now()
+	run.StatusSource = store.RunStatusSourceLocalCache
+	run.StatusCheckedAt = &now
+	run.StatusCheckError = launchErr.Error()
+	run.FailureKind = store.RunFailureUnknown
+	run.FailureReason = launchErr.Error()
+	e.updateRunStatus(ctx, run, store.RunStatusFailed)
+}
+
 func (e *Executor) checkResourceIdle(ctx context.Context, r *store.Resource) {
-	runs, _, _ := e.RefreshActiveRuns(ctx, r.ID, 2*time.Second)
+	runs, _ := e.listActiveRuns(ctx, r.ID)
 	active := 0
 	for _, run := range runs {
 		if store.IsRunRefreshableStatus(run.Status) {
@@ -1644,6 +2909,9 @@ func validateCwd(rootDir, cwd string) error {
 	cleanRoot := cleanPath(rootDir)
 	cleanResolved := cleanPath(resolved)
 
+	if cleanRoot == "/" && strings.HasPrefix(cleanResolved, "/") {
+		return nil
+	}
 	if !strings.HasPrefix(cleanResolved, cleanRoot+"/") && cleanResolved != cleanRoot {
 		return fmt.Errorf("cwd %q escapes root_dir %q", cwd, rootDir)
 	}
@@ -1908,8 +3176,8 @@ func AexpEventsPythonHelper() string {
 	return `"""aexp structured event helper.
 
 Use this helper inside training/evaluation code while an aexp run is executing.
-Do not reconstruct loss, metric, progress, or parameter events after a run; use
-run marks for post-hoc interpretation notes instead.
+Do not reconstruct loss, metric, progress, or parameter events after a run.
+Runtime notes are telemetry; post-run interpretation belongs in the Project journal.
 
 Contract:
 - Metric/progress names are short semantic names: "train/loss", "val/loss",
@@ -1923,41 +3191,142 @@ Contract:
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
 _WARNED_EVENT_QUALITY = set()
+_WARNED_EVENT_FAILURES = set()
 _FIRST_EPOCH_BY_CURVE = {}
+
+
+def _warn_once(issue, detail=""):
+    if issue in _WARNED_EVENT_FAILURES:
+        return
+    _WARNED_EVENT_FAILURES.add(issue)
+    try:
+        suffix = (": " + str(detail)) if detail else ""
+        sys.stderr.write("[aexp-events] " + issue + suffix + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _event_path():
     path = os.environ.get("AEXP_UI_EVENTS", "")
     if not path:
+        _warn_once("AEXP_UI_EVENTS is not set; structured events are disabled")
         return None
     return Path(path)
 
 
+def _env_rank():
+    """Return the best available global rank and local rank."""
+    rank = None
+    local_rank = None
+    for key in ("RANK", "SLURM_PROCID", "OMPI_COMM_WORLD_RANK", "PMI_RANK"):
+        value = os.environ.get(key)
+        if value not in (None, ""):
+            try:
+                rank = int(value)
+            except Exception:
+                rank = value
+            break
+    value = os.environ.get("LOCAL_RANK")
+    if value not in (None, ""):
+        try:
+            local_rank = int(value)
+        except Exception:
+            local_rank = value
+    if rank is None:
+        rank = local_rank
+    return rank, local_rank
+
+
+def _all_ranks_enabled():
+    return os.environ.get("AEXP_EVENTS_ALL_RANKS", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _coerce(value, seen=None):
+    """Convert common scientific Python values to JSON-safe values."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if seen is None:
+        seen = set()
+    marker = id(value)
+    if marker in seen:
+        return "<recursive>"
+    seen.add(marker)
+    try:
+        if isinstance(value, dict):
+            out = {}
+            for key, item in value.items():
+                try:
+                    safe_key = str(key)
+                except Exception:
+                    safe_key = "<unprintable-key>"
+                out[safe_key] = _coerce(item, seen)
+            return out
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [_coerce(item, seen) for item in value]
+        item = getattr(value, "item", None)
+        if callable(item):
+            converted = item()
+            if converted is not value:
+                return _coerce(converted, seen)
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            converted = tolist()
+            if converted is not value:
+                return _coerce(converted, seen)
+        try:
+            return repr(value)
+        except Exception:
+            return "<unserializable>"
+    except Exception:
+        return "<unserializable>"
+    finally:
+        seen.discard(marker)
+
+
 def emit(event=None, **fields):
     data = {}
-    if isinstance(event, dict):
-        data.update(event)
-    elif event is not None:
-        data["type"] = str(event)
-    data.update(fields)
-    warnings = _event_warnings(data)
-    _normalize_event(data)
-    warnings.extend(_event_warnings(data, include_axis=True))
-    data.setdefault("time", time.time())
-    path = _event_path()
-    if path is None:
+    try:
+        if isinstance(event, dict):
+            data.update(event)
+        elif event is not None:
+            data["type"] = str(event)
+        data.update(fields)
+        data = _coerce(data)
+        rank, local_rank = _env_rank()
+        all_ranks = _all_ranks_enabled()
+        if rank not in (None, 0, "0") and not all_ranks:
+            return data
+        if all_ranks:
+            if rank is not None:
+                data.setdefault("rank", rank)
+            if local_rank is not None:
+                data.setdefault("local_rank", local_rank)
+        warnings = _event_warnings(data)
+        # Event identities are caller-owned provenance. Keep names byte-for-byte
+        # stable and only suggest better structure through quality warnings.
+        warnings.extend(_event_warnings(data, include_axis=True))
+        data.setdefault("time", time.time())
+        path = _event_path()
+        if path is None:
+            return data
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
+            for warning in _dedupe_warnings(warnings):
+                warning.setdefault("time", data.get("time", time.time()))
+                f.write(json.dumps(_coerce(warning), ensure_ascii=False, separators=(",", ":")) + "\n")
         return data
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
-        for warning in _dedupe_warnings(warnings):
-            warning.setdefault("time", data.get("time", time.time()))
-            f.write(json.dumps(warning, ensure_ascii=False, separators=(",", ":")) + "\n")
-    return data
+    except Exception as exc:
+        _warn_once("failed to emit structured event", exc)
+        return data
 
 
 def metric(name, value, **fields):
@@ -2002,7 +3371,7 @@ def param(name, value, **fields):
 
 
 def note(text, **fields):
-    """Record a short runtime note. Use run marks for post-hoc analysis."""
+    """Record a short runtime telemetry note, not post-run research reasoning."""
     return emit(type="note", text=text, **fields)
 
 

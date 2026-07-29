@@ -1,7 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { candidateMatches, candidateToNode, edgeTypeLabel, groupRunCandidatesByProject, serializeEvidenceGraph, type EvidenceFlowEdge, type EvidenceFlowNode } from "./evidenceChain";
+import {
+  buildEvidenceEditPatch,
+  candidateMatches,
+  candidateToNode,
+  defaultEvidenceRelation,
+  edgeStyle,
+  edgeTypeLabel,
+  evidenceAutoHandlePair,
+  evidenceMapReferenceStatus,
+  evidenceMarkerEnd,
+  evidenceProposalPreview,
+  evidenceWorkspaceProposalPreview,
+  filterRunCandidatesForProject,
+  groupRunCandidatesByProject,
+  layoutEvidenceGraph,
+  serializeEvidenceGraph,
+  type EvidenceFlowEdge,
+  type EvidenceFlowNode
+} from "./evidenceChain";
 
 describe("evidenceChain helpers", () => {
+  it("separates layout-only changes from reviewable semantic edits", () => {
+    const original = {
+      nodes: [{ id: "claim", type: "claim" as const, title: "Claim", body: "", x: 1, y: 2, width: 100, height: 80, pinned: false, data_json: "{}" }],
+      edges: []
+    };
+    const layout = { nodes: [{ ...original.nodes[0], x: 500, y: 600, pinned: true }], edges: [] };
+    expect(buildEvidenceEditPatch("chain", original, layout)).toBeNull();
+    const semantic = { nodes: [{ ...layout.nodes[0], title: "Changed claim" }], edges: [] };
+    expect(buildEvidenceEditPatch("chain", original, semantic)).toMatchObject({
+      chain_id: "chain",
+      upsert_nodes: [{ id: "claim", title: "Changed claim" }]
+    });
+  });
+
   it("matches run candidates by project card and run fields", () => {
     const candidate = {
       id: "card:one",
@@ -19,10 +51,20 @@ describe("evidenceChain helpers", () => {
   });
 
   it("maps edge labels", () => {
-    expect(edgeTypeLabel("supports")).toBe("证明");
+    expect(edgeTypeLabel("supports")).toBe("增强");
+    expect(edgeTypeLabel("weakens")).toBe("削弱");
     expect(edgeTypeLabel("does_not_prove")).toBe("不能证明");
-    expect(edgeTypeLabel("next_step")).toBe("进一步");
+    expect(edgeTypeLabel("next_step")).toBe("下一步");
     expect(edgeTypeLabel("custom")).toBe("自定义");
+  });
+
+  it("chooses a valid typed relation for new connections", () => {
+    expect(defaultEvidenceRelation("dataset", "run")).toBe("uses");
+    expect(defaultEvidenceRelation("run", "claim")).toBe("supports");
+    expect(defaultEvidenceRelation("run", "issue")).toBe("reveals_issue");
+    expect(defaultEvidenceRelation("issue", "plan")).toBe("next_step");
+    expect(defaultEvidenceRelation("claim", "claim")).toBe("supersedes");
+    expect(defaultEvidenceRelation("note", "dataset")).toBe("related_to");
   });
 
   it("groups run candidates by project before unassigned runs", () => {
@@ -35,6 +77,17 @@ describe("evidenceChain helpers", () => {
 
     expect(groups.map((group) => group.title)).toEqual(["Alpha", "Beta", "Unassigned runs"]);
     expect(groups[0].candidates.map((candidate) => candidate.run_id)).toEqual(["run_one", "run_three"]);
+  });
+
+  it("keeps a project Research Graph scoped to that project's candidates", () => {
+    const candidates = [
+      { id: "card:a", kind: "project_card" as const, run_id: "run_a", project_id: "project-a" },
+      { id: "card:b", kind: "project_card" as const, run_id: "run_b", project_id: "project-b" },
+      { id: "run:raw", kind: "run" as const, run_id: "run_raw" }
+    ];
+
+    expect(filterRunCandidatesForProject(candidates, "project-a").map((candidate) => candidate.run_id)).toEqual(["run_a"]);
+    expect(filterRunCandidatesForProject(candidates, "")).toEqual(candidates);
   });
 
   it("uses the run name as the Evidence Chain run node title", () => {
@@ -135,5 +188,256 @@ describe("evidenceChain helpers", () => {
     ]);
 
     expect(payload.edges[0].label).toBe("");
+  });
+
+  it("parses a pending graph patch into namespaced, read-only draft elements", () => {
+    const preview = evidenceProposalPreview({
+      id: "card:draft",
+      kind: "project_card",
+      run_id: "run_proposal",
+      project_card: {
+        id: "card_draft",
+        project_id: "project_a",
+        run_id: "run_proposal",
+        graph_status: "pending",
+        graph_patch_json: JSON.stringify({
+          chain_id: "chain_primary",
+          routing_reason: "This run changes the baseline claim.",
+          nodes: [
+            { id: "claim_new", type: "claim", title: "New claim", body: "Metric improved", x: 0, y: 0 }
+          ],
+          edges: [
+            { id: "supports_new", source_node_id: "claim_new", target_node_id: "claim_existing", type: "supports", label: "supports", rationale: "formal result" }
+          ]
+        })
+      }
+    });
+
+    expect(preview).not.toBeNull();
+    expect(preview?.chainId).toBe("chain_primary");
+    expect(preview?.nodes[0]).toMatchObject({
+      id: "draft:run_proposal:claim_new",
+      draggable: false,
+      connectable: false,
+      deletable: false,
+      data: { draft: true, readOnly: true, proposalRunId: "run_proposal", sourceNodeId: "claim_new" }
+    });
+    expect(preview?.edges[0]).toMatchObject({
+      id: "draft-edge:run_proposal:supports_new",
+      source: "draft:run_proposal:claim_new",
+      target: "claim_existing",
+      selectable: false,
+      deletable: false,
+      data: { draft: true, readOnly: true, proposalRunId: "run_proposal", sourceEdgeId: "supports_new" }
+    });
+  });
+
+  it("previews a Run-optional workspace proposal on its explicit target Map", () => {
+    const preview = evidenceWorkspaceProposalPreview({
+      id: "proposal_bootstrap",
+      project_id: "project_a",
+      target_map_id: "topic_context",
+      base_graph_revision: 0,
+      actor: "agent",
+      summary: "Bootstrap the research context",
+      routing_reason: "This Topic owns the initial protocol question.",
+      project_level_impact: false,
+      source_run_ids: [],
+      source_snapshot_ids: [],
+      patch_json: JSON.stringify({
+        chain_id: "topic_context",
+        nodes: [
+          { id: "hypothesis", type: "hypothesis", title: "Initial hypothesis", body: "", x: 0, y: 0 }
+        ],
+        edges: []
+      }),
+      status: "pending",
+      proposal_hash: "hash",
+      created_at: "2026-07-25T00:00:00Z",
+      updated_at: "2026-07-25T00:00:00Z"
+    });
+
+    expect(preview).not.toBeNull();
+    expect(preview).toMatchObject({
+      proposalId: "proposal_bootstrap",
+      runId: "proposal_bootstrap",
+      chainId: "topic_context",
+      title: "Bootstrap the research context"
+    });
+    expect(preview?.nodes[0]).toMatchObject({
+      id: "draft:proposal_bootstrap:hypothesis",
+      data: {
+        draft: true,
+        readOnly: true,
+        proposalRunId: "proposal_bootstrap",
+        sourceNodeId: "hypothesis"
+      }
+    });
+  });
+
+  it("rejects malformed proposals and never serializes draft overlay elements", () => {
+    expect(evidenceProposalPreview({
+      id: "card:bad",
+      kind: "project_card",
+      run_id: "run_bad",
+      project_card: {
+        id: "card_bad",
+        project_id: "project_a",
+        run_id: "run_bad",
+        graph_status: "pending",
+        graph_patch_json: "{broken"
+      }
+    })).toBeNull();
+
+    const accepted: EvidenceFlowNode = { id: "accepted", type: "evidence", position: { x: 0, y: 0 }, data: { type: "claim", title: "Accepted", body: "" } };
+    const draft: EvidenceFlowNode = {
+      id: "draft:run_x:new",
+      type: "evidence",
+      position: { x: 100, y: 0 },
+      data: { type: "claim", title: "Draft", body: "", draft: true, proposalRunId: "run_x" }
+    };
+    const payload = serializeEvidenceGraph(
+      [accepted, draft],
+      [
+        { id: "draft-edge", source: "draft:run_x:new", target: "accepted", data: { type: "supports", rationale: "", draft: true } },
+        { id: "unsafe-edge", source: "accepted", target: "draft:run_x:new", data: { type: "related_to", rationale: "" } }
+      ]
+    );
+
+    expect(payload.nodes.map((node) => node.id)).toEqual(["accepted"]);
+    expect(payload.edges).toEqual([]);
+  });
+
+  it("lays out semantic DAGs deterministically while preserving pins", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "claim", type: "evidence", position: { x: 0, y: 0 }, data: { type: "claim", title: "Claim", body: "", occurredAt: "2026-07-03" } },
+      { id: "run-late", type: "evidence", position: { x: 0, y: 0 }, data: { type: "run", title: "Late", body: "", occurredAt: "2026-07-02" } },
+      { id: "dataset", type: "evidence", position: { x: 0, y: 0 }, data: { type: "dataset", title: "Data", body: "", occurredAt: "2026-07-01" } },
+      { id: "run-early", type: "evidence", position: { x: 777, y: 888 }, data: { type: "run", title: "Early", body: "", occurredAt: "2026-07-01", pinned: true } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "uses-late", source: "dataset", target: "run-late", data: { type: "uses", rationale: "" } },
+      { id: "uses-early", source: "dataset", target: "run-early", data: { type: "uses", rationale: "" } },
+      { id: "supports", source: "run-late", target: "claim", data: { type: "supports", rationale: "" } },
+      { id: "visual", source: "claim", target: "dataset", data: { type: "related_to", rationale: "" } }
+    ];
+
+    const first = layoutEvidenceGraph(nodes, edges);
+    const second = layoutEvidenceGraph([...nodes].reverse(), [...edges].reverse());
+    const positions = (rows: EvidenceFlowNode[]) => Object.fromEntries(rows.map((node) => [node.id, node.position]));
+    expect(positions(second)).toEqual(positions(first));
+    expect(first.find((node) => node.id === "dataset")!.position.x).toBeLessThan(first.find((node) => node.id === "run-late")!.position.x);
+    expect(first.find((node) => node.id === "run-late")!.position.x).toBeLessThan(first.find((node) => node.id === "claim")!.position.x);
+    expect(first.find((node) => node.id === "run-early")!.position).toEqual({ x: 777, y: 888 });
+
+    const reset = layoutEvidenceGraph(nodes, edges, true);
+    expect(reset.find((node) => node.id === "run-early")!.position).not.toEqual({ x: 777, y: 888 });
+    expect(reset.find((node) => node.id === "run-early")!.data.pinned).toBe(false);
+  });
+
+  it("orders adjacent ranks by their neighbours to remove avoidable crossings", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "source-a", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "A", body: "" } },
+      { id: "source-b", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "B", body: "" } },
+      { id: "target-a", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "C", body: "" } },
+      { id: "target-b", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "D", body: "" } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "cross-a", source: "source-a", target: "target-b", data: { type: "next_step", rationale: "" } },
+      { id: "cross-b", source: "source-b", target: "target-a", data: { type: "next_step", rationale: "" } }
+    ];
+
+    const laidOut = layoutEvidenceGraph(nodes, edges, true);
+    const position = Object.fromEntries(laidOut.map((node) => [node.id, node.position]));
+    expect(position["source-a"].y).toBeLessThan(position["source-b"].y);
+    expect(position["target-b"].y).toBeLessThan(position["target-a"].y);
+    expect(position["source-a"].x).toBeLessThan(position["target-b"].x);
+    expect(position["source-b"].x).toBeLessThan(position["target-a"].x);
+  });
+
+  it("uses neutral relations to order the canvas when they still describe a directed sequence", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "problem", type: "evidence", position: { x: 0, y: 0 }, data: { type: "issue", title: "Problem", body: "" } },
+      { id: "baseline", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "Baseline", body: "" } },
+      { id: "ablation", type: "evidence", position: { x: 0, y: 0 }, data: { type: "plan", title: "Ablation", body: "" } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "problem-to-baseline", source: "problem", target: "baseline", data: { type: "next_step", rationale: "" } },
+      { id: "baseline-to-ablation", source: "baseline", target: "ablation", data: { type: "related_to", rationale: "" } }
+    ];
+
+    const laidOut = layoutEvidenceGraph(nodes, edges, true);
+    const position = Object.fromEntries(laidOut.map((node) => [node.id, node.position]));
+    expect(position.problem.x).toBeLessThan(position.baseline.x);
+    expect(position.baseline.x).toBeLessThan(position.ablation.x);
+  });
+
+  it("still produces a non-overlapping layout when semantic edges contain a cycle", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "cycle-a", type: "evidence", position: { x: 0, y: 0 }, data: { type: "claim", title: "A", body: "" } },
+      { id: "cycle-b", type: "evidence", position: { x: 0, y: 0 }, data: { type: "issue", title: "B", body: "" } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "cycle-1", source: "cycle-a", target: "cycle-b", data: { type: "reveals_issue", rationale: "" } },
+      { id: "cycle-2", source: "cycle-b", target: "cycle-a", data: { type: "next_step", rationale: "" } }
+    ];
+
+    const laidOut = layoutEvidenceGraph(nodes, edges, true);
+    expect(new Set(laidOut.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(2);
+  });
+
+  it("uses a canonical left-to-right auto route and visually distinct relation styles", () => {
+    expect(evidenceAutoHandlePair({ x: 0, y: 300 }, { x: 420, y: 0 })).toEqual({
+      source: "right",
+      target: "left"
+    });
+    expect(evidenceAutoHandlePair({ x: 0, y: 0 }, { x: 0, y: 420 })).toEqual({
+      source: "bottom",
+      target: "top"
+    });
+
+    const supports = edgeStyle("supports");
+    const weakens = edgeStyle("weakens");
+    const issue = edgeStyle("reveals_issue");
+    expect(supports.stroke).not.toBe(weakens.stroke);
+    expect(weakens.stroke).not.toBe(issue.stroke);
+    expect(Number(supports.strokeWidth)).toBeGreaterThanOrEqual(2.4);
+    expect(weakens.strokeDasharray).toBeTruthy();
+    expect(evidenceMarkerEnd("supports")).toMatchObject({
+      color: supports.stroke,
+      width: 22,
+      height: 22
+    });
+  });
+
+  it("shows pinned Map References as current, stale, archived, or missing", () => {
+    const reference = {
+      type: "map_ref" as const,
+      target_revision: 3,
+      target_graph_hash: "hash-r3"
+    };
+    expect(evidenceMapReferenceStatus(reference, { status: "active", revision: 3, graph_hash: "hash-r3" })).toBe("current");
+    expect(evidenceMapReferenceStatus(reference, { status: "active", revision: 4, graph_hash: "hash-r4" })).toBe("stale");
+    expect(evidenceMapReferenceStatus(reference, { status: "archived", revision: 3, graph_hash: "hash-r3" })).toBe("archived");
+    expect(evidenceMapReferenceStatus(reference, undefined)).toBe("missing");
+    expect(evidenceMapReferenceStatus({ ...reference, type: "claim" }, undefined)).toBeUndefined();
+  });
+
+  it("keeps a 100-node evidence canvas layout finite and serializable", () => {
+    const nodes: EvidenceFlowNode[] = Array.from({ length: 100 }, (_, index) => ({
+      id: `node-${index}`,
+      type: "evidence",
+      position: { x: 0, y: 0 },
+      data: {
+        type: index % 4 === 0 ? "issue" : "note",
+        title: `Node ${index}`,
+        body: "A long evidence note that remains in the model while its card can stay compact."
+      }
+    }));
+    const laidOut = layoutEvidenceGraph(nodes, []);
+    expect(laidOut).toHaveLength(100);
+    expect(laidOut.every((node) => Number.isFinite(node.position.x) && Number.isFinite(node.position.y))).toBe(true);
+    expect(new Set(laidOut.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(100);
+    expect(serializeEvidenceGraph(laidOut, []).nodes).toHaveLength(100);
   });
 });

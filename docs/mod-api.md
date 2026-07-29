@@ -27,17 +27,42 @@ POST   /api/v1/resources/{id}/test        测试 SSH 连通性
 
 ```
 GET    /api/v1/runs                        列出所有 run（可过滤）
-POST   /api/v1/runs                        提交新 run
+POST   /api/v1/runs                        先持久化 queued run，返回 202，后台预检/启动
+GET    /api/v1/runs/active                 独立的活跃 RunSummary（不受实验列表过滤器影响）
+GET    /api/v1/runs/summaries              分页轻量 RunSummary，不返回完整命令/大字段
+GET    /api/v1/runs/changes                按 after_seq 或 updated_since 增量补变更
+GET    /api/v1/runs/changes/stream         全局 run-change SSE（支持 Last-Event-ID）
 GET    /api/v1/runs/{id}                   获取 run 详情
-PATCH  /api/v1/runs/{id}                   更新 run（notes 等）
 POST   /api/v1/runs/{id}/cancel            取消 run
-GET    /api/v1/runs/{id}/logs              获取日志行（分页）
+GET    /api/v1/runs/{id}/logs              获取日志行（支持 after_line cursor）
 GET    /api/v1/runs/{id}/summary           获取 run 摘要（最后 N 行）
-GET    /api/v1/runs/{id}/errors            获取 stderr 内容
-GET    /api/v1/runs/{id}/metrics           读取指标文件
 GET    /api/v1/runs/{id}/artifacts         列出产物
+GET    /api/v1/runs/{id}/artifact-collection 查看 declared/discovering/indexed/partial/failed 状态
+POST   /api/v1/runs/{id}/artifacts/collect 异步重建远端产物 inventory（不自动下载）
+GET    /api/v1/runs/{id}/manifest          读取版本化、哈希后的 Run Manifest
 POST   /api/v1/runs/{id}/status-check      强制重新检查状态
 ```
+
+`run_changes` 是 SQLite 中的持久变更流水，CLI、MCP、API 和 reconciler 的写入都会触发；
+因此 SSE 不是单进程内存通知。ui-v2 先取 `/runs/active` 的 `change_cursor`，再连接 SSE，
+断线时按 cursor 重放，并保留 30 秒低频轮询作为回退。
+
+### Executable Project / Target 与 Launchpad
+
+旧 `GET /projects` 是研究证据聚合视图。可执行模型使用独立兼容路由：
+
+```text
+GET|POST       /api/v1/project-definitions
+GET|PUT|DELETE /api/v1/project-definitions/{id}
+GET|POST       /api/v1/project-definitions/{id}/targets
+GET|PUT|DELETE /api/v1/project-targets/{id}
+POST           /api/v1/project-definitions/{id}/targets/{targetID}/prepare-plan
+POST           /api/v1/project-definitions/{id}/targets/{targetID}/prepare
+POST           /api/v1/run-comparisons/analyze
+```
+
+`prepare-plan` 无远端写入；`prepare` 创建一个 tracked setup run，固定为非正式证据。
+比较接口执行 provenance/comparability gate、seed 聚合，并返回 Markdown 报告。
 
 ### System
 
@@ -54,9 +79,9 @@ GET    /api/v1/stats                       汇总统计
 ws://localhost:8080/ws/runs/{id}/logs
 ```
 
-服务端行为：
-1. 先发送最近 200 行历史（快速填充 UI）
-2. 然后 SSH tail -f，新行实时推送
+ui-v2 先通过 HTTP `after_line=<cursor>` 补快照，再以同一 cursor 建立 WebSocket。
+服务端从 `after_line + 1` 开始补发并 follow；断线后客户端重复 HTTP catch-up，按
+`(source,line_no)` 去重。文件截断时 HTTP 响应 `reset=true`，客户端替换旧 generation。
 
 协议：
 
