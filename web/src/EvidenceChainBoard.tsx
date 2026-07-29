@@ -75,7 +75,6 @@ import {
   layoutEvidenceGraph,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
-  constrainProtocolMemberPosition,
   protocolContainerMoveDeltaForKey,
   translateProtocolContainer,
   type EvidenceEdgeData,
@@ -828,18 +827,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       })),
     [canvasBase.nodes, draggingProtocolFrame, groupProjection.groups]
   );
-  const groupAtPoint = useCallback((
-    point: { x: number; y: number },
-    frames: Array<{ id: string; bounds: EvidenceGroupFrameBounds }> = groupFrames
-  ) => frames
-    .filter(({ bounds }) => (
-      point.x >= bounds.x
-      && point.x <= bounds.x + bounds.width
-      && point.y >= bounds.y
-      && point.y <= bounds.y + bounds.height
-    ))
-    .sort((left, right) => left.bounds.width * left.bounds.height - right.bounds.width * right.bounds.height)[0]?.id || "",
-  [groupFrames]);
   const beginProtocolContainerMove = useCallback((groupId: string, client: { x: number; y: number }) => {
     if (detail.data?.status === "archived") return;
     const group = nodes.find((node) => node.id === groupId && node.data.type === "group");
@@ -1127,11 +1114,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     const candidate = JSON.parse(raw) as EvidenceChainRunCandidate;
     const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
     const node = withNodeHandlers(candidateToNode(candidate, position));
-    const groupID = groupAtPoint({
-      x: position.x + compactEvidenceNodeSize.width / 2,
-      y: position.y + compactEvidenceNodeSize.height / 2
-    });
-    if (groupID && isProtocolGroupMemberType(node.data.type)) node.data = { ...node.data, groupId: groupID };
     setNodes((current) => [...current, node]);
     setSelected({ kind: "node", id: node.id });
     markDirty();
@@ -1492,34 +1474,21 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
               }
               const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
               if (currentGroupID) {
-                const frame = dragStartGroupFramesRef.current.find((item) => item.id === currentGroupID);
-                const position = frame
-                  ? constrainProtocolMemberPosition(node.position, frame.bounds, {
-                    width: node.measured?.width || node.width || compactEvidenceNodeSize.width,
-                    height: node.measured?.height || node.height || compactEvidenceNodeSize.height
-                  })
-                  : node.position;
                 setNodes((current) => current.map((item) => item.id === node.id
-                  ? { ...item, position, data: { ...item.data, pinned: true, groupId: currentGroupID } }
+                  ? { ...item, position: node.position, data: { ...item.data, pinned: true, groupId: currentGroupID } }
                   : item));
                 draggingProtocolFrameRef.current = null;
                 setDraggingProtocolFrame(null);
                 markDirty();
                 return;
               }
-              const center = {
-                x: node.position.x + compactEvidenceNodeSize.width / 2,
-                y: node.position.y + compactEvidenceNodeSize.height / 2
-              };
-              const targetGroupID = groupAtPoint(center, dragStartGroupFramesRef.current);
               setNodes((current) => current.map((item) => item.id === node.id
                 ? {
                   ...item,
                   position: node.position,
                   data: {
                     ...item.data,
-                    pinned: true,
-                    groupId: targetGroupID && isProtocolGroupMemberType(item.data.type) ? targetGroupID : undefined
+                    pinned: true
                   }
                 }
                 : item));
@@ -2115,12 +2084,12 @@ function EvidenceGroupFrame({
             {moving
               ? "正在移动整个协议"
               : memberDragging
-                ? "松开后吸附在协议内"
+                ? "松开后扩展协议范围"
                 : `${descriptor.memberIds.length} 节点 · ${internalEdgeCount} 内部关系`}
           </span>
         </div>
       </header>
-      {!descriptor.memberIds.length ? <p>拖入数据、实验、计划或实验设计节点</p> : null}
+      {!descriptor.memberIds.length ? <p>在节点详情中选择此协议即可加入</p> : null}
     </section>
   );
 }
@@ -2228,7 +2197,7 @@ function EvidenceNodeInspector({
             <div>
               <span>视觉结构</span>
               <strong>整理为协议容器</strong>
-              <p>协议会成为永久展开的大框；以下执行结构节点会固定在框内。</p>
+              <p>协议会成为永久展开的大框；以下执行结构节点会保持协议归属并可自由排列。</p>
             </div>
             {migrationMembers.length ? (
               <ul>
@@ -2254,12 +2223,6 @@ function EvidenceNodeInspector({
               转换为协议容器
             </button>
           </section>
-        ) : data.groupId ? (
-          <section className="evidence-inspector-section evidence-group-membership-lock">
-            <span>所属实验协议</span>
-            <p>{groups.find((group) => group.id === data.groupId)?.data.title || data.groupId}</p>
-            <small>成员已锁定在协议框内，可以在内部排列和连线，但不能拖出或改到其他协议。</small>
-          </section>
         ) : groups.length && isProtocolGroupMemberType(data.type) ? (
           <label>
             <span>所属实验协议</span>
@@ -2275,6 +2238,11 @@ function EvidenceNodeInspector({
                 </option>
               ))}
             </select>
+            <small>
+              {data.groupId
+                ? "拖动只改变位置；选择“尚未加入”可明确移出协议。"
+                : "空间位置不会自动改变协议归属，请在这里明确加入。"}
+            </small>
           </label>
         ) : null}
         <label className="evidence-inspector-body-field">

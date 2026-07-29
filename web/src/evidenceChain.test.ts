@@ -18,7 +18,6 @@ import {
   layoutEvidenceGraph,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
-  constrainProtocolMemberPosition,
   projectEvidenceGroups,
   protocolContainerMoveDeltaForKey,
   serializeEvidenceGraph,
@@ -451,16 +450,33 @@ describe("evidenceChain helpers", () => {
     expect(forbidden.some(isProtocolGroupMemberType)).toBe(false);
   });
 
-  it("clamps protocol members inside the permanent frame", () => {
-    const bounds = { x: 100, y: 200, width: 700, height: 420 };
-    expect(constrainProtocolMemberPosition({ x: -900, y: -900 }, bounds)).toEqual({ x: 124, y: 264 });
-    expect(constrainProtocolMemberPosition({ x: 900, y: 900 }, bounds)).toEqual({ x: 470, y: 458 });
-    expect(constrainProtocolMemberPosition({ x: 300, y: 350 }, bounds)).toEqual({ x: 300, y: 350 });
-    expect(constrainProtocolMemberPosition(
-      { x: 900, y: 900 },
-      bounds,
-      { width: 420, height: 200 }
-    )).toEqual({ x: 356, y: 396 });
+  it("expands a protocol frame around freely positioned members", () => {
+    const group: EvidenceFlowNode = {
+      id: "protocol",
+      type: "evidence",
+      position: { x: 100, y: 200 },
+      width: 700,
+      height: 420,
+      data: { type: "group", title: "Protocol", body: "", groupKind: "protocol" }
+    };
+    const member: EvidenceFlowNode = {
+      id: "run",
+      type: "evidence",
+      position: { x: 900, y: 760 },
+      width: 306,
+      height: 138,
+      data: { type: "run", title: "Run", body: "", groupId: "protocol" }
+    };
+    const bounds = evidenceGroupFrameBounds(
+      { id: "protocol", group, memberIds: ["run"] },
+      [group, member]
+    );
+
+    expect(member.position).toEqual({ x: 900, y: 760 });
+    expect(bounds.x).toBe(100);
+    expect(bounds.y).toBe(200);
+    expect(bounds.x + bounds.width).toBeGreaterThanOrEqual(900 + 306 + 24);
+    expect(bounds.y + bounds.height).toBeGreaterThanOrEqual(760 + 138 + 28);
   });
 
   it("moves a protocol container and all of its members as one unit", () => {

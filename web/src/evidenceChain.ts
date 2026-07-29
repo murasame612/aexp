@@ -728,13 +728,6 @@ export interface EvidenceGroupFrameBounds {
   height: number;
 }
 
-export const protocolFrameInsets = {
-  left: 24,
-  top: 64,
-  right: 24,
-  bottom: 24
-} as const;
-
 export interface EvidenceGroupProjection {
   nodes: EvidenceFlowNode[];
   edges: EvidenceFlowEdge[];
@@ -826,21 +819,6 @@ export function projectEvidenceGroups(nodes: EvidenceFlowNode[], edges: Evidence
     edges,
     groups,
     internalEdgeCounts
-  };
-}
-
-export function constrainProtocolMemberPosition(
-  position: { x: number; y: number },
-  bounds: EvidenceGroupFrameBounds,
-  nodeSize = { width: 306, height: 138 }
-): { x: number; y: number } {
-  const minX = bounds.x + protocolFrameInsets.left;
-  const minY = bounds.y + protocolFrameInsets.top;
-  const maxX = Math.max(minX, bounds.x + bounds.width - nodeSize.width - protocolFrameInsets.right);
-  const maxY = Math.max(minY, bounds.y + bounds.height - nodeSize.height - protocolFrameInsets.bottom);
-  return {
-    x: Math.min(maxX, Math.max(minX, position.x)),
-    y: Math.min(maxY, Math.max(minY, position.y))
   };
 }
 
