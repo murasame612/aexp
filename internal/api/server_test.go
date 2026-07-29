@@ -116,6 +116,59 @@ func TestProjectRunCardAPIRequiresExpectedRevisionAndReturnsConflict(t *testing.
 	}
 }
 
+func TestAssignRunProjectAPIRequiresCASAndReturnsAuditedResult(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, project := range []*store.ProjectDefinition{
+		{ID: "project-api-a", Name: "API A"},
+		{ID: "project-api-b", Name: "API B"},
+	} {
+		if err := db.CreateProjectDefinition(ctx, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_project_api", Name: "project-api", Type: "ssh", Host: "localhost", RootDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{ID: "run_project_api", ResourceID: "rsrc_project_api", Status: store.RunStatusSucceeded, Kind: store.RunKindPilot, Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(db, nil, nil, slog.Default(), "", true).Handler()
+
+	missingCAS := httptest.NewRecorder()
+	handler.ServeHTTP(missingCAS, httptest.NewRequest(http.MethodPut, "/api/v1/runs/run_project_api/project", bytes.NewBufferString(`{"project_id":"project-api-a"}`)))
+	if missingCAS.Code != http.StatusBadRequest || !strings.Contains(missingCAS.Body.String(), "EXPECTED_PROJECT_ID_REQUIRED") {
+		t.Fatalf("missing CAS status=%d body=%s", missingCAS.Code, missingCAS.Body.String())
+	}
+
+	ok := httptest.NewRecorder()
+	handler.ServeHTTP(ok, httptest.NewRequest(http.MethodPut, "/api/v1/runs/run_project_api/project", bytes.NewBufferString(`{"project_id":"project-api-a","expected_project_id":"","actor":"ui-v2","reason":"historical assignment"}`)))
+	if ok.Code != http.StatusOK {
+		t.Fatalf("assign status=%d body=%s", ok.Code, ok.Body.String())
+	}
+	var result store.RunProjectAssignmentResult
+	if err := json.Unmarshal(ok.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Run == nil || result.Run.ProjectID != "project-api-a" || !result.ProvenanceUnchanged {
+		t.Fatalf("assignment result=%#v", result)
+	}
+
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, httptest.NewRequest(http.MethodPut, "/api/v1/runs/run_project_api/project", bytes.NewBufferString(`{"project_id":"project-api-b","expected_project_id":""}`)))
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "RUN_PROJECT_CONFLICT") {
+		t.Fatalf("stale status=%d body=%s", stale.Code, stale.Body.String())
+	}
+	run, _ := db.GetRun(ctx, "run_project_api")
+	if run.ProjectID != "project-api-a" {
+		t.Fatalf("stale request overwrote assignment: %#v", run)
+	}
+}
+
 func (apiFakeRemoteFS) List(_ context.Context, location filespace.RemoteLocation, _ string, _ int) (filespace.ListResult, error) {
 	return filespace.ListResult{Entries: []filespace.RemoteEntry{{Path: location.PhysicalPath + "/a.csv", Name: "a.csv", Exists: true, Type: "file", Size: 12}}}, nil
 }
@@ -134,9 +187,12 @@ func TestSubmitRunReturnsQueuedBeforeRemoteLaunch(t *testing.T) {
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_submit_async", Name: "async", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.CreateProjectDefinition(ctx, &store.ProjectDefinition{ID: "project-submit-async", Name: "Async"}); err != nil {
+		t.Fatal(err)
+	}
 	exec := executor.NewExecutor(executor.NewSSHPool(10*time.Millisecond), db)
 	srv := NewServer(db, exec, nil, slog.Default(), "", true)
-	body := bytes.NewBufferString(`{"resource_id":"rsrc_submit_async","name":"queued now","kind":"smoke","gpu_index":-2,"cwd":"/workspace/project","command":"python smoke.py","allow_ephemeral_paths":true}`)
+	body := bytes.NewBufferString(`{"resource_id":"rsrc_submit_async","project_id":"project-submit-async","name":"queued now","kind":"smoke","gpu_index":-2,"cwd":"/workspace/project","command":"python smoke.py","allow_ephemeral_paths":true}`)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/runs", body))
 	if rec.Code != http.StatusAccepted {
@@ -153,6 +209,15 @@ func TestSubmitRunReturnsQueuedBeforeRemoteLaunch(t *testing.T) {
 	if err != nil || persisted == nil {
 		t.Fatalf("persisted=%#v err=%v", persisted, err)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		persisted, _ = db.GetRun(ctx, run.ID)
+		if persisted != nil && store.IsRunTerminalStatus(persisted.Status) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background launch did not settle before cleanup: %#v", persisted)
 }
 
 func TestLogReadErrorKind(t *testing.T) {

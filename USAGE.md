@@ -197,14 +197,14 @@ aexp runs:  0 active
 **指定 GPU：**
 
 ```bash
-./aexp run submit --resource mu-tslib --gpu-index 0 -- python train.py
+./aexp run submit --resource mu-tslib --project my-project --gpu-index 0 -- python train.py
 ```
 
 **强制提交（跳过 slot lock）：**
 
 ```bash
 # 同一 resource 上已有 running run 时仍可提交（如 CPU-only 任务）
-./aexp run submit --resource mu-tslib --force -- python preprocess.py
+./aexp run submit --resource mu-tslib --project my-project --force -- python preprocess.py
 ```
 
 注意：`--` 之后的所有内容是要执行的命令（默认 argv 模式）。**所有 flag 必须写在 `--` 之前**。
@@ -408,7 +408,7 @@ tqdm、ANSI 控制字符、重复表头和 stdout/stderr 分流干扰。
 ./aexp resource add --name mu-tslib --host 192.168.1.100 --root-dir /workspace --conda-env tslib
 
 # 3. 提交实验
-./aexp run submit --resource mu-tslib --name "test-run" -- python train.py --epochs 10
+./aexp run submit --resource mu-tslib --project my-project --name "test-run" -- python train.py --epochs 10
 
 # 4. 看日志
 ./aexp run logs run_xxx
@@ -432,7 +432,7 @@ tqdm、ANSI 控制字符、重复表头和 stdout/stderr 分流干扰。
 # → [{"id":"rsrc_xxx","name":"mu-tslib","status":"idle",...}]
 
 # Agent 提交实验
-./aexp run submit --resource mu-tslib --name "exp1" -- python train.py --json
+./aexp run submit --resource mu-tslib --project my-project --name "exp1" -- python train.py --json
 # → {"id":"run_xxx","status":"running",...}
 
 # Agent 轮询状态

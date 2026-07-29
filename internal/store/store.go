@@ -20,6 +20,7 @@ type Store interface {
 	CreateRunWithBindings(ctx context.Context, r *Run, bindings RunBindings) error
 	CreateRunWithLaunchJob(ctx context.Context, r *Run, job *RunLaunchJob, bindings ...RunBindings) error
 	GetRun(ctx context.Context, id string) (*Run, error)
+	AssignRunProject(ctx context.Context, runID, projectID, expectedProjectID, actor, reason string) (*RunProjectAssignmentResult, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]Run, error)
 	GetRunSummary(ctx context.Context, id string) (*RunSummary, error)
 	ListRunSummaries(ctx context.Context, filter RunFilter) ([]RunSummary, error)

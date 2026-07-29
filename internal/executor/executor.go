@@ -415,6 +415,9 @@ func (e *Executor) reserveSubmission(ctx context.Context, req SubmitRequest) (*s
 }
 
 func (e *Executor) prepareSubmissionReservation(ctx context.Context, req SubmitRequest) (*store.Run, error) {
+	if err := requireRegisteredRunProject(ctx, e.store, req.ProjectID); err != nil {
+		return nil, err
+	}
 	resource, err := e.store.GetResource(ctx, req.ResourceID)
 	if err != nil {
 		return nil, fmt.Errorf("get resource: %w", err)
@@ -468,6 +471,27 @@ func (e *Executor) prepareSubmissionReservation(ctx context.Context, req SubmitR
 	return run, nil
 }
 
+func requireRegisteredRunProject(ctx context.Context, registry store.Store, projectID string) error {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{
+			Code: "project_missing", Field: "project_id",
+			Message: "every Run must be assigned to a registered Project before submission",
+		}}}
+	}
+	project, err := registry.GetProjectDefinition(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("load project %s: %w", projectID, err)
+	}
+	if project == nil {
+		return &RunPreflightBlockedError{Blockers: []RunPreflightBlocker{{
+			Code: "project_not_registered", Field: "project_id",
+			Message: fmt.Sprintf("Project %s is not registered", projectID),
+		}}}
+	}
+	return nil
+}
+
 func bindingsForRequest(req SubmitRequest, runID string) store.RunBindings {
 	bindings := store.RunBindings{
 		Inputs:  append([]store.RunInputBinding(nil), req.Inputs...),
@@ -500,17 +524,6 @@ func formalPreflightBlockers(ctx context.Context, registry store.Store, req Subm
 		return nil, nil
 	}
 	blockers := make([]RunPreflightBlocker, 0)
-	if strings.TrimSpace(req.ProjectID) == "" {
-		blockers = append(blockers, RunPreflightBlocker{Code: "project_missing", Field: "project_id", Message: "formal evidence requires a registered Project"})
-	} else {
-		project, err := registry.GetProjectDefinition(ctx, req.ProjectID)
-		if err != nil {
-			return nil, fmt.Errorf("load project %s: %w", req.ProjectID, err)
-		}
-		if project == nil {
-			blockers = append(blockers, RunPreflightBlocker{Code: "project_not_registered", Field: "project_id", Message: fmt.Sprintf("Project %s is not registered", req.ProjectID)})
-		}
-	}
 	provenanceBlockers, err := store.CheckRunProvenance(ctx, registry, store.RunProvenance{
 		Datasets:            req.Datasets,
 		Seeds:               req.Seeds,
@@ -539,6 +552,9 @@ func formalPreflightBlockers(ctx context.Context, registry store.Store, req Subm
 
 // SubmitWithOptions creates a run record, invokes OnCreated, then starts it remotely.
 func (e *Executor) SubmitWithOptions(ctx context.Context, req SubmitRequest, opts SubmitOptions) (*store.Run, error) {
+	if err := requireRegisteredRunProject(ctx, e.store, req.ProjectID); err != nil {
+		return nil, err
+	}
 	resource, err := e.store.GetResource(ctx, req.ResourceID)
 	if err != nil {
 		return nil, fmt.Errorf("get resource: %w", err)

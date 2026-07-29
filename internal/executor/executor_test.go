@@ -75,6 +75,14 @@ func newExecutorTestStore(t *testing.T) *store.SQLite {
 	return db
 }
 
+func createExecutorProject(t *testing.T, db *store.SQLite, id string) string {
+	t.Helper()
+	if err := db.CreateProjectDefinition(context.Background(), &store.ProjectDefinition{ID: id, Name: id}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func createExecutorDatasetVersion(t *testing.T, db *store.SQLite, resourceID, suffix, state string) store.RunDatasetInput {
 	t.Helper()
 	ctx := context.Background()
@@ -97,9 +105,48 @@ func createExecutorDatasetVersion(t *testing.T, db *store.SQLite, resourceID, su
 	return store.RunDatasetInput{ID: dataset.ID, DatasetID: dataset.DatasetID, Version: dataset.Version, ManifestSHA256: dataset.ManifestSHA256}
 }
 
+func TestSubmitRequiresRegisteredProjectBeforeCreatingAnyRun(t *testing.T) {
+	for _, kind := range []string{store.RunKindSetup, store.RunKindSmoke, store.RunKindPilot, store.RunKindFormal, store.RunKindAblation} {
+		t.Run(kind, func(t *testing.T) {
+			db := newExecutorTestStore(t)
+			ctx := context.Background()
+			resourceID := "rsrc_project_required_" + kind
+			if err := db.CreateResource(ctx, &store.Resource{ID: resourceID, Name: resourceID, Type: "ssh", Host: "example", RootDir: "/workspace"}); err != nil {
+				t.Fatal(err)
+			}
+			exec := NewExecutor(nil, db)
+			for _, projectID := range []string{"", "project-not-registered"} {
+				_, err := exec.SubmitAsync(ctx, SubmitRequest{
+					ResourceID: resourceID, ProjectID: projectID, Kind: kind,
+					GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Command: "true",
+				}, SubmitOptions{})
+				var blocked *RunPreflightBlockedError
+				if !errors.As(err, &blocked) || len(blocked.Blockers) != 1 {
+					t.Fatalf("project %q error=%v blockers=%#v", projectID, err, blocked)
+				}
+				wantCode := "project_missing"
+				if projectID != "" {
+					wantCode = "project_not_registered"
+				}
+				if blocked.Blockers[0].Code != wantCode {
+					t.Fatalf("project %q blocker=%#v, want %s", projectID, blocked.Blockers, wantCode)
+				}
+			}
+			runs, err := db.ListRuns(ctx, store.RunFilter{ResourceID: resourceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != 0 {
+				t.Fatalf("invalid project submissions created Runs: %#v", runs)
+			}
+		})
+	}
+}
+
 func TestSubmitAsyncPersistsRunBeforeRemotePreflight(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_async")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_async", Name: "async", Type: "ssh", Host: "example", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +154,7 @@ func TestSubmitAsyncPersistsRunBeforeRemotePreflight(t *testing.T) {
 	exec := NewExecutor(nil, db)
 	exec.runner = runner
 	run, err := exec.SubmitAsync(ctx, SubmitRequest{
-		ResourceID: "rsrc_async", Name: "visible immediately", Kind: store.RunKindSmoke,
+		ResourceID: "rsrc_async", ProjectID: projectID, Name: "visible immediately", Kind: store.RunKindSmoke,
 		GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Command: "python smoke.py",
 		AllowEphemeralPaths: true,
 	}, SubmitOptions{})
@@ -179,12 +226,13 @@ func TestResumePendingSubmissionDoesNotRelaunchTerminalRun(t *testing.T) {
 func TestResumePendingSubmissionReclaimsQueuedLaunch(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_resume_queued")
 	resource := &store.Resource{ID: "rsrc_resume_queued", Name: "resume", Type: "ssh", Host: "example", Port: 22, User: "ziwu", RootDir: "/workspace"}
 	if err := db.CreateResource(ctx, resource); err != nil {
 		t.Fatal(err)
 	}
-	run := &store.Run{ID: "run_resume_queued", ResourceID: resource.ID, Status: store.RunStatusQueued, Command: "python train.py"}
-	requestJSON := `{"resource_id":"rsrc_resume_queued","name":"resume","kind":"smoke","gpu_index":-1,"cwd":"/workspace/project","command":"python train.py","allow_ephemeral_paths":true}`
+	run := &store.Run{ID: "run_resume_queued", ResourceID: resource.ID, ProjectID: projectID, Status: store.RunStatusQueued, Command: "python train.py"}
+	requestJSON := `{"resource_id":"rsrc_resume_queued","project_id":"project_resume_queued","name":"resume","kind":"smoke","gpu_index":-1,"cwd":"/workspace/project","command":"python train.py","allow_ephemeral_paths":true}`
 	if err := db.CreateRunWithLaunchJob(ctx, run, &store.RunLaunchJob{RunID: run.ID, RequestJSON: requestJSON}); err != nil {
 		t.Fatal(err)
 	}
@@ -246,13 +294,14 @@ func TestResumePendingSubmissionsFailsOrphanedLocalPhase(t *testing.T) {
 func TestCancelPreflightingRunStopsDetachedLaunch(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_cancel_preflight")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_cancel_preflight", Name: "cancel", Type: "ssh", Host: "example", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
 	runner := &blockingRemoteRunner{started: make(chan struct{}), release: make(chan struct{})}
 	exec := NewExecutor(nil, db)
 	exec.runner = runner
-	run, err := exec.SubmitAsync(ctx, SubmitRequest{ResourceID: "rsrc_cancel_preflight", Name: "cancel me", Kind: store.RunKindSmoke, GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Command: "python smoke.py", AllowEphemeralPaths: true}, SubmitOptions{})
+	run, err := exec.SubmitAsync(ctx, SubmitRequest{ResourceID: "rsrc_cancel_preflight", ProjectID: projectID, Name: "cancel me", Kind: store.RunKindSmoke, GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Command: "python smoke.py", AllowEphemeralPaths: true}, SubmitOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,6 +597,7 @@ func TestCollectArtifactsIndexesRemoteInventoryWithoutDownloading(t *testing.T) 
 func TestSubmitPersistsProjectTargetProvenanceAndDraftManifest(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	createExecutorProject(t, db, "project_launch")
 	resource := &store.Resource{ID: "rsrc_launch", Name: "launch", Type: "ssh", Host: "localhost", RootDir: "/ws", Status: store.ResourceStatusIdle}
 	if err := db.CreateResource(ctx, resource); err != nil {
 		t.Fatal(err)
@@ -606,12 +656,14 @@ func TestWithResourceRemotePath(t *testing.T) {
 func TestSubmitForceRequiresReason(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_force")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_force", Name: "force", Type: "ssh", Host: "127.0.0.1", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
 	exec := NewExecutor(NewSSHPool(10*time.Millisecond), db)
 	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
 		ResourceID:          "rsrc_force",
+		ProjectID:           projectID,
 		Name:                "dangerous force",
 		Kind:                store.RunKindFormal,
 		ProjectConfigSHA256: "sha256:test-config",
@@ -634,6 +686,7 @@ func TestSubmitForceRequiresReason(t *testing.T) {
 func TestSubmitFormalRejectsDirtyGit(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_git_dirty")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_git_dirty", Name: "git-dirty", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -641,6 +694,7 @@ func TestSubmitFormalRejectsDirtyGit(t *testing.T) {
 	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
 	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
 		ResourceID:          "rsrc_git_dirty",
+		ProjectID:           projectID,
 		Name:                "formal dirty",
 		Kind:                store.RunKindFormal,
 		GPUIndex:            store.GPUIndexNone,
@@ -665,6 +719,7 @@ func TestSubmitFormalRejectsDirtyGit(t *testing.T) {
 func TestSubmitDirtySmokeRecordsGitButDoesNotBlock(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_git_smoke")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_git_smoke", Name: "git-smoke", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -672,6 +727,7 @@ func TestSubmitDirtySmokeRecordsGitButDoesNotBlock(t *testing.T) {
 	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
 	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
 		ResourceID:          "rsrc_git_smoke",
+		ProjectID:           projectID,
 		Name:                "dirty smoke",
 		Kind:                store.RunKindSmoke,
 		GPUIndex:            store.GPUIndexNone,
@@ -757,12 +813,13 @@ func TestSubmitFormalAndAblationRejectRegisteredDatasetBeforeRemoteLaunch(t *tes
 			if err := db.CreateResource(ctx, &store.Resource{ID: resourceID, Name: resourceID, Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
 				t.Fatal(err)
 			}
+			projectID := createExecutorProject(t, db, "project_registered_"+kind)
 			dataset := createExecutorDatasetVersion(t, db, resourceID, "registered_"+kind, store.DatasetStateRegistered)
 			runner := &fakeRemoteRunner{}
 			exec := NewExecutor(nil, db)
 			exec.runner = runner
 			_, err := exec.SubmitVisibleWithOptions(ctx, SubmitRequest{
-				ResourceID: resourceID, Name: "registered dataset", Kind: kind, GPUIndex: store.GPUIndexNone,
+				ResourceID: resourceID, ProjectID: projectID, Name: "registered dataset", Kind: kind, GPUIndex: store.GPUIndexNone,
 				Cwd: "/workspace/project", Program: "python", Args: []string{"train.py"}, AllowEphemeralPaths: true,
 				GitSourceDir: newCleanGitRepo(t), ProjectConfigSHA256: "sha256:test-config",
 				Datasets: []store.RunDatasetInput{dataset}, Seeds: []int64{41},
@@ -791,6 +848,7 @@ func TestSubmitFormalAndAblationRejectRegisteredDatasetBeforeRemoteLaunch(t *tes
 func TestFormalProvenanceBlockerMakesReservedRunTerminal(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_formal_blocked")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_formal_blocked", Name: "formal-blocked", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -804,12 +862,12 @@ func TestFormalProvenanceBlockerMakesReservedRunTerminal(t *testing.T) {
 	runGit(t, repo, "add", "train.py")
 	runGit(t, repo, "commit", "-m", "fixture")
 	exec := NewExecutor(NewSSHPool(time.Millisecond), db)
-	_, err := exec.SubmitVisibleWithOptions(ctx, SubmitRequest{ResourceID: "rsrc_formal_blocked", Kind: store.RunKindFormal, GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Program: "python", Args: []string{"train.py"}, GitSourceDir: repo, AllowEphemeralPaths: true}, SubmitOptions{})
+	_, err := exec.SubmitVisibleWithOptions(ctx, SubmitRequest{ResourceID: "rsrc_formal_blocked", ProjectID: projectID, Kind: store.RunKindFormal, GPUIndex: store.GPUIndexNone, Cwd: "/workspace/project", Program: "python", Args: []string{"train.py"}, GitSourceDir: repo, AllowEphemeralPaths: true}, SubmitOptions{})
 	var blocked *RunPreflightBlockedError
 	if !errors.As(err, &blocked) {
 		t.Fatalf("error = %v, want structured blocker", err)
 	}
-	want := map[string]bool{"project_missing": true, "dataset_missing": true, "seeds_missing": true, "project_config_hash_missing": true, "split_protocol_missing": true, "evaluation_protocol_missing": true}
+	want := map[string]bool{"dataset_missing": true, "seeds_missing": true, "project_config_hash_missing": true, "split_protocol_missing": true, "evaluation_protocol_missing": true}
 	for _, blocker := range blocked.Blockers {
 		delete(want, blocker.Code)
 	}
@@ -863,6 +921,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 func TestSubmitPreemptRunMustMatchResource(t *testing.T) {
 	db := newExecutorTestStore(t)
 	ctx := context.Background()
+	projectID := createExecutorProject(t, db, "project_preempt")
 	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_new", Name: "new", Type: "ssh", Host: "127.0.0.1", Port: 22, User: "ziwu", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -882,6 +941,7 @@ func TestSubmitPreemptRunMustMatchResource(t *testing.T) {
 	exec := NewExecutor(NewSSHPool(10*time.Millisecond), db)
 	_, err := exec.SubmitWithOptions(ctx, SubmitRequest{
 		ResourceID:          "rsrc_new",
+		ProjectID:           projectID,
 		Name:                "preempt wrong host",
 		Kind:                store.RunKindFormal,
 		GPUIndex:            0,

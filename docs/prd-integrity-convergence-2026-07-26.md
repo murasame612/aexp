@@ -93,9 +93,10 @@ graph proposal:
 ### 2.5 Project 不变量
 
 1. 存在 Run、Run Card 或 active Evidence Map 引用时，Project 删除必须被拒绝并返回 blocker。
-2. Run 可以暂时无 Project，用于未归档探索；Run Card 和 active Evidence Map 必须有 Project。
+2. 所有新 Run 必须绑定存在的 canonical Project；历史未归属 Run 保留可读，并仅通过显式、
+   CAS 防冲突且有审计的操作修正归属。
 3. manual category 与 project profile 只保留兼容读投影，不再作为规范写入口。
-4. 任何归属迁移必须显式、可审计且不按名称猜测。
+4. 任何归属迁移必须显式、可审计且不按名称猜测；只改变当前组织归属，不改写不可变历史。
 
 ## 3. 正常工作流
 

@@ -518,6 +518,25 @@ export interface ProjectDefinition {
   updated_at?: string;
 }
 
+export interface RunProjectAssignmentWarning {
+  code: string;
+  message: string;
+  count?: number;
+}
+
+export interface RunProjectAssignmentResult {
+  run: Run;
+  run_id: string;
+  previous_project_id?: string;
+  project_id: string;
+  actor: string;
+  reason?: string;
+  changed: boolean;
+  changed_at: string;
+  provenance_unchanged: boolean;
+  warnings: RunProjectAssignmentWarning[];
+}
+
 export type TargetReadiness = "unknown" | "checking" | "ready" | "drifted" | "failed";
 
 export interface ProjectTarget {

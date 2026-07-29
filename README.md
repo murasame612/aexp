@@ -260,7 +260,7 @@ If a command looks like a training job, `aexp exec` refuses it unless you pass
 Structured argv mode is the default:
 
 ```bash
-aexp run submit --resource gpu-box -- python train.py --epochs 20
+aexp run submit --resource gpu-box --project my-project -- python train.py --epochs 20
 ```
 
 Use shell mode only when you need shell syntax:
@@ -268,6 +268,7 @@ Use shell mode only when you need shell syntax:
 ```bash
 aexp run submit \
   --resource gpu-box \
+  --project my-project \
   --shell -- 'echo start; python train.py 2>&1 | tee train.log'
 ```
 
@@ -442,7 +443,8 @@ aexp resource update <name> ...
 aexp resource remove <name>
 
 aexp exec --resource <name> -- <command>
-aexp run submit --resource <name> [flags] -- <program> [args...]
+aexp run submit --resource <name> --project <project_id> [flags] -- <program> [args...]
+aexp run project set <run_id> --project <project_id> [--expected-project <old_project_id>] [--reason <text>]
 aexp run list [--json]
 aexp run status <run_id> [--short] [--json]
 aexp run snapshot <run_id> [--json]
@@ -513,6 +515,7 @@ The MCP server exposes structured tools for agents:
 - `aexp_resource_remove`
 - `aexp_exec`
 - `aexp_submit_run`
+- `aexp_assign_run_project`
 - `aexp_list_runs`
 - `aexp_refresh_runs`
 - `aexp_get_run_status`

@@ -173,8 +173,12 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 	if err != nil {
 		return "", err
 	}
+	projectID, err := requiredString(args, "project_id")
+	if err != nil {
+		return "", err
+	}
 
-	cli := []string{"run", "submit", "--resource", resource}
+	cli := []string{"run", "submit", "--resource", resource, "--project", projectID}
 	if v := stringArg(args, "name", ""); v != "" {
 		cli = append(cli, "--name", v)
 	}
@@ -306,6 +310,30 @@ func (s *Server) toolSubmitRun(ctx context.Context, args map[string]interface{})
 		"status":         json.RawMessage(status),
 		"event_guidance": mcpRunEventGuidance(runID, status),
 	}), nil
+}
+
+func (s *Server) toolAssignRunProject(ctx context.Context, args map[string]interface{}) (string, error) {
+	runID, err := requiredString(args, "run_id")
+	if err != nil {
+		return "", err
+	}
+	projectID, err := requiredString(args, "project_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"run", "project", "set", runID, "--project", projectID, "--json"}
+	if v, ok := args["expected_project_id"]; ok && v != nil {
+		cli = append(cli, "--expected-project", fmt.Sprintf("%v", v))
+	}
+	if v := stringArg(args, "actor", ""); v != "" {
+		cli = append(cli, "--actor", v)
+	} else {
+		cli = append(cli, "--actor", "agent")
+	}
+	if v := stringArg(args, "reason", ""); v != "" {
+		cli = append(cli, "--reason", v)
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 30), cli...)
 }
 
 func (s *Server) toolEventMetric(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -1936,7 +1964,7 @@ func defaultResearchTool(name string) bool {
 		"aexp_get_project_journal_entry", "aexp_update_project_journal_next_action",
 		"aexp_asset_publish", "aexp_asset_get", "aexp_asset_list",
 		"aexp_doctor", "aexp_list_resources",
-		"aexp_submit_run", "aexp_list_runs", "aexp_get_run_status", "aexp_get_run_snapshot",
+		"aexp_submit_run", "aexp_assign_run_project", "aexp_list_runs", "aexp_get_run_status", "aexp_get_run_snapshot",
 		"aexp_tail_run_logs", "aexp_cancel_run",
 		"aexp_create_evidence_snapshot", "aexp_get_evidence_snapshot", "aexp_list_evidence_snapshots",
 		"aexp_evaluate_evidence_release", "aexp_list_evidence_releases",
@@ -2284,9 +2312,10 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_submit_run",
-			Description: "Submit a long-running tracked run. Use this for setup, smoke, pilot, formal, and ablation jobs.",
+			Description: "Submit a long-running tracked run owned by a registered Project. Use this for setup, smoke, pilot, formal, and ablation jobs.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"resource":              stringSchema("Resource name."),
+				"project_id":            stringSchema("Registered canonical Project id that owns the Run."),
 				"command":               stringSchema("Shell command string. Alternative to argv."),
 				"argv":                  arrayStringSchema("Structured argv. Alternative to command."),
 				"name":                  stringSchema("Run name."),
@@ -2323,9 +2352,24 @@ func toolRegistry() []toolSpec {
 				"ui_events":      stringSchema("Structured UI event JSONL path, or off."),
 				"launch_timeout": numberSchema("Timeout in seconds for remote launch after the run record is created."),
 				"timeout":        numberSchema("MCP tool timeout in seconds."),
-			}, []string{"resource"}),
+			}, []string{"resource", "project_id"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolSubmitRun(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_assign_run_project",
+			Description: "Explicitly assign or reassign a terminal historical Run to a registered Project. Immutable launch/evidence provenance is not rewritten.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"run_id":              stringSchema("Run id."),
+				"project_id":          stringSchema("Target registered Project id."),
+				"expected_project_id": stringSchema("Optional expected current Project id for CAS. Empty means currently unassigned."),
+				"actor":               stringSchema("Audit actor; defaults to agent."),
+				"reason":              stringSchema("Reason for changing organizational ownership."),
+				"timeout":             numberSchema("Tool timeout in seconds."),
+			}, []string{"run_id", "project_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolAssignRunProject(ctx, args)
 			},
 		},
 		{

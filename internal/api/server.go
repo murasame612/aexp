@@ -189,6 +189,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/changes", s.handleListRunChanges)
 			r.Get("/changes/stream", s.handleRunChangeStream)
 			r.Get("/{id}", s.handleGetRun)
+			r.Put("/{id}/project", s.handleAssignRunProject)
 			r.Post("/{id}/cancel", s.handleCancelRun)
 			r.Post("/{id}/archive", s.handleArchiveRun)
 			r.Post("/{id}/restore", s.handleRestoreRun)
@@ -1597,6 +1598,56 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) handleAssignRunProject(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ProjectID         string  `json:"project_id"`
+		ExpectedProjectID *string `json:"expected_project_id"`
+		Actor             string  `json:"actor"`
+		Reason            string  `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	if request.ExpectedProjectID == nil {
+		writeError(w, http.StatusBadRequest, "EXPECTED_PROJECT_ID_REQUIRED", "expected_project_id is required for conflict-safe Project assignment")
+		return
+	}
+	if strings.TrimSpace(request.Actor) == "" {
+		request.Actor = "api"
+	}
+	result, err := s.store.AssignRunProject(
+		r.Context(),
+		chi.URLParam(r, "id"),
+		request.ProjectID,
+		*request.ExpectedProjectID,
+		request.Actor,
+		request.Reason,
+	)
+	if err != nil {
+		var conflict *store.RunProjectAssignmentConflict
+		if errors.As(err, &conflict) {
+			writeError(w, http.StatusConflict, "RUN_PROJECT_CONFLICT", conflict.Error())
+			return
+		}
+		var validation *store.EvidenceGraphValidationError
+		if errors.As(err, &validation) {
+			status := http.StatusBadRequest
+			switch validation.Code {
+			case "RUN_NOT_FOUND", "PROJECT_NOT_FOUND":
+				status = http.StatusNotFound
+			case "RUN_ACTIVE":
+				status = http.StatusConflict
+			}
+			writeError(w, status, validation.Code, validation.Message)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleGetRunDataBindings(w http.ResponseWriter, r *http.Request) {

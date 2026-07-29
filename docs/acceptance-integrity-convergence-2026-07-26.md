@@ -61,8 +61,13 @@
 
 - **PROJECT-01**：存在 Run、Card 或 active Map 时删除 Project 被拒绝，并列出引用对象。
 - **PROJECT-02**：active Map 与 Run Card 不能指向不存在的 Project。
-- **PROJECT-03**：探索 Run 可以无 Project；formal/ablation Run 必须绑定存在的 Project。
+- **PROJECT-03**：所有新 Run（setup/smoke/pilot/formal/ablation）在落库前必须绑定存在的
+  canonical Project；缺失或未知 Project 不得留下半成品 Run。
 - **PROJECT-04**：manual category 不再形成新的规范 Project 归属。
+- **PROJECT-05**：历史未归属或误归属的 terminal Run 可通过显式、CAS 防冲突且有审计的
+  改绑操作修正；系统不自动批量迁移，不提供 unassign。
+- **PROJECT-06**：改绑只改变当前组织归属并同步兼容 Run Card 投影；不可变 RunManifest、
+  Snapshot、Release、Freeze 以及历史 Journal/Evidence 引用不被重写。
 
 ## 6. 迁移与真实数据
 

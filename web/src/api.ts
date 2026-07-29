@@ -34,6 +34,7 @@ import type {
   Resource,
   PrinterStatus, PrinterJob,
   Run,
+	RunProjectAssignmentResult,
 	RunSummary,
 	RunChangeResponse,
   RunBookmark,
@@ -254,6 +255,19 @@ export function getRuns(token: string, query: RunQuery) {
 
 export function getRun(token: string, id: string) {
   return apiFetch<Run>(`/runs/${encodeURIComponent(id)}`, { token });
+}
+
+export function assignRunProject(token: string, id: string, projectID: string, expectedProjectID: string, actor = "ui-v2", reason = "") {
+  return apiFetch<RunProjectAssignmentResult>(`/runs/${encodeURIComponent(id)}/project`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify({
+      project_id: projectID,
+      expected_project_id: expectedProjectID,
+      actor,
+      reason
+    })
+  });
 }
 
 export function cancelRun(token: string, id: string) {

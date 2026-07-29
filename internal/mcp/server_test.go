@@ -227,7 +227,7 @@ fi
 	}
 	t.Setenv("AEXP_STUB_ARGS", argsFile)
 
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_submit_run","arguments":{"resource":"mu","name":"repair-env","kind":"setup","target_env":"defect-yolo","force":true,"force_reason":"preempt stale gpu lock for urgent repair","preempt_run":"run_OLD","preempt_save":false,"command":"python repair.py"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_submit_run","arguments":{"resource":"mu","project_id":"project-defect","name":"repair-env","kind":"setup","target_env":"defect-yolo","force":true,"force_reason":"preempt stale gpu lock for urgent repair","preempt_run":"run_OLD","preempt_save":false,"command":"python repair.py"}}}` + "\n"
 	var out bytes.Buffer
 	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
@@ -244,6 +244,7 @@ fi
 	gotArgs := strings.Split(strings.TrimPrefix(calls[0], "CALL\n"), "\n")
 	wantArgs := []string{
 		"run", "submit", "--resource", "mu",
+		"--project", "project-defect",
 		"--name", "repair-env",
 		"--kind", "setup",
 		"--target-env", "defect-yolo",
@@ -256,6 +257,41 @@ fi
 	}
 	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v\noutput %s", wantArgs, gotArgs, out.String())
+	}
+}
+
+func TestAssignRunProjectToolMapsConflictSafeCLI(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$AEXP_STUB_ARGS"
+printf '{"run_id":"run_ABC","project_id":"project-b","changed":true}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_assign_run_project","arguments":{"run_id":"run_ABC","project_id":"project-b","expected_project_id":"project-a","actor":"agent-kimi","reason":"correct ownership"}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	want := []string{
+		"run", "project", "set", "run_ABC",
+		"--project", "project-b",
+		"--json",
+		"--expected-project", "project-a",
+		"--actor", "agent-kimi",
+		"--reason", "correct ownership",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args=%q want=%q", got, want)
 	}
 }
 

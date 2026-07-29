@@ -32,6 +32,7 @@ import { StatusCapsule } from "./StatusCapsule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
+  assignRunProject,
   archiveRun,
   cancelRun,
   collectArtifacts,
@@ -178,7 +179,7 @@ export function App() {
   const runProjectScope = projectScopeFromFilterValue(runProject);
 
 	const needsRuns = runListEnabledForTab(tab);
-	const needsProjects = tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites";
+	const needsProjects = tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites" || Boolean(detailRunId);
 	const needsResources = tab === "dashboard" || tab === "resources" || tab === "dataCenter" || tab === "launchpad" || Boolean(detailRunId);
 	const needsExecs = tab === "dashboard" || tab === "execs";
   const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), enabled: tab === "dashboard", refetchInterval: 5000 });
@@ -739,6 +740,7 @@ export function App() {
           token={token}
           runId={detailRunId}
           resourceById={resourceById}
+          projects={projectList}
           onClose={() => {
             setDetailRunId(null);
             history.replaceState(null, "", pathForTab(tab, evidenceProjectId, projectDetailID));
@@ -1284,6 +1286,7 @@ function RunDetail({
   token,
   runId,
   resourceById,
+  projects,
   onClose,
   onCancel,
   onStatusCheck,
@@ -1294,6 +1297,7 @@ function RunDetail({
   token: string;
   runId: string;
   resourceById: Map<string, Resource>;
+  projects: ProjectDefinition[];
   onClose: () => void;
   onCancel: (run: Run) => void;
   onStatusCheck: (run: Run) => Promise<Run>;
@@ -1302,6 +1306,9 @@ function RunDetail({
   const [selectedMark, setSelectedMark] = useState<RunMark | null>(null);
   const [detailTab, setDetailTab] = useState<"overview" | "evidence" | "raw">("overview");
   const [legacyMarksOpen, setLegacyMarksOpen] = useState(false);
+  const [projectBindingOpen, setProjectBindingOpen] = useState(false);
+  const [projectDraft, setProjectDraft] = useState("");
+  const [projectBindingNotice, setProjectBindingNotice] = useState<string | null>(null);
   const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 30000, refetchOnWindowFocus: "always" });
   const marks = useQuery({
     queryKey: ["run-marks", token, runId],
@@ -1319,6 +1326,30 @@ function RunDetail({
   const manifest = useQuery({ queryKey: ["run-manifest", token, runId], queryFn: () => getRunManifest(token, runId), retry: false });
 	const dataBindings = useQuery({ queryKey: ["run-data-bindings", token, runId], queryFn: () => getRunDataBindings(token, runId) });
   const queryClient = useQueryClient();
+  const assignProject = useMutation({
+    mutationFn: async ({ projectID, expectedProjectID }: { projectID: string; expectedProjectID: string }) =>
+      assignRunProject(token, runId, projectID, expectedProjectID, "ui-v2", expectedProjectID ? "Run Detail explicit reassignment" : "Run Detail historical assignment"),
+    onSuccess: async (result) => {
+      queryClient.setQueryData(["run", token, runId], result.run);
+      setProjectBindingOpen(false);
+      setProjectBindingNotice(
+        result.warnings.length > 0
+          ? `${locale === "zh" ? "项目已更改；不可变历史未改写" : "Project changed; immutable history was not rewritten"} · ${result.warnings.length}`
+          : (locale === "zh" ? "项目归属已更新" : "Project ownership updated")
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: runSummaryKeys.root(token) }),
+        queryClient.invalidateQueries({ queryKey: runSummaryKeys.active(token) }),
+        queryClient.invalidateQueries({ queryKey: ["project-definitions", token] }),
+        queryClient.invalidateQueries({ queryKey: ["run-journal", token, runId] }),
+        queryClient.invalidateQueries({ queryKey: ["evidence-run-candidates"] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] })
+      ]);
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["run", token, runId] });
+    }
+  });
   const collectArtifactInventory = useMutation({
     mutationFn: () => collectArtifacts(token, runId),
     onSuccess: async () => {
@@ -1363,6 +1394,9 @@ function RunDetail({
     setSelectedLogSource(null);
     setDetailTab("overview");
     setLegacyMarksOpen(false);
+    setProjectBindingOpen(false);
+    setProjectDraft("");
+    setProjectBindingNotice(null);
   }, [runId]);
   const managedInputs = dataBindings.data?.inputs || [];
   const managedOutputs = dataBindings.data?.outputs || [];
@@ -1461,6 +1495,47 @@ function RunDetail({
                   <strong>{run.data.failure_reason}</strong>
                 </span>
               ) : null}
+            </div>
+            <div className="run-project-binding">
+              <div>
+                <em>{locale === "zh" ? "项目归属" : "Project ownership"}</em>
+                <strong>{projects.find((project) => project.id === run.data?.project_id)?.name || run.data.project_id || (locale === "zh" ? "尚未绑定" : "Unassigned")}</strong>
+                {projectBindingNotice ? <small>{projectBindingNotice}</small> : null}
+                {assignProject.error ? <small className="detail-failure-reason">{displayError(assignProject.error)}</small> : null}
+              </div>
+              {projectBindingOpen ? (
+                <div className="run-project-binding-editor">
+                  <select value={projectDraft} disabled={assignProject.isPending} onChange={(event) => setProjectDraft(event.target.value)}>
+                    <option value="">{locale === "zh" ? "选择项目" : "Choose a Project"}</option>
+                    {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.id}</option>)}
+                  </select>
+                  <button
+                    className="primary"
+                    disabled={!projectDraft || projectDraft === (run.data.project_id || "") || assignProject.isPending}
+                    onClick={() => {
+                      const current = run.data?.project_id || "";
+                      if (current && !window.confirm(locale === "zh" ? `确认将此 Run 从 ${current} 改绑到 ${projectDraft}？不可变历史不会被搬移。` : `Reassign this Run from ${current} to ${projectDraft}? Immutable history will not move.`)) return;
+                      assignProject.mutate({ projectID: projectDraft, expectedProjectID: current });
+                    }}
+                  >
+                    {assignProject.isPending ? t("saving") : (run.data.project_id ? (locale === "zh" ? "确认改绑" : "Confirm") : (locale === "zh" ? "绑定" : "Assign"))}
+                  </button>
+                  <button className="ghost-button" disabled={assignProject.isPending} onClick={() => setProjectBindingOpen(false)}>{t("cancel")}</button>
+                </div>
+              ) : (
+                <button
+                  className="ghost-button"
+                  disabled={isActiveRun(run.data)}
+                  title={isActiveRun(run.data) ? (locale === "zh" ? "运行结束后才能改绑" : "Wait until the Run is terminal") : ""}
+                  onClick={() => {
+                    setProjectDraft(run.data?.project_id || "");
+                    setProjectBindingOpen(true);
+                    setProjectBindingNotice(null);
+                  }}
+                >
+                  {run.data.project_id ? (locale === "zh" ? "更改" : "Change") : (locale === "zh" ? "选择项目" : "Choose Project")}
+                </button>
+              )}
             </div>
             <div className="detail-side-actions">
 			  <button disabled={statusCheckBusy} aria-busy={statusCheckBusy} onClick={() => void refreshCurrentStatus()}>

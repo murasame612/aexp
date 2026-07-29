@@ -44,6 +44,7 @@ aexp mcp uninstall --target all
 - `aexp_resource_remove`
 - `aexp_exec`
 - `aexp_submit_run`
+- `aexp_assign_run_project`
 - `aexp_list_runs`
 - `aexp_refresh_runs`
 - `aexp_get_run_status`

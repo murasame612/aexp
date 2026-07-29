@@ -1358,8 +1358,8 @@ func agentCardContent() ([]string, []string) {
 		"Read current project memory: aexp project journal list <project_id> --next-action-status open --json",
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
-		"Submit formal run: aexp run submit --resource <name> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
-		"Submit setup task: aexp run submit --resource <name> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
+		"Submit formal run: aexp run submit --resource <name> --project <project-id> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
+		"Submit setup task: aexp run submit --resource <name> --project <project-id> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
 		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve reasoning: aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...",
@@ -5740,6 +5740,7 @@ func printProjectRunPlan(configPath, commandName, resourceName string, req execu
 	args := []string{
 		"aexp", "run", "submit",
 		"--resource", resourceName,
+		"--project", req.ProjectID,
 		"--kind", req.Kind,
 		"--cwd", req.Cwd,
 		"--project-env", req.ProjectEnv,
@@ -8214,6 +8215,7 @@ hidden from the normal command surface.`,
 	}
 
 	cmd.AddCommand(runSubmitCmd())
+	cmd.AddCommand(runProjectCmd())
 	cmd.AddCommand(runListCmd())
 	cmd.AddCommand(runStatusCmd())
 	cmd.AddCommand(runRefreshCmd())
@@ -8234,6 +8236,67 @@ hidden from the normal command surface.`,
 	cmd.AddCommand(legacyMark)
 	cmd.AddCommand(legacyMarks)
 
+	return cmd
+}
+
+func runProjectCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "project",
+		Short: "Inspect or change a Run's canonical Project ownership",
+	}
+	cmd.AddCommand(runProjectSetCmd())
+	return cmd
+}
+
+func runProjectSetCmd() *cobra.Command {
+	var projectID, expectedProjectID, actor, reason string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "set RUN_ID",
+		Short: "Assign a terminal Run to a registered Project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			runID := strings.TrimSpace(args[0])
+			if !cmd.Flags().Changed("expected-project") {
+				run, err := db.GetRun(cmd.Context(), runID)
+				if err != nil {
+					return err
+				}
+				if run == nil {
+					return fmt.Errorf("run %s not found", runID)
+				}
+				expectedProjectID = run.ProjectID
+			}
+			result, err := db.AssignRunProject(cmd.Context(), runID, projectID, expectedProjectID, actor, reason)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(result)
+			}
+			if !result.Changed {
+				fmt.Printf("Run %s already belongs to Project %s\n", result.RunID, result.ProjectID)
+				return nil
+			}
+			previous := result.PreviousProjectID
+			if previous == "" {
+				previous = "(unassigned)"
+			}
+			fmt.Printf("Assigned Run %s: %s -> %s\n", result.RunID, previous, result.ProjectID)
+			for _, warning := range result.Warnings {
+				fmt.Printf("Warning [%s]: %s (%d)\n", warning.Code, warning.Message, warning.Count)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&projectID, "project", "", "Target registered Project id (required)")
+	cmd.Flags().StringVar(&expectedProjectID, "expected-project", "", "Expected current Project id for CAS; omit to read current ownership")
+	cmd.Flags().StringVar(&actor, "actor", "cli", "Actor recorded in the assignment audit")
+	cmd.Flags().StringVar(&reason, "reason", "", "Reason for changing organizational ownership")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	_ = cmd.MarkFlagRequired("project")
 	return cmd
 }
 
@@ -8711,7 +8774,7 @@ func startFreezeWorker(id string) error {
 }
 
 func runSubmitCmd() *cobra.Command {
-	var resource, name, cwd, condaEnv, projectEnv, targetEnv, kind, uiEventsPath, forceReason, preemptRunID, configSHA256, splitProtocol, evaluationProtocol string
+	var resource, projectID, name, cwd, condaEnv, projectEnv, targetEnv, kind, uiEventsPath, forceReason, preemptRunID, configSHA256, splitProtocol, evaluationProtocol string
 	var gpuIndex int
 	var shellMode, force, noGPU, refreshEnv, preemptSave, allowDirtyGit, recordGitDiff bool
 	var logPaths, artifactPaths, metricPaths []string
@@ -8731,16 +8794,16 @@ The --cwd flag is constrained to the resource root_dir. If your project lives
 elsewhere, register the resource with that root_dir first.
 
   Structured (default): argv preserved exactly
-    aexp run submit --resource mu -- python train.py --lr 0.001
+    aexp run submit --resource mu --project my-project -- python train.py --lr 0.001
 
   Shell mode (--shell): full shell interpretation
-    aexp run submit --resource mu --shell -- 'echo start; python train.py | tee log'
+    aexp run submit --resource mu --project my-project --shell -- 'echo start; python train.py | tee log'
 
   Setup task (tracked, async, but not experiment evidence; defaults to no GPU):
-    aexp run submit --resource mu --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'
+    aexp run submit --resource mu --project my-project --kind setup --cwd /workspace/project --shell -- 'python -m pip install -r requirements.txt'
 
   Structured UI events (generic JSONL dashboard; defaults to .aexp/events/<run_id>.jsonl):
-    aexp run submit --resource mu -- python train.py
+    aexp run submit --resource mu --project my-project -- python train.py
     python can import: from aexp_events import emit, metric, progress, param, note`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -8764,6 +8827,7 @@ elsewhere, register the resource with that root_dir first.
 			}
 
 			submitReq.ResourceID = resource
+			submitReq.ProjectID = strings.TrimSpace(projectID)
 			submitReq.Name = name
 			submitReq.Kind = kind
 			submitReq.GPUIndex = gpuIndex
@@ -8888,6 +8952,7 @@ elsewhere, register the resource with that root_dir first.
 	}
 
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource name (required)")
+	cmd.Flags().StringVar(&projectID, "project", "", "Registered Project id that owns this Run (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Run name")
 	cmd.Flags().StringVar(&kind, "kind", "formal", "Run kind: setup, smoke, pilot, formal, ablation")
 	cmd.Flags().IntVar(&gpuIndex, "gpu-index", store.GPUIndexAll, "GPU index to use (-1 for all)")
@@ -8923,6 +8988,8 @@ elsewhere, register the resource with that root_dir first.
 	_ = cmd.Flags().MarkHidden("allow-dirty")
 	_ = cmd.Flags().MarkHidden("record-diff")
 	cmd.Flags().IntVar(&launchTimeoutSec, "launch-timeout", 60, "Timeout in seconds for remote launch after the run record is created (0 = no timeout)")
+	_ = cmd.MarkFlagRequired("resource")
+	_ = cmd.MarkFlagRequired("project")
 
 	return cmd
 }

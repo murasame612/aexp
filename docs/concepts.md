@@ -130,6 +130,12 @@ Run Detail 只显示关联日志的回链和“写工作日志”入口；未归
 归属。真正需要进入稳定研究叙事的 claim、issue 或 plan，再从 Journal 晋升到 Evidence
 Map。
 
+新 Run 从创建开始就必须绑定一个已注册的 canonical Project，包括 setup、smoke 和
+pilot；不再根据 cwd、仓库名或命令文本猜测归属。历史未归属记录保持原样，用户或 Agent
+可在 Run Detail 或通过 `aexp_assign_run_project` 显式修正 terminal Run。改绑采用
+expected-project CAS 并写入 Agent audit，只改变当前组织归属，不重写 launch-time
+RunManifest、Snapshot、Release、Freeze 或既有 Journal/Evidence 历史。
+
 ## Project
 
 `ProjectDefinition.id` 是唯一规范 Project 身份。每个 Project 至多有一张

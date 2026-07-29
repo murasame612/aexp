@@ -4789,6 +4789,57 @@ select {
   flex: 1 1 126px;
 }
 
+.run-project-binding {
+  grid-column: 1 / 3;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f7f5f1;
+  padding: 9px 10px;
+}
+
+.run-project-binding > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.run-project-binding em,
+.run-project-binding small {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.run-project-binding strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-project-binding-editor {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-width: min(620px, 68%);
+}
+
+.run-project-binding-editor select {
+  min-width: 220px;
+  flex: 1 1 320px;
+}
+
+.run-overview > .detail-side-actions {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
 .command-card {
   display: grid;
   gap: 10px;
@@ -6473,6 +6524,23 @@ select {
 
   .run-overview {
     align-items: stretch;
+  }
+
+  .run-project-binding,
+  .run-overview > .detail-side-actions {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .run-project-binding {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .run-project-binding-editor {
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
   }
 
   .detail-side-actions {

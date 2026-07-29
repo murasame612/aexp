@@ -1377,6 +1377,102 @@ func TestProjectRunCardProjectOwnershipChangesOnlyThroughExplicitReassign(t *tes
 	}
 }
 
+func TestAssignRunProjectIsNarrowAuditedAndConflictSafe(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	createTestProject(t, s, "project-assign-a", "Project A")
+	createTestProject(t, s, "project-assign-b", "Project B")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_assign", Name: "assign", Type: "ssh", Host: "localhost", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &Run{
+		ID: "run_assign", ResourceID: "rsrc_assign", Status: RunStatusSucceeded,
+		Kind: RunKindPilot, Name: "historical", Command: "python train.py",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProjectRunCard(ctx, &ProjectRunCard{
+		ID: "card_assign", RunID: "run_assign", ProjectID: "project-assign-a", ProjectName: "Project A",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.AssignRunProject(ctx, "run_assign", "project-assign-b", "", "test-agent", "repair historical ownership")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.PreviousProjectID != "" || result.ProjectID != "project-assign-b" || result.Run == nil || result.Run.ProjectID != "project-assign-b" {
+		t.Fatalf("assignment result = %#v", result)
+	}
+	if result.Run.Name != "historical" || result.Run.Status != RunStatusSucceeded || result.Run.Command != "python train.py" {
+		t.Fatalf("narrow assignment changed Run facts: %#v", result.Run)
+	}
+	card, err := s.GetProjectRunCard(ctx, "run_assign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.ProjectID != "project-assign-b" || card.ProjectName != "Project B" {
+		t.Fatalf("project card projection was not synchronized: %#v", card)
+	}
+	events, err := s.ListAgentEvents(ctx, "run_assign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ToolName != "assign_run_project" || events[0].Actor != "test-agent" || !strings.Contains(events[0].InputJSON, "repair historical ownership") {
+		t.Fatalf("assignment audit = %#v", events)
+	}
+
+	if _, err := s.AssignRunProject(ctx, "run_assign", "project-assign-a", "", "stale-agent", "stale write"); err == nil {
+		t.Fatal("expected stale assignment conflict")
+	} else {
+		var conflict *RunProjectAssignmentConflict
+		if !errors.As(err, &conflict) || conflict.CurrentProjectID != "project-assign-b" {
+			t.Fatalf("conflict = %#v, err=%v", conflict, err)
+		}
+	}
+	idempotent, err := s.AssignRunProject(ctx, "run_assign", "project-assign-b", "project-assign-b", "test-agent", "")
+	if err != nil || idempotent.Changed {
+		t.Fatalf("idempotent assignment = %#v err=%v", idempotent, err)
+	}
+	events, _ = s.ListAgentEvents(ctx, "run_assign")
+	if len(events) != 1 {
+		t.Fatalf("idempotent assignment wrote an audit event: %#v", events)
+	}
+}
+
+func TestAssignRunProjectRejectsActiveAndUnknownTargets(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	createTestProject(t, s, "project-active", "Active Project")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_active_assign", Name: "active", Type: "ssh", Host: "localhost", RootDir: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_active_assign", ResourceID: "rsrc_active_assign", ProjectID: "project-active", Status: RunStatusRunning, Kind: RunKindPilot, Command: "python train.py"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AssignRunProject(ctx, "run_active_assign", "project-missing", "project-active", "test", ""); err == nil {
+		t.Fatal("expected unknown Project error")
+	} else {
+		var validation *EvidenceGraphValidationError
+		if !errors.As(err, &validation) || validation.Code != "PROJECT_NOT_FOUND" {
+			t.Fatalf("unknown Project error = %v", err)
+		}
+	}
+	createTestProject(t, s, "project-other", "Other")
+	if _, err := s.AssignRunProject(ctx, "run_active_assign", "project-other", "project-active", "test", ""); err == nil {
+		t.Fatal("expected active Run blocker")
+	} else {
+		var validation *EvidenceGraphValidationError
+		if !errors.As(err, &validation) || validation.Code != "RUN_ACTIVE" {
+			t.Fatalf("active Run error = %v", err)
+		}
+	}
+	run, _ := s.GetRun(ctx, "run_active_assign")
+	if run.ProjectID != "project-active" {
+		t.Fatalf("failed assignment changed Run: %#v", run)
+	}
+}
+
 func TestDeleteProjectDefinitionRefusesReferencedProjectWithoutPartialCleanup(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
