@@ -84,7 +84,12 @@ import {
   type EvidenceGroupFrameBounds,
   type EvidenceNodeData
 } from "./evidenceChain";
-import { evidenceOrthogonalPath, routeEvidenceGraphEdges } from "./evidenceRouting";
+import {
+  evidenceOrthogonalPath,
+  evidenceRoutingGeometryKey,
+  evidenceRoutingTopologyKey,
+  routeEvidenceGraphEdges
+} from "./evidenceRouting";
 import type { I18nKey } from "./i18n";
 import { readEvidenceMapFromSearch, withEvidenceMapSearch } from "./projectRoute";
 import type { EvidenceChainDetail, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType, EvidenceProposal } from "./types";
@@ -181,6 +186,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   } | null>(null);
   const protocolContainerDragFrameRef = useRef<number | null>(null);
   const [movingProtocolContainerId, setMovingProtocolContainerId] = useState("");
+  const routingTimerRef = useRef<number | null>(null);
   const boardLabels = useMemo(
     () => ({
       titlePlaceholder: t("titlePlaceholder"),
@@ -675,10 +681,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     },
     [markDirty, nodes, onNodesChangeBase, selected]
   );
-  useEffect(() => {
-    setEdges((current) => routeEvidenceGraphEdges(current, nodes));
-  }, [nodes, setEdges]);
-
   const onEdgesChange = useCallback(
     (changes: Parameters<typeof onEdgesChangeBase>[0]) => {
       const acceptedIDs = new Set(edges.map((edge) => edge.id));
@@ -912,10 +914,26 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     protocolContainerDragRef.current = null;
   }, []);
   const visibleNodes = groupProjection.nodes;
-  const visibleEdges = useMemo(
-    () => routeEvidenceGraphEdges(groupProjection.edges, visibleNodes),
-    [groupProjection.edges, visibleNodes]
-  );
+  const visibleEdges = groupProjection.edges;
+  const routingGeometryKey = evidenceRoutingGeometryKey(visibleNodes);
+  const routingTopologyKey = evidenceRoutingTopologyKey(visibleEdges);
+  useEffect(() => {
+    if (routingTimerRef.current !== null) {
+      window.clearTimeout(routingTimerRef.current);
+      routingTimerRef.current = null;
+    }
+    if (!visibleNodes.length || !visibleEdges.length) return;
+    routingTimerRef.current = window.setTimeout(() => {
+      routingTimerRef.current = null;
+      setEdges((current) => routeEvidenceGraphEdges(current, visibleNodes));
+    }, 90);
+    return () => {
+      if (routingTimerRef.current !== null) {
+        window.clearTimeout(routingTimerRef.current);
+        routingTimerRef.current = null;
+      }
+    };
+  }, [routingGeometryKey, routingTopologyKey, setEdges]);
   const selectedNode = useMemo(
     () => selected?.kind === "node" ? nodes.find((node) => node.id === selected.id) || null : null,
     [nodes, selected]

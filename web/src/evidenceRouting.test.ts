@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { serializeEvidenceGraph, type EvidenceFlowEdge, type EvidenceFlowNode, type EvidenceRoutePoint } from "./evidenceChain";
-import { evidenceOrthogonalPath, routeEvidenceGraphEdges } from "./evidenceRouting";
+import {
+  evidenceOrthogonalPath,
+  evidenceRoutingGeometryKey,
+  evidenceRoutingTopologyKey,
+  routeEvidenceGraphEdges
+} from "./evidenceRouting";
 
 function node(id: string, x: number, y: number, width = 120, height = 72): EvidenceFlowNode {
   return {
@@ -43,6 +48,26 @@ function routeSignature(edge: EvidenceFlowEdge) {
 }
 
 describe("Evidence Map orthogonal routing", () => {
+  it("invalidates routing only for geometry or topology changes", () => {
+    const source = node("source", 0, 0);
+    const target = node("target", 300, 0);
+    const edge: EvidenceFlowEdge = {
+      id: "source-target",
+      source: source.id,
+      target: target.id,
+      data: { type: "next_step", rationale: "", autoHandles: true }
+    };
+
+    expect(evidenceRoutingGeometryKey([{ ...source, selected: true }, target]))
+      .toBe(evidenceRoutingGeometryKey([{ ...source, selected: false }, target]));
+    expect(evidenceRoutingGeometryKey([{ ...source, position: { x: 1, y: 0 } }, target]))
+      .not.toBe(evidenceRoutingGeometryKey([source, target]));
+    expect(evidenceRoutingTopologyKey([{ ...edge, selected: true }]))
+      .toBe(evidenceRoutingTopologyKey([{ ...edge, selected: false }]));
+    expect(evidenceRoutingTopologyKey([{ ...edge, target: source.id }]))
+      .not.toBe(evidenceRoutingTopologyKey([edge]));
+  });
+
   it("rounds orthogonal corners without moving the route endpoints", () => {
     const path = evidenceOrthogonalPath([
       { x: 0, y: 0 },
@@ -92,6 +117,27 @@ describe("Evidence Map orthogonal routing", () => {
       expect(segmentIntersectsRect(points[index - 1], points[index], paddedObstacle)).toBe(false);
       expect(points[index - 1].x === points[index].x || points[index - 1].y === points[index].y).toBe(true);
     }
+  });
+
+  it("leaves source and target cards before turning instead of using their borders as lanes", () => {
+    const source = node("source", 0, 120);
+    const target = node("target", 420, 0);
+    const edge: EvidenceFlowEdge = {
+      id: "source-target-clearance",
+      source: source.id,
+      target: target.id,
+      data: { type: "next_step", rationale: "" }
+    };
+
+    const [routed] = routeEvidenceGraphEdges([edge], [source, target]);
+    const points = routed.data?.routePoints || [];
+    expect(routed.sourceHandle).toBe("source-right");
+    expect(routed.targetHandle).toBe("target-left");
+    expect(points.length).toBeGreaterThanOrEqual(4);
+    expect(points[1].x).toBeGreaterThanOrEqual(source.position.x + Number(source.width) + 44);
+    expect(points[1].y).toBe(points[0].y);
+    expect(points.at(-2)?.x).toBeLessThanOrEqual(target.position.x - 44);
+    expect(points.at(-2)?.y).toBe(points.at(-1)?.y);
   });
 
   it("is deterministic when API node and edge order changes", () => {

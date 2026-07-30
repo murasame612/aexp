@@ -24,10 +24,38 @@ interface RouteCandidate {
 }
 
 const routeClearance = 20;
-const routeStub = 30;
+const endpointClearance = 22;
+const routeStub = 44;
 const routeBendPenalty = 54;
 const labelWidth = 176;
 const labelHeight = 30;
+
+export function evidenceRoutingGeometryKey(nodes: EvidenceFlowNode[]) {
+  return [...nodes]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((node) => {
+      const rect = nodeRect(node);
+      return `${node.id}:${round(rect.left)},${round(rect.top)},${round(rect.right)},${round(rect.bottom)}`;
+    })
+    .join("|");
+}
+
+export function evidenceRoutingTopologyKey(edges: EvidenceFlowEdge[]) {
+  return [...edges]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((edge) => {
+      const autoHandles = edge.data?.autoHandles === true;
+      return [
+        edge.id,
+        edge.source,
+        edge.target,
+        autoHandles ? "" : edge.sourceHandle || "",
+        autoHandles ? "" : edge.targetHandle || "",
+        autoHandles ? "auto" : "manual"
+      ].join(":");
+    })
+    .join("|");
+}
 
 export function routeEvidenceGraphEdges(edges: EvidenceFlowEdge[], nodes: EvidenceFlowNode[]): EvidenceFlowEdge[] {
   const nodeByID = new Map(nodes.map((node) => [node.id, node]));
@@ -169,11 +197,10 @@ function routeEvidenceEdge(
   const sourceStub = movePoint(sourceAnchor, sourceSide, stubDistance);
   const targetStub = movePoint(targetAnchor, targetSide, stubDistance);
   const obstacles = nodes
-    .filter((node) => node.data.type !== "group")
-    .map((node) => nodeRect(
-      node,
-      node.id === source.id || node.id === target.id ? 0 : routeClearance
-    ));
+    .filter((node) => node.data.type !== "group" && node.id !== source.id && node.id !== target.id)
+    .map((node) => nodeRect(node, routeClearance));
+  const sourceEnvelope = nodeRect(source, endpointClearance);
+  const targetEnvelope = nodeRect(target, endpointClearance);
   const nodeRects = nodes
     .filter((node) => node.data.type !== "group")
     .map((node) => nodeRect(node, 6));
@@ -193,36 +220,50 @@ function routeEvidenceEdge(
   xChannels.push(bounds.left - 48, bounds.right + 48);
   yChannels.push(bounds.top - 48, bounds.bottom + 48);
 
-  const middles: EvidenceRoutePoint[][] = [];
+  const simpleMiddles: EvidenceRoutePoint[][] = [];
   if (sourceStub.x === targetStub.x || sourceStub.y === targetStub.y) {
-    middles.push([sourceStub, targetStub]);
+    simpleMiddles.push([sourceStub, targetStub]);
   }
-  middles.push(
+  simpleMiddles.push(
     [sourceStub, { x: targetStub.x, y: sourceStub.y }, targetStub],
     [sourceStub, { x: sourceStub.x, y: targetStub.y }, targetStub]
   );
   for (const x of uniqueNumbers(xChannels)) {
-    middles.push([sourceStub, { x, y: sourceStub.y }, { x, y: targetStub.y }, targetStub]);
+    simpleMiddles.push([sourceStub, { x, y: sourceStub.y }, { x, y: targetStub.y }, targetStub]);
   }
   for (const y of uniqueNumbers(yChannels)) {
-    middles.push([sourceStub, { x: sourceStub.x, y }, { x: targetStub.x, y }, targetStub]);
-  }
-  for (const x of uniqueNumbers(xChannels)) {
-    for (const y of uniqueNumbers(yChannels)) {
-      middles.push(
-        [sourceStub, { x, y: sourceStub.y }, { x, y }, { x: targetStub.x, y }, targetStub],
-        [sourceStub, { x: sourceStub.x, y }, { x, y }, { x, y: targetStub.y }, targetStub]
-      );
-    }
+    simpleMiddles.push([sourceStub, { x: sourceStub.x, y }, { x: targetStub.x, y }, targetStub]);
   }
 
   let best: RouteCandidate | null = null;
-  for (const middle of middles) {
+  const candidateFor = (middle: EvidenceRoutePoint[]) => {
     const points = compactOrthogonalPoints([sourceAnchor, ...middle, targetAnchor]);
-    if (points.length < 2 || !pathIsClear(points, obstacles)) continue;
-    const candidate = scoreRoute(points, sourceSide, targetSide, reservedSegments);
-    if (!best || candidate.score < best.score || (candidate.score === best.score && candidate.signature < best.signature)) {
+    if (
+      points.length < 2
+      || !pathIsClear(points, obstacles)
+      || !pathClearsEndpointEnvelopes(points, sourceEnvelope, targetEnvelope, sourceSide, targetSide)
+    ) return null;
+    return scoreRoute(points, sourceSide, targetSide, reservedSegments);
+  };
+  for (const middle of simpleMiddles) {
+    const candidate = candidateFor(middle);
+    if (candidate && (!best || candidate.score < best.score || (candidate.score === best.score && candidate.signature < best.signature))) {
       best = candidate;
+    }
+  }
+  if (!best) {
+    for (const x of uniqueNumbers(xChannels)) {
+      for (const y of uniqueNumbers(yChannels)) {
+        for (const middle of [
+          [sourceStub, { x, y: sourceStub.y }, { x, y }, { x: targetStub.x, y }, targetStub],
+          [sourceStub, { x: sourceStub.x, y }, { x, y }, { x, y: targetStub.y }, targetStub]
+        ]) {
+          const candidate = candidateFor(middle);
+          if (candidate && (!best || candidate.score < best.score || (candidate.score === best.score && candidate.signature < best.signature))) {
+            best = candidate;
+          }
+        }
+      }
     }
   }
   if (!best) return null;
@@ -371,6 +412,36 @@ function pathIsClear(points: EvidenceRoutePoint[], obstacles: RouteRect[]) {
     if (obstacles.some((rect) => segmentIntersectsRect(start, end, rect))) return false;
   }
   return true;
+}
+
+function pathClearsEndpointEnvelopes(
+  points: EvidenceRoutePoint[],
+  sourceEnvelope: RouteRect,
+  targetEnvelope: RouteRect,
+  sourceSide: EvidenceHandleSide,
+  targetSide: EvidenceHandleSide
+) {
+  const sourceAnchor = points[0];
+  const sourceOuter = points[1];
+  const targetAnchor = points[points.length - 1];
+  const targetOuter = points[points.length - 2];
+  if (!pointLeavesAnchor(sourceAnchor, sourceOuter, sourceSide)) return false;
+  if (!pointLeavesAnchor(targetAnchor, targetOuter, targetSide)) return false;
+
+  for (let index = 2; index < points.length; index += 1) {
+    if (segmentIntersectsRect(points[index - 1], points[index], sourceEnvelope)) return false;
+  }
+  for (let index = 1; index < points.length - 1; index += 1) {
+    if (segmentIntersectsRect(points[index - 1], points[index], targetEnvelope)) return false;
+  }
+  return true;
+}
+
+function pointLeavesAnchor(anchor: EvidenceRoutePoint, outer: EvidenceRoutePoint, side: EvidenceHandleSide) {
+  if (side === Position.Left) return outer.y === anchor.y && outer.x <= anchor.x - routeStub;
+  if (side === Position.Right) return outer.y === anchor.y && outer.x >= anchor.x + routeStub;
+  if (side === Position.Top) return outer.x === anchor.x && outer.y <= anchor.y - routeStub;
+  return outer.x === anchor.x && outer.y >= anchor.y + routeStub;
 }
 
 function segmentIntersectsRect(start: EvidenceRoutePoint, end: EvidenceRoutePoint, rect: RouteRect) {
