@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  apiNodeToFlowNode,
   buildEvidenceEditPatch,
   candidateMatches,
   candidateToNode,
@@ -16,6 +17,7 @@ import {
   groupRunCandidatesByProject,
   isProtocolGroupMemberType,
   layoutEvidenceGraph,
+  prepareLoadedEvidenceGraph,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
   projectEvidenceGroups,
@@ -751,6 +753,96 @@ describe("evidenceChain helpers", () => {
     expect(laidOut).toHaveLength(100);
     expect(laidOut.every((node) => Number.isFinite(node.position.x) && Number.isFinite(node.position.y))).toBe(true);
     expect(new Set(laidOut.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(100);
+    const xs = laidOut.map((node) => node.position.x);
+    const ys = laidOut.map((node) => node.position.y);
+    const width = Math.max(...xs) - Math.min(...xs) + 306;
+    const height = Math.max(...ys) - Math.min(...ys) + 138;
+    expect(Math.max(width / height, height / width)).toBeLessThan(3);
     expect(serializeEvidenceGraph(laidOut, []).nodes).toHaveLength(100);
+  });
+
+  it("restores valid persisted coordinates without treating unpinned nodes as layout requests", () => {
+    const nodes: EvidenceFlowNode[] = [
+      { id: "a", type: "evidence", position: { x: 125, y: 240 }, data: { type: "issue", title: "A", body: "", pinned: false } },
+      { id: "b", type: "evidence", position: { x: 640, y: 315 }, data: { type: "plan", title: "B", body: "", pinned: false } }
+    ];
+    const edges: EvidenceFlowEdge[] = [
+      { id: "a-b", source: "a", target: "b", data: { type: "next_step", rationale: "" } }
+    ];
+
+    expect(prepareLoadedEvidenceGraph(nodes, edges).map((node) => node.position)).toEqual(nodes.map((node) => node.position));
+
+    const legacy = nodes.map((node) => ({
+      ...node,
+      position: { x: 0, y: 0 },
+      data: { ...node.data, pinned: true }
+    }));
+    const repaired = prepareLoadedEvidenceGraph(legacy, edges);
+    expect(new Set(repaired.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(2);
+    expect(repaired.every((node) => node.data.pinned === false)).toBe(true);
+  });
+
+  it("keeps authoritative database pin state over stale legacy data JSON", () => {
+    const node = apiNodeToFlowNode({
+      id: "pinned",
+      type: "plan",
+      title: "Pinned",
+      body: "",
+      x: 420,
+      y: 180,
+      width: 306,
+      height: 138,
+      pinned: true,
+      data_json: JSON.stringify({ pinned: false, title: "stale" })
+    });
+
+    expect(node.data.pinned).toBe(true);
+    expect(node.data.title).toBe("Pinned");
+    expect(node.position).toEqual({ x: 420, y: 180 });
+  });
+
+  it("packs dense ranks without rectangle overlap or an extreme vertical strip", () => {
+    const roots: EvidenceFlowNode[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `root-${index}`,
+      type: "evidence",
+      position: { x: 0, y: 0 },
+      width: 306,
+      height: 220,
+      data: { type: "issue", title: `Root ${index}`, body: "" }
+    }));
+    const target: EvidenceFlowNode = {
+      id: "target",
+      type: "evidence",
+      position: { x: 0, y: 0 },
+      width: 306,
+      height: 138,
+      data: { type: "plan", title: "Target", body: "" }
+    };
+    const edges: EvidenceFlowEdge[] = roots.map((node, index) => ({
+      id: `edge-${index}`,
+      source: node.id,
+      target: target.id,
+      data: { type: "next_step", rationale: "" }
+    }));
+    const laidOut = layoutEvidenceGraph([...roots, target], edges, true);
+    const rectangles = laidOut.map((node) => ({
+      id: node.id,
+      left: node.position.x,
+      top: node.position.y,
+      right: node.position.x + (node.width || 306),
+      bottom: node.position.y + (node.height || 138)
+    }));
+    for (let left = 0; left < rectangles.length; left += 1) {
+      for (let right = left + 1; right < rectangles.length; right += 1) {
+        const a = rectangles[left];
+        const b = rectangles[right];
+        expect(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top).toBe(true);
+      }
+    }
+    const xs = laidOut.map((node) => node.position.x);
+    const ys = laidOut.map((node) => node.position.y);
+    const width = Math.max(...xs) - Math.min(...xs) + 306;
+    const height = Math.max(...ys) - Math.min(...ys) + 220;
+    expect(Math.max(width / height, height / width)).toBeLessThan(3);
   });
 });

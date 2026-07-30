@@ -71,6 +71,7 @@ import {
   isProtocolGroupMemberType,
   nodeTypeLabel,
   projectEvidenceGroups,
+  prepareLoadedEvidenceGraph,
   serializeEvidenceGraph,
   layoutEvidenceGraph,
   inspectProtocolFrameMigration,
@@ -380,12 +381,18 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       ? orderedChains.find((chain) => chain.id === node.data.target_map_id)
       : undefined;
     const mapRefStatus = evidenceMapReferenceStatus(node.data, referencedMap);
+    const visualSize = node.data.type === "group"
+      ? {
+          width: Math.max(680, typeof node.width === "number" ? node.width : 0),
+          height: Math.max(250, typeof node.height === "number" ? node.height : 0)
+        }
+      : compactEvidenceNodeSize;
     return {
       ...node,
       connectable: node.data.type !== "group" && node.connectable !== false,
-      width: compactEvidenceNodeSize.width,
-      height: compactEvidenceNodeSize.height,
-      style: { ...node.style, ...compactEvidenceNodeSize },
+      width: visualSize.width,
+      height: visualSize.height,
+      style: { ...node.style, ...visualSize },
       data: {
         ...node.data,
         mapRefStatus,
@@ -530,7 +537,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     if (!chainChanged && previous?.key === detailKey) return;
     const rawNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(hydrateRunNodeFromCandidate);
     const rawEdges = (detail.data.edges || []).map(apiEdgeToFlowEdge);
-    const nextNodes = layoutEvidenceGraph(rawNodes, rawEdges).map(withNodeHandlers);
+    const nextNodes = prepareLoadedEvidenceGraph(rawNodes, rawEdges).map(withNodeHandlers);
     const nextEdges = autoRouteEvidenceEdges(rawEdges.map(withEdgeHandlers), nextNodes);
     const shouldFitLoadedGraph = chainChanged || (previous?.nodeCount === 0 && nextNodes.length > 0);
     appliedDetailRef.current = { chainId: detail.data.id, key: detailKey, nodeCount: nextNodes.length };
@@ -1449,6 +1456,13 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             onEdgeClick={onEdgeClick}
             onNodeDoubleClick={onNodeDoubleClick}
             onNodeDragStart={(_event, node) => {
+              if (!node.data.draft && detail.data?.status !== "archived") {
+                // A detail request that started before the drag may still
+                // resolve while React Flow is moving the node. Block the load
+                // effect immediately; drag-stop will promote this to normal
+                // dirty state and schedule the save.
+                dirtyRef.current = true;
+              }
               dragStartGroupFramesRef.current = groupFrames.map(({ id, bounds }) => ({ id, bounds }));
               const currentGroupID = typeof node.data.groupId === "string" ? node.data.groupId : "";
               const frame = currentGroupID
@@ -1500,7 +1514,6 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             connectionMode={ConnectionMode.Loose}
             nodesDraggable={detail.data?.status !== "archived"}
             nodesConnectable={detail.data?.status !== "archived"}
-            fitView
           >
             <Background gap={24} color="#dce2e8" />
             <ViewportPortal>
@@ -1918,7 +1931,8 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 function evidenceDetailApplyKey(detail: EvidenceChainDetail) {
-  const nodeKey = (detail.nodes || [])
+  const nodeKey = [...(detail.nodes || [])]
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
     .map((node) => [
       node.id,
       node.updated_at || "",
@@ -1933,7 +1947,8 @@ function evidenceDetailApplyKey(detail: EvidenceChainDetail) {
       node.body || ""
     ].join(":"))
     .join("|");
-  const edgeKey = (detail.edges || [])
+  const edgeKey = [...(detail.edges || [])]
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
     .map((edge) => [
       edge.id,
       edge.updated_at || "",

@@ -367,14 +367,14 @@ export function apiNodeToFlowNode(node: EvidenceChainNode): EvidenceFlowNode {
     width: node.width || 286,
     height: node.height || 184,
     data: {
+      ...data,
       type: node.type,
       title: node.title || defaultNodeTitle(node.type),
       body: node.body || "",
       runId: node.run_id || undefined,
       projectCardId: node.project_card_id || undefined,
       pinned: node.pinned === true,
-      occurredAt: node.occurred_at || undefined,
-      ...data
+      occurredAt: node.occurred_at || undefined
     }
   };
 }
@@ -867,9 +867,44 @@ function evidenceNodeHeight(node: EvidenceFlowNode) {
   return typeof node.measured?.height === "number" ? node.measured.height : typeof node.height === "number" ? node.height : 138;
 }
 
-const evidenceColumnStep = 420;
-const evidenceRowStep = 196;
+const evidenceColumnGap = 184;
+const evidenceRowGap = 56;
+const evidenceSubcolumnGap = 78;
 const evidenceOrigin = { x: 80, y: 72 };
+
+function packEvidenceGrid(nodes: EvidenceFlowNode[], maxColumns = 3) {
+  const columnCount = Math.max(1, Math.min(maxColumns, nodes.length));
+  const rowCount = Math.ceil(nodes.length / columnCount);
+  const columnWidths = Array.from({ length: columnCount }, () => 0);
+  const rowHeights = Array.from({ length: rowCount }, () => 0);
+  nodes.forEach((node, index) => {
+    const column = index % columnCount;
+    const row = Math.floor(index / columnCount);
+    columnWidths[column] = Math.max(columnWidths[column], evidenceNodeWidth(node));
+    rowHeights[row] = Math.max(rowHeights[row], evidenceNodeHeight(node));
+  });
+  const columnOffsets: number[] = [];
+  const rowOffsets: number[] = [];
+  columnWidths.reduce((offset, width, index) => {
+    columnOffsets[index] = offset;
+    return offset + width + 52;
+  }, 0);
+  rowHeights.reduce((offset, height, index) => {
+    rowOffsets[index] = offset;
+    return offset + height + 48;
+  }, 0);
+  return {
+    width: columnWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, columnCount - 1) * 52,
+    height: rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rowCount - 1) * 48,
+    positions: new Map(nodes.map((node, index) => [
+      node.id,
+      {
+        x: columnOffsets[index % columnCount],
+        y: rowOffsets[Math.floor(index / columnCount)]
+      }
+    ]))
+  };
+}
 
 export type EvidenceHandleSide = Position.Top | Position.Right | Position.Bottom | Position.Left;
 
@@ -1005,23 +1040,61 @@ function layoutFlatEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowE
   }
 
   const largestLayer = Math.max(1, ...[...layers.values()].map((layer) => layer.length));
+  // Dense evidence maps often have many independent observations converging
+  // on one claim. Keeping every same-rank node in one column turns that shape
+  // into an unreadable vertical strip. Wrap dense ranks into deterministic
+  // subcolumns and size every slot from the actual card rectangle.
+  const maxRowsPerSubcolumn = Math.max(4, Math.ceil(Math.sqrt(largestLayer * 1.2)));
+  const layerGeometry = new Map<number, {
+    width: number;
+    height: number;
+    positions: Map<string, { x: number; y: number }>;
+  }>();
+  for (const layerRank of layerRanks) {
+    const layer = layers.get(layerRank) || [];
+    const columns: EvidenceFlowNode[][] = [];
+    for (let start = 0; start < layer.length; start += maxRowsPerSubcolumn) {
+      columns.push(layer.slice(start, start + maxRowsPerSubcolumn));
+    }
+    const columnWidths = columns.map((column) => Math.max(0, ...column.map(evidenceNodeWidth)));
+    const columnHeights = columns.map((column) => (
+      column.reduce((sum, node) => sum + evidenceNodeHeight(node), 0)
+      + Math.max(0, column.length - 1) * evidenceRowGap
+    ));
+    const width = columnWidths.reduce((sum, value) => sum + value, 0)
+      + Math.max(0, columns.length - 1) * evidenceSubcolumnGap;
+    const height = Math.max(0, ...columnHeights);
+    const positions = new Map<string, { x: number; y: number }>();
+    let columnX = 0;
+    columns.forEach((column, columnIndex) => {
+      let nodeY = (height - columnHeights[columnIndex]) / 2;
+      for (const node of column) {
+        positions.set(node.id, { x: columnX, y: nodeY });
+        nodeY += evidenceNodeHeight(node) + evidenceRowGap;
+      }
+      columnX += columnWidths[columnIndex] + evidenceSubcolumnGap;
+    });
+    layerGeometry.set(layerRank, { width, height, positions });
+  }
+  const largestLayerHeight = Math.max(0, ...[...layerGeometry.values()].map((geometry) => geometry.height));
   const layerX = new Map<number, number>();
   let nextLayerX = evidenceOrigin.x;
   for (const layerRank of layerRanks) {
+    const geometry = layerGeometry.get(layerRank)!;
     layerX.set(layerRank, nextLayerX);
-    const widestNode = Math.max(0, ...(layers.get(layerRank) || []).map(evidenceNodeWidth));
-    nextLayerX += Math.max(evidenceColumnStep, widestNode + 114);
+    nextLayerX += geometry.width + evidenceColumnGap;
   }
   const positionByID = new Map<string, { x: number; y: number }>();
   for (const layerRank of layerRanks) {
-    const layer = layers.get(layerRank) || [];
-    const centeredOffset = (largestLayer - layer.length) * evidenceRowStep / 2;
-    layer.forEach((node, index) => {
+    const geometry = layerGeometry.get(layerRank)!;
+    const centeredOffset = (largestLayerHeight - geometry.height) / 2;
+    for (const node of layers.get(layerRank) || []) {
+      const local = geometry.positions.get(node.id) || { x: 0, y: 0 };
       positionByID.set(node.id, {
-        x: layerX.get(layerRank) || evidenceOrigin.x,
-        y: evidenceOrigin.y + centeredOffset + index * evidenceRowStep
+        x: (layerX.get(layerRank) ?? evidenceOrigin.x) + local.x,
+        y: evidenceOrigin.y + centeredOffset + local.y
       });
-    });
+    }
   }
 
   return nodes.map((node) => {
@@ -1067,13 +1140,10 @@ export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFl
       });
       continue;
     }
-    const columns = Math.min(3, members.length);
-    const rows = Math.ceil(members.length / 3);
-    const widest = Math.max(...members.map(evidenceNodeWidth));
-    const tallest = Math.max(...members.map(evidenceNodeHeight));
+    const packed = packEvidenceGrid(members);
     groupFootprint.set(descriptor.id, {
-      width: Math.max(360, (columns - 1) * 340 + widest + 48),
-      height: Math.max(210, (rows - 1) * 174 + tallest + 82)
+      width: Math.max(360, packed.width + 48),
+      height: Math.max(210, packed.height + 82)
     });
   }
   const outerNodes = nodes
@@ -1129,13 +1199,17 @@ export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFl
         }
       ]));
     } else {
-      memberPositions = new Map(members.map((member, index) => [
-        member.id,
-        {
-          x: group.position.x + 24 + (index % 3) * 340,
-          y: group.position.y + 64 + Math.floor(index / 3) * 174
-        }
-      ]));
+      const packed = packEvidenceGrid(members);
+      memberPositions = new Map(members.map((member) => {
+        const local = packed.positions.get(member.id) || { x: 0, y: 0 };
+        return [
+          member.id,
+          {
+            x: group.position.x + 24 + local.x,
+            y: group.position.y + 64 + local.y
+          }
+        ];
+      }));
     }
     for (const member of members) {
       if (!resetPins && member.data.pinned === true) {
@@ -1151,4 +1225,18 @@ export function layoutEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFl
   }
 
   return nodes.map((node) => positioned.get(node.id) || node);
+}
+
+export function prepareLoadedEvidenceGraph(nodes: EvidenceFlowNode[], edges: EvidenceFlowEdge[]): EvidenceFlowNode[] {
+  if (nodes.length < 2) return nodes;
+  const first = nodes[0]?.position;
+  const hasInvalidPosition = nodes.some((node) => (
+    !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)
+  ));
+  const allShareOnePosition = Boolean(first) && nodes.every((node) => (
+    node.position.x === first.x && node.position.y === first.y
+  ));
+  return hasInvalidPosition || allShareOnePosition
+    ? layoutEvidenceGraph(nodes, edges, true)
+    : nodes;
 }
