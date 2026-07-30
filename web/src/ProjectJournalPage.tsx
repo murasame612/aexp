@@ -308,7 +308,9 @@ export function JournalEntryRow({
             {entry.next_action_status === "open" ? <span className="journal-open-next">{zh ? "待办" : "Next"}</span> : null}
             {entry.next_action_status === "done" ? <Check className="journal-done-mark" size={14} /> : null}
           </span>
-          <span className="journal-entry-preview">{journalPreview(entry.body_md || entry.next_action || "")}</span>
+          {!expanded ? (
+            <span className="journal-entry-preview">{journalPreview(entry.body_md || entry.next_action || "")}</span>
+          ) : null}
           <span className="journal-entry-meta">
             <span>{entry.actor}</span>
             {entry.run_ids.length ? <span><Link2 size={12} />{entry.run_ids.length} {zh ? "个实验" : entry.run_ids.length === 1 ? "run" : "runs"}</span> : null}

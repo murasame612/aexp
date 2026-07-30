@@ -32,6 +32,7 @@ describe("JournalEntryRow", () => {
     );
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("Matched baseline is complete");
+    expect(html).toContain('class="journal-entry-preview"');
     expect(html).not.toContain("<table>");
   });
 
@@ -49,6 +50,7 @@ describe("JournalEntryRow", () => {
       />
     );
     expect(html).toContain('aria-expanded="true"');
+    expect(html).not.toContain('class="journal-entry-preview"');
     expect(html).toContain("<table>");
     expect(html).toContain("Run five seeds");
     expect(html).toContain("run_A");
