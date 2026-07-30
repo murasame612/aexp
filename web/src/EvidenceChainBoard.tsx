@@ -804,10 +804,20 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   };
 
   const arrangeGraph = useCallback((resetPins = false) => {
-    setNodes((current) => layoutEvidenceGraph(current, edges, resetPins).map(withNodeHandlers));
+    const arranged = layoutEvidenceGraph(nodes, edges, resetPins).map(withNodeHandlers);
+    setNodes(arranged);
     markDirty();
-    window.requestAnimationFrame(() => flow.fitView({ padding: 0.18, duration: 240 }));
-  }, [edges, flow, markDirty, setNodes, withNodeHandlers]);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        void flow.fitView({
+          nodes: arranged.map((node) => ({ id: node.id })),
+          padding: 0.18,
+          duration: reduceMotion ? 0 : 240,
+          maxZoom: 1
+        });
+      });
+    });
+  }, [edges, flow, markDirty, nodes, reduceMotion, setNodes, withNodeHandlers]);
 
   const nodeTypes = useMemo(() => ({ evidence: EvidenceNode }), []);
   const edgeTypes = useMemo(() => ({ evidence: EvidenceEdge }), []);
@@ -1512,6 +1522,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             }}
             onPaneClick={clearSelection}
             connectionMode={ConnectionMode.Loose}
+            minZoom={0.12}
             nodesDraggable={detail.data?.status !== "archived"}
             nodesConnectable={detail.data?.status !== "archived"}
           >
