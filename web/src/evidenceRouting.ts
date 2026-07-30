@@ -111,12 +111,46 @@ export function routeEvidenceGraphEdges(edges: EvidenceFlowEdge[], nodes: Eviden
   }));
 }
 
-export function evidenceOrthogonalPath(points: EvidenceRoutePoint[]): string {
+export function evidenceOrthogonalPath(points: EvidenceRoutePoint[], cornerRadius = 24): string {
   if (points.length < 2) return "";
-  return points.reduce(
-    (path, point, index) => `${path}${index === 0 ? "M" : " L"} ${round(point.x)} ${round(point.y)}`,
-    ""
-  );
+  const commands = [`M ${round(points[0].x)} ${round(points[0].y)}`];
+
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1];
+    const corner = points[index];
+    const next = points[index + 1];
+    const incomingLength = Math.abs(corner.x - previous.x) + Math.abs(corner.y - previous.y);
+    const outgoingLength = Math.abs(next.x - corner.x) + Math.abs(next.y - corner.y);
+    const isCorner = (previous.x === corner.x && corner.y === next.y)
+      || (previous.y === corner.y && corner.x === next.x);
+
+    if (!isCorner || incomingLength === 0 || outgoingLength === 0) {
+      commands.push(`L ${round(corner.x)} ${round(corner.y)}`);
+      continue;
+    }
+
+    const radius = Math.min(Math.max(cornerRadius, 0), incomingLength / 2, outgoingLength / 2);
+    const entry = pointToward(corner, previous, radius);
+    const exit = pointToward(corner, next, radius);
+    commands.push(
+      `L ${round(entry.x)} ${round(entry.y)}`,
+      `Q ${round(corner.x)} ${round(corner.y)} ${round(exit.x)} ${round(exit.y)}`
+    );
+  }
+
+  const last = points[points.length - 1];
+  commands.push(`L ${round(last.x)} ${round(last.y)}`);
+  return commands.join(" ");
+}
+
+function pointToward(from: EvidenceRoutePoint, to: EvidenceRoutePoint, distance: number): EvidenceRoutePoint {
+  const length = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
+  if (length === 0) return from;
+  const ratio = distance / length;
+  return {
+    x: from.x + (to.x - from.x) * ratio,
+    y: from.y + (to.y - from.y) * ratio
+  };
 }
 
 function routeEvidenceEdge(

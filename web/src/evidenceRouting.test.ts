@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { serializeEvidenceGraph, type EvidenceFlowEdge, type EvidenceFlowNode, type EvidenceRoutePoint } from "./evidenceChain";
-import { routeEvidenceGraphEdges } from "./evidenceRouting";
+import { evidenceOrthogonalPath, routeEvidenceGraphEdges } from "./evidenceRouting";
 
 function node(id: string, x: number, y: number, width = 120, height = 72): EvidenceFlowNode {
   return {
@@ -43,6 +43,27 @@ function routeSignature(edge: EvidenceFlowEdge) {
 }
 
 describe("Evidence Map orthogonal routing", () => {
+  it("rounds orthogonal corners without moving the route endpoints", () => {
+    const path = evidenceOrthogonalPath([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 80 },
+      { x: 200, y: 80 }
+    ], 20);
+
+    expect(path).toBe("M 0 0 L 80 0 Q 100 0 100 20 L 100 60 Q 100 80 120 80 L 200 80");
+  });
+
+  it("clamps corner rounding on short segments", () => {
+    const path = evidenceOrthogonalPath([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 }
+    ], 20);
+
+    expect(path).toBe("M 0 0 L 5 0 Q 10 0 10 5 L 10 10");
+  });
+
   it("routes a forward edge around an unrelated card with right-to-left ports", () => {
     const source = node("source", 0, 120);
     const obstacle = node("obstacle", 220, 90, 140, 132);
