@@ -3137,20 +3137,18 @@ textarea:focus {
 }
 
 .journal-toolbar {
-  position: sticky;
-  z-index: 8;
-  top: 72px;
+  position: static;
   display: grid;
   grid-template-columns: minmax(280px, 420px) minmax(190px, 250px) max-content max-content;
   justify-content: end;
   gap: 9px;
   align-items: center;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--surface) 94%, transparent);
-  box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(16px);
+  margin-bottom: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .journal-search,
