@@ -59,7 +59,6 @@ import {
   evidenceMapReferenceStatus,
   evidenceProposalPreview,
   evidenceWorkspaceProposalPreview,
-  evidenceAutoHandlePair,
   evidenceGroupFrameBounds,
   evidenceMarkerEnd,
   edgeStyle,
@@ -78,7 +77,6 @@ import {
   convertProtocolToFrame,
   protocolContainerMoveDeltaForKey,
   translateProtocolContainer,
-  type EvidenceEdgeData,
   type EvidenceFlowEdge,
   type EvidenceFlowNode,
   type EvidenceHandleSide,
@@ -86,6 +84,7 @@ import {
   type EvidenceGroupFrameBounds,
   type EvidenceNodeData
 } from "./evidenceChain";
+import { evidenceOrthogonalPath, routeEvidenceGraphEdges } from "./evidenceRouting";
 import type { I18nKey } from "./i18n";
 import { readEvidenceMapFromSearch, withEvidenceMapSearch } from "./projectRoute";
 import type { EvidenceChainDetail, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType, EvidenceProposal } from "./types";
@@ -538,7 +537,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     const rawNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(hydrateRunNodeFromCandidate);
     const rawEdges = (detail.data.edges || []).map(apiEdgeToFlowEdge);
     const nextNodes = prepareLoadedEvidenceGraph(rawNodes, rawEdges).map(withNodeHandlers);
-    const nextEdges = autoRouteEvidenceEdges(rawEdges.map(withEdgeHandlers), nextNodes);
+    const nextEdges = routeEvidenceGraphEdges(rawEdges.map(withEdgeHandlers), nextNodes);
     const shouldFitLoadedGraph = chainChanged || (previous?.nodeCount === 0 && nextNodes.length > 0);
     appliedDetailRef.current = { chainId: detail.data.id, key: detailKey, nodeCount: nextNodes.length };
     setNodes(nextNodes);
@@ -677,7 +676,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     [markDirty, nodes, onNodesChangeBase, selected]
   );
   useEffect(() => {
-    setEdges((current) => autoRouteEvidenceEdges(current, nodes));
+    setEdges((current) => routeEvidenceGraphEdges(current, nodes));
   }, [nodes, setEdges]);
 
   const onEdgesChange = useCallback(
@@ -914,7 +913,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   }, []);
   const visibleNodes = groupProjection.nodes;
   const visibleEdges = useMemo(
-    () => autoRouteEvidenceEdges(groupProjection.edges, visibleNodes),
+    () => routeEvidenceGraphEdges(groupProjection.edges, visibleNodes),
     [groupProjection.edges, visibleNodes]
   );
   const selectedNode = useMemo(
@@ -1046,7 +1045,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       const type: EvidenceEdgeType = defaultEvidenceRelation(sourceType, targetType);
       const hasManualHandles = Boolean(connection.sourceHandle && connection.targetHandle);
       setEdges((current) =>
-        autoRouteEvidenceEdges(
+        routeEvidenceGraphEdges(
           addEdge(
             {
               ...connection,
@@ -2476,7 +2475,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const type = data?.type || "next_step";
   const isDraft = data?.draft === true;
   const [hovered, setHovered] = useState(false);
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
+  const [fallbackPath, fallbackLabelX, fallbackLabelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     targetX,
@@ -2486,6 +2485,19 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     borderRadius: 18,
     offset: 30 + Math.min(Math.max(data?.routeLane || 0, 0), 6) * 9
   });
+  const routedPoints = data?.routePoints && data.routePoints.length >= 2
+    ? data.routePoints.map((point, index, points) => (
+        index === 0
+          ? { x: sourceX, y: sourceY }
+          : index === points.length - 1
+            ? { x: targetX, y: targetY }
+            : point
+      ))
+    : null;
+  const edgePath = routedPoints ? evidenceOrthogonalPath(routedPoints) : fallbackPath;
+  const labelX = data?.routeLabelPoint?.x ?? fallbackLabelX;
+  const labelY = data?.routeLabelPoint?.y ?? fallbackLabelY;
+  const labelSafe = data?.routeSafe === true && Boolean(data.routeLabelPoint);
   const displayLabel = text(label) || edgeTypeLabel(type);
   const labelVisible = selected || hovered || isDraft;
   const baseStyle = edgeStyle(type);
@@ -2520,7 +2532,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
       />
       <EdgeLabelRenderer>
         <div
-          className={`evidence-edge-label ${labelVisible ? "is-visible" : ""} ${isDraft ? "evidence-edge-label--draft" : ""} nodrag nopan`}
+          className={`evidence-edge-label ${labelSafe ? "is-safe" : ""} ${labelVisible ? "is-visible" : ""} ${isDraft ? "evidence-edge-label--draft" : ""} nodrag nopan`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, "--evidence-color": evidenceColor(type) } as CSSProperties}
           onPointerEnter={() => setHovered(true)}
           onPointerLeave={() => setHovered(false)}
@@ -2539,80 +2551,6 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
       </EdgeLabelRenderer>
     </>
   );
-}
-
-function autoRouteEvidenceEdges(edges: EvidenceFlowEdge[], nodes: EvidenceFlowNode[]): EvidenceFlowEdge[] {
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const routed = edges.map((edge) => {
-    const type = edge.data?.type || "next_step";
-    const data: EvidenceEdgeData = { ...(edge.data ?? {}), type, rationale: edge.data?.rationale || "" };
-    const base: EvidenceFlowEdge = {
-      ...edge,
-      type: "evidence",
-      animated: false,
-      markerEnd: evidenceMarkerEnd(type),
-      style: edgeStyle(type),
-      data
-    };
-    const shouldAutoRoute = base.data?.autoHandles === true || !base.sourceHandle || !base.targetHandle;
-    if (!shouldAutoRoute) return base;
-    const source = nodeById.get(base.source);
-    const target = nodeById.get(base.target);
-    if (!source || !target) return base;
-    const handles = chooseEvidenceHandles(source, target);
-    const routedData: EvidenceEdgeData = { ...data, autoHandles: true };
-    return {
-      ...base,
-      sourceHandle: handleId("source", handles.source),
-      targetHandle: handleId("target", handles.target),
-      data: routedData
-    };
-  });
-  const routeLane = new Map<string, number>();
-  const assignLanes = (
-    keyFor: (edge: EvidenceFlowEdge) => string,
-    sortFor: (edge: EvidenceFlowEdge) => number
-  ) => {
-    const groups = new Map<string, EvidenceFlowEdge[]>();
-    for (const edge of routed) {
-      if (edge.data?.autoHandles !== true) continue;
-      const key = keyFor(edge);
-      groups.set(key, [...(groups.get(key) || []), edge]);
-    }
-    for (const group of groups.values()) {
-      group.sort((left, right) => sortFor(left) - sortFor(right) || left.id.localeCompare(right.id));
-      group.forEach((edge, index) => routeLane.set(edge.id, Math.max(routeLane.get(edge.id) || 0, index)));
-    }
-  };
-  assignLanes(
-    (edge) => `${edge.source}:${edge.sourceHandle || ""}`,
-    (edge) => {
-      const target = nodeById.get(edge.target);
-      return target ? nodeCenter(target).y : 0;
-    }
-  );
-  assignLanes(
-    (edge) => `${edge.target}:${edge.targetHandle || ""}`,
-    (edge) => {
-      const source = nodeById.get(edge.source);
-      return source ? nodeCenter(source).y : 0;
-    }
-  );
-  return routed.map((edge) => ({
-    ...edge,
-    data: { ...edge.data!, routeLane: routeLane.get(edge.id) || 0 }
-  }));
-}
-
-function chooseEvidenceHandles(source: EvidenceFlowNode, target: EvidenceFlowNode): { source: EvidenceHandleSide; target: EvidenceHandleSide } {
-  return evidenceAutoHandlePair(nodeCenter(source), nodeCenter(target));
-}
-
-function nodeCenter(node: EvidenceFlowNode) {
-  const measured = node.measured as { width?: number; height?: number } | undefined;
-  const width = measured?.width || node.width || 286;
-  const height = measured?.height || node.height || 184;
-  return { x: node.position.x + width / 2, y: node.position.y + height / 2 };
 }
 
 function handleId(kind: "source" | "target", side: EvidenceHandleSide) {

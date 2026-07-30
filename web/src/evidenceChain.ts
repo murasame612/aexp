@@ -59,6 +59,9 @@ export interface EvidenceEdgeData extends Record<string, unknown> {
   rationale: string;
   autoHandles?: boolean;
   routeLane?: number;
+  routePoints?: EvidenceRoutePoint[];
+  routeLabelPoint?: EvidenceRoutePoint;
+  routeSafe?: boolean;
   readOnly?: boolean;
   draft?: boolean;
   proposalRunId?: string;
@@ -66,6 +69,11 @@ export interface EvidenceEdgeData extends Record<string, unknown> {
   onSelectEdge?: (edgeId: string) => void;
   onUpdateEdge?: (edgeId: string, patch: { type?: EvidenceEdgeType; label?: string; rationale?: string }) => void;
   labels?: EvidenceBoardLabels;
+}
+
+export interface EvidenceRoutePoint {
+  x: number;
+  y: number;
 }
 
 export type EvidenceFlowNode = Node<EvidenceNodeData, "evidence">;
