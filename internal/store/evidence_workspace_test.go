@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,11 +54,11 @@ func TestEvidenceWorkspaceBootstrapProposalWithoutRunOrDataset(t *testing.T) {
 			{ID: "protocol_bootstrap", Type: EvidenceNodeProtocol, Title: "Initial evaluation protocol"},
 			{ID: "claim_bootstrap", Type: EvidenceNodeClaim, Title: "Working claim"},
 			{ID: "issue_bootstrap", Type: EvidenceNodeIssue, Title: "Protocol remains unverified"},
-			{ID: "plan_bootstrap", Type: EvidenceNodePlan, Title: "Run a controlled baseline"},
+			{ID: "child_hypothesis_bootstrap", Type: EvidenceNodeClaim, Title: "Verified data will resolve the protocol issue", DataJSON: `{"claimKind":"hypothesis"}`},
 		},
 		Edges: []EvidenceChainEdge{
 			{ID: "edge_hypothesis_claim", Type: EvidenceEdgeSupports, SourceNodeID: "hypothesis_bootstrap", TargetNodeID: "claim_bootstrap"},
-			{ID: "edge_issue_plan", Type: EvidenceEdgeNextStep, SourceNodeID: "issue_bootstrap", TargetNodeID: "plan_bootstrap"},
+			{ID: "edge_issue_child_hypothesis", Type: EvidenceEdgeNextStep, SourceNodeID: "issue_bootstrap", TargetNodeID: "child_hypothesis_bootstrap"},
 			{ID: "edge_protocol_context", Type: EvidenceEdgeRelatedTo, SourceNodeID: "protocol_bootstrap", TargetNodeID: "hypothesis_bootstrap"},
 		},
 	}
@@ -101,6 +102,67 @@ func TestEvidenceWorkspaceBootstrapProposalWithoutRunOrDataset(t *testing.T) {
 	revisions, err := s.ListEvidenceChainRevisions(ctx, topic.ID, 10)
 	if err != nil || len(revisions) != 1 || revisions[0].SourceKind != "evidence_proposal" || revisions[0].SourceID != created.ID {
 		t.Fatalf("revisions = %#v, err = %v", revisions, err)
+	}
+}
+
+func TestEvidenceWorkspaceLayoutIntentIsReviewableAndValidated(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_layout_intent")
+	patch := &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		LayoutIntent: &EvidenceLayoutIntent{
+			Flow:      "left_to_right",
+			Ranks:     [][]string{{"issue_layout"}, {"hypothesis_layout"}},
+			Rationale: "Put the blocker before the next action.",
+		},
+		Nodes: []EvidenceChainNode{
+			{ID: "issue_layout", Type: EvidenceNodeIssue, Title: "Known blocker"},
+			{ID: "hypothesis_layout", Type: EvidenceNodeClaim, Title: "A controlled rerun resolves the blocker", DataJSON: `{"claimKind":"hypothesis"}`},
+		},
+		Edges: []EvidenceChainEdge{{
+			ID: "edge_layout", Type: EvidenceEdgeNextStep,
+			SourceNodeID: "issue_layout", TargetNodeID: "hypothesis_layout",
+		}},
+	}
+	created, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Curate the research path", RoutingReason: "This Topic owns the blocker.",
+	}, patch)
+	if err != nil {
+		t.Fatalf("CreateEvidenceProposal: %v", err)
+	}
+	var persisted EvidenceGraphPatch
+	if err := json.Unmarshal([]byte(created.PatchJSON), &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.LayoutIntent == nil || persisted.LayoutIntent.Flow != "left_to_right" ||
+		len(persisted.LayoutIntent.Ranks) != 2 || persisted.LayoutIntent.Ranks[1][0] != "hypothesis_layout" {
+		t.Fatalf("persisted layout intent = %#v", persisted.LayoutIntent)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
+	if err != nil || !plan.Eligible {
+		t.Fatalf("plan = %#v, err = %v", plan, err)
+	}
+
+	unknown, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Invalid layout target", RoutingReason: "This Topic owns the blocker.",
+	}, &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		LayoutIntent: &EvidenceLayoutIntent{
+			Flow:  "left_to_right",
+			Ranks: [][]string{{"missing_node"}},
+		},
+		Nodes: []EvidenceChainNode{},
+		Edges: []EvidenceChainEdge{},
+	})
+	if err != nil {
+		t.Fatalf("CreateEvidenceProposal with unknown layout node: %v", err)
+	}
+	unknownPlan, err := s.PlanEvidenceProposal(ctx, unknown.ID)
+	if err != nil || !hasEvidenceBlocker(unknownPlan.Blockers, "LAYOUT_NODE_NOT_FOUND") {
+		t.Fatalf("unknown plan = %#v, err = %v", unknownPlan, err)
 	}
 }
 
@@ -231,6 +293,48 @@ func TestEvidenceWorkspaceFormalBlockerIdentifiesEdgeNodeAndRun(t *testing.T) {
 	}
 }
 
+func TestEvidenceWorkspaceResultProvenanceCannotBypassFormalRunGate(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_gate")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_result_gate", Name: "result-gate", Type: "ssh", Host: "localhost", RootDir: "/tmp", Status: ResourceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	run := &Run{
+		ID: "run_result_gate", ResourceID: "rsrc_result_gate", ProjectID: project.ID,
+		Name: "smoke source disguised as a result", Status: RunStatusSucceeded,
+		Kind: RunKindSmoke, EvidenceGrade: RunEvidenceGradeSmoke, Command: "true",
+	}
+	if err := s.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID,
+		RoutingReason: "This Topic owns the attempted formal conclusion.",
+	}, &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Nodes: []EvidenceChainNode{
+			{ID: "result_gate", Type: EvidenceNodeClaim, Title: "Observed metric", SourceRunIDs: []string{run.ID}, DataJSON: `{"claimKind":"result","resultDisposition":"conclusion"}`},
+			{ID: "conclusion_gate", Type: EvidenceNodeConclusion, Title: "Formal conclusion"},
+		},
+		Edges: []EvidenceChainEdge{{ID: "edge_result_gate", Type: EvidenceEdgeSupports, SourceNodeID: "result_gate", TargetNodeID: "conclusion_gate"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateEvidenceProposal: %v", err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker := evidenceBlockerByCode(plan.Blockers, "RUN_NOT_FORMAL_EVIDENCE")
+	if plan.Eligible || blocker == nil {
+		t.Fatalf("smoke Result source bypassed formal readiness: %#v", plan)
+	}
+	if blocker.NodeID != "result_gate" || blocker.EdgeID != "edge_result_gate" || blocker.RunID != run.ID {
+		t.Fatalf("result provenance blocker lost context: %#v", blocker)
+	}
+}
+
 func TestEvidenceWorkspaceRejectedProposalCreatesNewAttempt(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -312,7 +416,201 @@ func TestEvidenceWorkspaceSupportsMultipleTopicsAndStableSourceOrdering(t *testi
 	}
 }
 
-func TestEvidenceWorkspaceConcurrentBaseRevisionAllowsOnlyOneAcceptance(t *testing.T) {
+func TestEvidenceWorkspaceSingleResultInheritsProposalRunProvenance(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_provenance")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_result_provenance", Name: "result provenance", Type: "ssh", Host: "localhost", RootDir: "/tmp", Status: ResourceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{"run_result_seed_41", "run_result_seed_42"} {
+		if err := s.CreateRun(ctx, &Run{ID: runID, ResourceID: "rsrc_result_provenance", ProjectID: project.ID, Name: runID, Kind: RunKindPilot, Status: RunStatusSucceeded, Command: "true"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	created, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Record one observed result", RoutingReason: "This Topic owns the result.",
+		SourceRunIDs: []string{"run_result_seed_42", "run_result_seed_41"},
+	}, &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Nodes: []EvidenceChainNode{{
+			ID: "result_multi_seed", Type: EvidenceNodeClaim, Title: "Observed result",
+			DataJSON: `{"claimKind":"result","resultDisposition":"pending","dispositionReason":"awaiting cross-seed interpretation"}`,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted EvidenceGraphPatch
+	if err := json.Unmarshal([]byte(created.PatchJSON), &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Nodes[0].SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
+		t.Fatalf("result provenance = %#v", got)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
+	if err != nil || !plan.Eligible || hasEvidenceBlocker(plan.Blockers, "RESULT_PROVENANCE_REQUIRED") {
+		t.Fatalf("plan = %#v, err = %v", plan, err)
+	}
+	if _, err := s.ReviewEvidenceProposal(ctx, created.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := s.GetEvidenceChainGraph(ctx, topic.ID)
+	if err != nil || len(graph.Nodes) != 1 {
+		t.Fatalf("graph = %#v, err = %v", graph, err)
+	}
+	if got := graph.Nodes[0].SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
+		t.Fatalf("stored result provenance = %#v", got)
+	}
+}
+
+func TestEvidenceWorkspaceResultDispositionMustMatchOutcomeEdges(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_disposition")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_result_disposition", Name: "result disposition", Type: "ssh", Host: "localhost", RootDir: "/tmp", Status: ResourceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_result_disposition", ResourceID: "rsrc_result_disposition", ProjectID: project.ID, Name: "result disposition", Kind: RunKindPilot, Status: RunStatusSucceeded, Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Route an interpreted result", RoutingReason: "This Topic owns the result.",
+	}, &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Nodes: []EvidenceChainNode{
+			{ID: "hypothesis", Type: EvidenceNodeHypothesis, Title: "Hypothesis", DataJSON: `{}`},
+			{ID: "result", Type: EvidenceNodeClaim, Title: "Result", SourceRunIDs: []string{"run_result_disposition"}, DataJSON: `{"claimKind":"result","resultDisposition":"conclusion"}`},
+			{ID: "issue", Type: EvidenceNodeIssue, Title: "Issue", DataJSON: `{}`},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "design-result", SourceNodeID: "hypothesis", TargetNodeID: "result", Type: EvidenceEdgeNextStep},
+			{ID: "result-issue", SourceNodeID: "result", TargetNodeID: "issue", Type: EvidenceEdgeRevealsIssue, Rationale: "the evaluation is underpowered"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEvidenceBlocker(plan.Blockers, "RESULT_DISPOSITION_EDGE_MISMATCH") {
+		t.Fatalf("result disposition blockers = %#v", plan.Blockers)
+	}
+}
+
+func TestEvidenceWorkspaceRejectsResultOutcomeBypasses(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_bypass")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_result_bypass", Name: "result bypass", Type: "ssh", Host: "localhost", RootDir: "/tmp", Status: ResourceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_result_bypass", ResourceID: "rsrc_result_bypass", ProjectID: project.ID, Name: "result bypass", Kind: RunKindPilot, Status: RunStatusSucceeded, Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		target   EvidenceChainNode
+		edgeType string
+	}{
+		{name: "plan", target: EvidenceChainNode{ID: "plan", Type: EvidenceNodePlan}, edgeType: EvidenceEdgeNextStep},
+		{name: "canonical hypothesis", target: EvidenceChainNode{ID: "canonical_hypothesis", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"hypothesis"}`}, edgeType: EvidenceEdgeSupersedes},
+		{name: "legacy hypothesis", target: EvidenceChainNode{ID: "legacy_hypothesis", Type: EvidenceNodeHypothesis}, edgeType: EvidenceEdgeSupports},
+		{name: "legacy experiment", target: EvidenceChainNode{ID: "legacy_experiment", Type: EvidenceNodeExperiment}, edgeType: EvidenceEdgeNextStep},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resultID := "result_" + strings.ReplaceAll(tt.name, " ", "_")
+			proposal, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+				ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+				Summary: "Attempt a Result stage bypass", RoutingReason: "This Topic owns the result.",
+			}, &EvidenceGraphPatch{
+				ChainID: topic.ID,
+				Nodes: []EvidenceChainNode{
+					{ID: resultID, Type: EvidenceNodeClaim, SourceRunIDs: []string{"run_result_bypass"}, DataJSON: `{"claimKind":"result","resultDisposition":"pending","dispositionReason":"awaiting interpretation"}`},
+					tt.target,
+				},
+				Edges: []EvidenceChainEdge{{ID: "bypass_" + resultID, SourceNodeID: resultID, TargetNodeID: tt.target.ID, Type: tt.edgeType}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := s.PlanEvidenceProposal(ctx, proposal.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasEvidenceBlocker(plan.Blockers, "RESULT_OUTCOME_BYPASS") {
+				t.Fatalf("bypass blockers = %#v", plan.Blockers)
+			}
+		})
+	}
+}
+
+func TestEvidenceWorkspaceNeutralResultLinkDoesNotForceLegacyDispositionMigration(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_neutral_link")
+	legacy := EvidenceChainGraph{Nodes: []EvidenceChainNode{
+		{ID: "legacy_result", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"result"}`},
+		{ID: "context_plan", Type: EvidenceNodePlan},
+	}}
+	if _, err := s.SaveEvidenceChainGraphCAS(ctx, topic.ID, legacy, EvidenceGraphSaveOptions{ExpectedRevision: 0, Actor: "legacy", SourceKind: "migration"}); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Add neutral context", RoutingReason: "This Topic owns the context.",
+	}, &EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Edges:   []EvidenceChainEdge{{ID: "neutral_context", SourceNodeID: "legacy_result", TargetNodeID: "context_plan", Type: EvidenceEdgeRelatedTo}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Eligible || hasEvidenceBlocker(plan.Blockers, "RESULT_DISPOSITION_REQUIRED") || hasEvidenceBlocker(plan.Blockers, "RESULT_PROVENANCE_REQUIRED") {
+		t.Fatalf("neutral link should not migrate legacy Result: %#v", plan)
+	}
+}
+
+func TestEvidenceWorkspaceMultipleResultsRequireExplicitNodeProvenance(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_result_provenance_split")
+	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_result_provenance_split", Name: "result provenance", Type: "ssh", Host: "localhost", RootDir: "/tmp", Status: ResourceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &Run{ID: "run_shared_context", ResourceID: "rsrc_result_provenance_split", ProjectID: project.ID, Name: "shared", Kind: RunKindPilot, Status: RunStatusSucceeded, Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+		ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+		Summary: "Two distinct results", RoutingReason: "This Topic owns both results.",
+		SourceRunIDs: []string{"run_shared_context"},
+	}, &EvidenceGraphPatch{ChainID: topic.ID, Nodes: []EvidenceChainNode{
+		{ID: "result_a", Type: EvidenceNodeClaim, Title: "Result A", DataJSON: `{"claimKind":"result"}`},
+		{ID: "result_b", Type: EvidenceNodeClaim, Title: "Result B", DataJSON: `{"claimKind":"result"}`},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Eligible || !hasEvidenceBlocker(plan.Blockers, "RESULT_PROVENANCE_REQUIRED") {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestEvidenceWorkspaceStaleDisjointAdditionsRebaseSafely(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	project, topic := createEvidenceWorkspaceProject(t, s, "project_proposal_cas")
@@ -338,18 +636,137 @@ func TestEvidenceWorkspaceConcurrentBaseRevisionAllowsOnlyOneAcceptance(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondPlan.Eligible || !hasEvidenceBlocker(secondPlan.Blockers, "REVISION_CONFLICT") {
+	if !secondPlan.Eligible || !secondPlan.AutoRebased || secondPlan.AppliedGraphRevision != secondPlan.CurrentGraphRevision {
 		t.Fatalf("second plan = %#v", secondPlan)
 	}
-	if _, err := s.ReviewEvidenceProposal(ctx, second.ID, "accept", "user"); err == nil {
-		t.Fatal("stale proposal acceptance unexpectedly succeeded")
+	if _, err := s.ReviewEvidenceProposal(ctx, second.ID, "accept", "user"); err != nil {
+		t.Fatalf("accept disjoint stale proposal: %v", err)
 	}
 	if _, err := s.ReviewEvidenceProposal(ctx, first.ID, "accept", "user"); err == nil {
 		t.Fatal("same proposal accepted twice")
 	}
 	graph, _ := s.GetEvidenceChainGraph(ctx, topic.ID)
-	if len(graph.Nodes) != 1 || graph.Nodes[0].ID != "plan_first" {
+	if len(graph.Nodes) != 2 || graph.Nodes[0].ID != "plan_first" || graph.Nodes[1].ID != "plan_second" {
 		t.Fatalf("graph after CAS = %#v", graph)
+	}
+}
+
+func TestEvidenceWorkspaceStaleConflictingPatchRemainsBlocked(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_proposal_conflict")
+	makeProposal := func(summary string, patch EvidenceGraphPatch) *EvidenceProposal {
+		proposal, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+			ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+			Summary: summary, RoutingReason: "This Topic owns the conflicting planning context.",
+		}, &patch)
+		if err != nil {
+			t.Fatalf("CreateEvidenceProposal(%s): %v", summary, err)
+		}
+		return proposal
+	}
+	first := makeProposal("first", EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Nodes:   []EvidenceChainNode{{ID: "plan_shared", Type: EvidenceNodePlan, Title: "first"}},
+	})
+	collision := makeProposal("collision", EvidenceGraphPatch{
+		ChainID: topic.ID,
+		Nodes:   []EvidenceChainNode{{ID: "plan_shared", Type: EvidenceNodePlan, Title: "second"}},
+	})
+	upsert := makeProposal("upsert", EvidenceGraphPatch{
+		ChainID:     topic.ID,
+		UpsertNodes: []EvidenceChainNode{{ID: "plan_shared", Type: EvidenceNodePlan, Title: "replacement"}},
+	})
+	if _, err := s.ReviewEvidenceProposal(ctx, first.ID, "accept", "user"); err != nil {
+		t.Fatalf("accept first: %v", err)
+	}
+	for _, proposal := range []*EvidenceProposal{collision, upsert} {
+		plan, err := s.PlanEvidenceProposal(ctx, proposal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Eligible || plan.AutoRebased || !hasEvidenceBlocker(plan.Blockers, "NODE_CHANGED_SINCE_BASE") {
+			t.Fatalf("conflicting stale plan = %#v", plan)
+		}
+		if _, err := s.ReviewEvidenceProposal(ctx, proposal.ID, "accept", "user"); err == nil {
+			t.Fatalf("conflicting stale proposal %s unexpectedly accepted", proposal.ID)
+		}
+	}
+}
+
+func TestEvidenceWorkspaceStaleUpsertRebasesOnlyWhenTargetIsUnchanged(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_proposal_upsert_rebase")
+	create := func(summary string, patch EvidenceGraphPatch) *EvidenceProposal {
+		proposal, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+			ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+			Summary: summary, RoutingReason: "This Topic owns the planning context.",
+		}, &patch)
+		if err != nil {
+			t.Fatalf("CreateEvidenceProposal(%s): %v", summary, err)
+		}
+		return proposal
+	}
+	seed := create("seed", EvidenceGraphPatch{ChainID: topic.ID, Nodes: []EvidenceChainNode{{ID: "plan_target", Type: EvidenceNodePlan, Title: "before"}}})
+	if _, err := s.ReviewEvidenceProposal(ctx, seed.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	staleUpsert := create("safe upsert", EvidenceGraphPatch{ChainID: topic.ID, UpsertNodes: []EvidenceChainNode{{ID: "plan_target", Type: EvidenceNodePlan, Title: "after"}}})
+	unrelated := create("unrelated", EvidenceGraphPatch{ChainID: topic.ID, Nodes: []EvidenceChainNode{{ID: "issue_unrelated", Type: EvidenceNodeIssue, Title: "unrelated"}}})
+	if _, err := s.ReviewEvidenceProposal(ctx, unrelated.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, staleUpsert.ID)
+	if err != nil || !plan.Eligible || !plan.AutoRebased {
+		t.Fatalf("safe stale upsert plan = %#v, err = %v", plan, err)
+	}
+	if _, err := s.ReviewEvidenceProposal(ctx, staleUpsert.ID, "accept", "user"); err != nil {
+		t.Fatalf("accept safe stale upsert: %v", err)
+	}
+
+	firstChange := create("first change", EvidenceGraphPatch{ChainID: topic.ID, UpsertNodes: []EvidenceChainNode{{ID: "plan_target", Type: EvidenceNodePlan, Title: "first concurrent change"}}})
+	secondChange := create("second change", EvidenceGraphPatch{ChainID: topic.ID, UpsertNodes: []EvidenceChainNode{{ID: "plan_target", Type: EvidenceNodePlan, Title: "second concurrent change"}}})
+	if _, err := s.ReviewEvidenceProposal(ctx, firstChange.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := s.PlanEvidenceProposal(ctx, secondChange.ID)
+	if err != nil || blocked.Eligible || !hasEvidenceBlocker(blocked.Blockers, "NODE_CHANGED_SINCE_BASE") {
+		t.Fatalf("conflicting stale upsert plan = %#v, err = %v", blocked, err)
+	}
+}
+
+func TestEvidenceWorkspaceStaleDeleteDoesNotRemoveNewIncidentEdge(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project, topic := createEvidenceWorkspaceProject(t, s, "project_proposal_delete_rebase")
+	create := func(summary string, patch EvidenceGraphPatch) *EvidenceProposal {
+		proposal, err := s.CreateEvidenceProposal(ctx, &EvidenceProposal{
+			ProjectID: project.ID, TargetChainID: topic.ID, Actor: "agent",
+			Summary: summary, RoutingReason: "This Topic owns the planning context.",
+		}, &patch)
+		if err != nil {
+			t.Fatalf("CreateEvidenceProposal(%s): %v", summary, err)
+		}
+		return proposal
+	}
+	seed := create("seed", EvidenceGraphPatch{ChainID: topic.ID, Nodes: []EvidenceChainNode{
+		{ID: "issue_delete", Type: EvidenceNodeIssue, Title: "issue"},
+		{ID: "plan_keep", Type: EvidenceNodePlan, Title: "plan"},
+	}})
+	if _, err := s.ReviewEvidenceProposal(ctx, seed.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	staleDelete := create("delete issue", EvidenceGraphPatch{ChainID: topic.ID, DeleteNodeIDs: []string{"issue_delete"}})
+	newRelation := create("relate issue", EvidenceGraphPatch{ChainID: topic.ID, Edges: []EvidenceChainEdge{{
+		ID: "edge_new_after_base", Type: EvidenceEdgeRelatedTo, SourceNodeID: "issue_delete", TargetNodeID: "plan_keep",
+	}}})
+	if _, err := s.ReviewEvidenceProposal(ctx, newRelation.ID, "accept", "user"); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanEvidenceProposal(ctx, staleDelete.ID)
+	if err != nil || plan.Eligible || !hasEvidenceBlocker(plan.Blockers, "EDGE_CHANGED_SINCE_BASE") {
+		t.Fatalf("stale delete plan = %#v, err = %v", plan, err)
 	}
 }
 
@@ -373,11 +790,11 @@ func TestEvidenceWorkspaceLegacyRunContextDoesNotRequireDatasetWithoutFormalAsse
 		Nodes: []EvidenceChainNode{
 			{ID: "legacy_run", Type: EvidenceNodeRun, RunID: run.ID, Title: "Legacy run (unverified)"},
 			{ID: "legacy_issue", Type: EvidenceNodeIssue, Title: "Dataset provenance was not locked"},
-			{ID: "legacy_plan", Type: EvidenceNodePlan, Title: "Repeat with verified data"},
+			{ID: "followup_hypothesis", Type: EvidenceNodeClaim, Title: "Verified data will make the failure interpretable", DataJSON: `{"claimKind":"hypothesis"}`},
 		},
 		Edges: []EvidenceChainEdge{
 			{ID: "reveals_legacy_issue", Type: EvidenceEdgeRevealsIssue, SourceNodeID: "legacy_run", TargetNodeID: "legacy_issue"},
-			{ID: "next_after_legacy", Type: EvidenceEdgeNextStep, SourceNodeID: "legacy_issue", TargetNodeID: "legacy_plan"},
+			{ID: "next_after_legacy", Type: EvidenceEdgeNextStep, SourceNodeID: "legacy_issue", TargetNodeID: "followup_hypothesis"},
 		},
 	})
 	if err != nil {

@@ -154,11 +154,13 @@ func (s *SQLite) CreateEvidenceProposal(ctx context.Context, proposal *EvidenceP
 	if _, err := s.validateEvidenceProposalOwnership(ctx, proposal, patch); err != nil {
 		return nil, err
 	}
-	proposal.SourceRunIDs = normalizeEvidenceProposalIDs(proposal.SourceRunIDs)
-	proposal.SourceSnapshotIDs = normalizeEvidenceProposalIDs(proposal.SourceSnapshotIDs)
-	if err := s.validateEvidenceProposalSources(ctx, proposal.ProjectID, proposal.SourceRunIDs, proposal.SourceSnapshotIDs); err != nil {
+	var err error
+	patch.LayoutIntent, err = normalizeEvidenceLayoutIntent(patch.LayoutIntent)
+	if err != nil {
 		return nil, err
 	}
+	proposal.SourceRunIDs = normalizeEvidenceProposalIDs(proposal.SourceRunIDs)
+	proposal.SourceSnapshotIDs = normalizeEvidenceProposalIDs(proposal.SourceSnapshotIDs)
 	for i := range patch.Nodes {
 		patch.Nodes[i].ChainID = proposal.TargetChainID
 		patch.Nodes[i].X = 0
@@ -186,6 +188,12 @@ func (s *SQLite) CreateEvidenceProposal(ctx context.Context, proposal *EvidenceP
 	}
 	for i := range patch.UpsertEdges {
 		patch.UpsertEdges[i].ChainID = proposal.TargetChainID
+	}
+	if err := prepareEvidenceProposalProvenance(proposal, patch); err != nil {
+		return nil, err
+	}
+	if err := s.validateEvidenceProposalSources(ctx, proposal.ProjectID, proposal.SourceRunIDs, proposal.SourceSnapshotIDs); err != nil {
+		return nil, err
 	}
 	_, proposalHash, err := canonicalWorkspaceProposal(*proposal, *patch)
 	if err != nil {
@@ -335,6 +343,7 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 		Status:            proposal.Status,
 		BaseGraphRevision: proposal.BaseGraphRevision,
 		Blockers:          make([]EvidenceGraphBlocker, 0),
+		Warnings:          make([]EvidenceGraphWarning, 0),
 	}
 	if proposal.Status != GraphProposalPending {
 		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "PROPOSAL_NOT_PENDING", Message: fmt.Sprintf("proposal status is %q", proposal.Status)})
@@ -352,15 +361,13 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 		return plan, nil
 	}
 	plan.CurrentGraphRevision = chain.Revision
+	plan.AppliedGraphRevision = chain.Revision
 	plan.CurrentGraphHash = chain.GraphHash
 	if chain.Status != "active" {
 		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "GRAPH_ARCHIVED", Message: "archived evidence map is read-only"})
 	}
 	if strings.TrimSpace(chain.ProjectID) == "" || chain.ProjectID != proposal.ProjectID {
 		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "GRAPH_PROJECT_MISMATCH", Message: "target evidence map does not belong to proposal project"})
-	}
-	if chain.Revision != proposal.BaseGraphRevision {
-		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "REVISION_CONFLICT", Message: fmt.Sprintf("proposal is based on revision %d; graph is now revision %d", proposal.BaseGraphRevision, chain.Revision)})
 	}
 	var patch EvidenceGraphPatch
 	if err := json.Unmarshal([]byte(proposal.PatchJSON), &patch); err != nil {
@@ -373,7 +380,18 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 	if err != nil {
 		return nil, err
 	}
+	if chain.Revision != proposal.BaseGraphRevision {
+		rebaseBlockers, rebaseErr := s.evidencePatchRebaseBlockers(ctx, chain.ID, proposal.BaseGraphRevision, chain.Revision, *current, patch)
+		if rebaseErr != nil {
+			return nil, rebaseErr
+		}
+		plan.Blockers = append(plan.Blockers, rebaseBlockers...)
+		plan.AutoRebased = len(rebaseBlockers) == 0
+	}
 	merged := mergeEvidenceGraph(*current, patch)
+	if err := validateEvidenceLayoutIntent(patch.LayoutIntent, merged); err != nil {
+		plan.Blockers = append(plan.Blockers, blockerFromError(err))
+	}
 	if err := ValidateEvidenceChainGraph(&merged); err != nil {
 		plan.Blockers = append(plan.Blockers, blockerFromError(err))
 	} else {
@@ -401,7 +419,7 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 		}
 	}
 	readinessPlan := &EvidenceGraphProposalPlan{Blockers: make([]EvidenceGraphBlocker, 0)}
-	if err := s.appendEvidenceEligibilityBlockers(ctx, proposal.ProjectID, &merged, patch, readinessPlan); err != nil {
+	if err := s.appendEvidenceEligibilityBlockers(ctx, proposal.ProjectID, current, &merged, patch, readinessPlan); err != nil {
 		return nil, err
 	}
 	for _, blocker := range readinessPlan.Blockers {
@@ -410,6 +428,7 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 	if err := s.ValidateEvidenceMapReferences(ctx, chain, &merged); err != nil {
 		plan.Blockers = append(plan.Blockers, blockerFromError(err))
 	}
+	appendEvidenceAuthoringWarnings(merged, patch, plan)
 	plan.Eligible = len(plan.Blockers) == 0
 	return plan, nil
 }
@@ -473,7 +492,7 @@ func (s *SQLite) ReviewEvidenceProposal(ctx context.Context, id, action, reviewe
 	}
 	defer tx.Rollback()
 	if _, err := replaceEvidenceGraphTx(ctx, tx, proposal.TargetChainID, merged, EvidenceGraphSaveOptions{
-		ExpectedRevision: proposal.BaseGraphRevision,
+		ExpectedRevision: plan.AppliedGraphRevision,
 		Actor:            strings.TrimSpace(reviewer),
 		SourceKind:       "evidence_proposal",
 		SourceID:         proposal.ID,

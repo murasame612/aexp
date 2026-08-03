@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +37,26 @@ func TestMergeEvidenceGraphPreservesGroupCollapseLayout(t *testing.T) {
 	}
 	if data["collapsed"] != true || data["version"] != "v2" || data["groupKind"] != "protocol" {
 		t.Fatalf("merged data = %#v", data)
+	}
+}
+
+func TestEvidenceLayoutIntentRejectsDuplicateAndProtocolMemberNodes(t *testing.T) {
+	if _, err := normalizeEvidenceLayoutIntent(&EvidenceLayoutIntent{
+		Flow:  "left_to_right",
+		Ranks: [][]string{{"claim"}, {"claim"}},
+	}); err == nil {
+		t.Fatal("duplicate layout node should be rejected")
+	}
+	graph := EvidenceChainGraph{Nodes: []EvidenceChainNode{
+		{ID: "protocol", Type: EvidenceNodeGroup, DataJSON: `{"groupKind":"protocol"}`},
+		{ID: "member", Type: EvidenceNodePlan, DataJSON: `{"groupId":"protocol"}`},
+	}}
+	err := validateEvidenceLayoutIntent(&EvidenceLayoutIntent{
+		Flow:  "left_to_right",
+		Ranks: [][]string{{"member"}},
+	}, graph)
+	if err == nil || !strings.Contains(err.Error(), "belongs to protocol") {
+		t.Fatalf("protocol member layout error = %v", err)
 	}
 }
 

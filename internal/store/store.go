@@ -157,6 +157,7 @@ type Store interface {
 	GetProjectJournalEntry(ctx context.Context, id string) (*ProjectJournalEntry, error)
 	ListProjectJournalEntries(ctx context.Context, filter ProjectJournalFilter) ([]ProjectJournalEntry, error)
 	UpdateProjectJournalNextActionStatus(ctx context.Context, id, status string) (*ProjectJournalEntry, error)
+	GetProjectResearchContext(ctx context.Context, projectID string, options ProjectResearchContextOptions) (*ProjectResearchContext, error)
 
 	// Run Bookmarks
 	SaveRunBookmark(ctx context.Context, b *RunBookmark) error
@@ -182,6 +183,9 @@ type Store interface {
 	ApplyEvidenceMapOwnershipMigration(ctx context.Context, mappings map[string]string) (*EvidenceMapOwnershipMigrationReport, error)
 	PlanEvidencePromotion(ctx context.Context, request EvidencePromotionRequest) (*EvidencePromotionPlan, error)
 	CreateEvidencePromotion(ctx context.Context, request EvidencePromotionRequest, expectedPlanHash string) (*EvidenceProposal, error)
+	PlanEvidenceReorganization(ctx context.Context, mapID string, patch EvidenceGraphPatch) (*EvidenceReorganizationPlan, error)
+	CreateEvidenceReorganizationProposal(ctx context.Context, mapID, summary, actor, routingReason string, sourceRunIDs []string, patch EvidenceGraphPatch, expectedPlanHash string) (*EvidenceProposal, error)
+	RebaseEvidenceProposal(ctx context.Context, proposalID, actor string) (*EvidenceProposal, error)
 
 	// Manual Project Categories
 	CreateManualProjectCategory(ctx context.Context, c *ManualProjectCategory) error

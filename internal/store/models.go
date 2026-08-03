@@ -1285,22 +1285,27 @@ type EvidenceChain struct {
 
 // EvidenceChainNode is a node placed on an Evidence Chain board.
 type EvidenceChainNode struct {
-	ID            string     `json:"id"`
-	ChainID       string     `json:"chain_id"`
-	Type          string     `json:"type"`
-	Title         string     `json:"title"`
-	Body          string     `json:"body"`
-	RunID         string     `json:"run_id"`
-	ProjectCardID string     `json:"project_card_id"`
-	X             float64    `json:"x"`
-	Y             float64    `json:"y"`
-	Width         float64    `json:"width"`
-	Height        float64    `json:"height"`
-	Pinned        bool       `json:"pinned"`
-	OccurredAt    *time.Time `json:"occurred_at,omitempty"`
-	DataJSON      string     `json:"data_json"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID      string `json:"id"`
+	ChainID string `json:"chain_id"`
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	RunID   string `json:"run_id"`
+	// SourceRunIDs and SourceSnapshotIDs bind an observed result to the
+	// immutable executions that produced it. RunID remains the compatibility
+	// identity for a legacy type=run graph node.
+	SourceRunIDs      []string   `json:"source_run_ids,omitempty"`
+	SourceSnapshotIDs []string   `json:"source_snapshot_ids,omitempty"`
+	ProjectCardID     string     `json:"project_card_id"`
+	X                 float64    `json:"x"`
+	Y                 float64    `json:"y"`
+	Width             float64    `json:"width"`
+	Height            float64    `json:"height"`
+	Pinned            bool       `json:"pinned"`
+	OccurredAt        *time.Time `json:"occurred_at,omitempty"`
+	DataJSON          string     `json:"data_json"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // EvidenceChainEdge is a typed relationship between two Evidence Chain nodes.
@@ -1368,6 +1373,23 @@ type EvidencePromotionPlan struct {
 	Blockers              []EvidenceGraphBlocker `json:"blockers"`
 }
 
+// EvidenceReorganizationPlan is a side-effect-free, revision-bound preview of
+// one bounded semantic cleanup inside an existing Evidence Map.
+type EvidenceReorganizationPlan struct {
+	ProjectID       string                     `json:"project_id"`
+	MapID           string                     `json:"map_id"`
+	BaseRevision    int64                      `json:"base_revision"`
+	BaseGraphHash   string                     `json:"base_graph_hash"`
+	ResultGraphHash string                     `json:"result_graph_hash,omitempty"`
+	Patch           EvidenceGraphPatch         `json:"patch"`
+	PlanHash        string                     `json:"plan_hash"`
+	Eligible        bool                       `json:"eligible"`
+	Blockers        []EvidenceGraphBlocker     `json:"blockers"`
+	Warnings        []EvidenceGraphWarning     `json:"warnings"`
+	Before          EvidenceResearchProjection `json:"before"`
+	After           EvidenceResearchProjection `json:"after"`
+}
+
 // EvidenceGraphSaveOptions controls compare-and-swap graph persistence.
 // ExpectedRevision < 0 is reserved for compatibility callers.
 type EvidenceGraphSaveOptions struct {
@@ -1378,24 +1400,41 @@ type EvidenceGraphSaveOptions struct {
 }
 
 // EvidenceGraphPatch is an additive, reviewable Agent proposal.
+type EvidenceLayoutIntent struct {
+	Flow      string     `json:"flow"`
+	Ranks     [][]string `json:"ranks"`
+	Rationale string     `json:"rationale,omitempty"`
+}
+
 type EvidenceGraphPatch struct {
-	ChainID       string              `json:"chain_id"`
-	RoutingReason string              `json:"routing_reason,omitempty"`
-	Nodes         []EvidenceChainNode `json:"nodes"`
-	Edges         []EvidenceChainEdge `json:"edges"`
-	UpsertNodes   []EvidenceChainNode `json:"upsert_nodes,omitempty"`
-	UpsertEdges   []EvidenceChainEdge `json:"upsert_edges,omitempty"`
-	DeleteNodeIDs []string            `json:"delete_node_ids,omitempty"`
-	DeleteEdgeIDs []string            `json:"delete_edge_ids,omitempty"`
+	ChainID       string                `json:"chain_id"`
+	RoutingReason string                `json:"routing_reason,omitempty"`
+	LayoutIntent  *EvidenceLayoutIntent `json:"layout_intent,omitempty"`
+	Nodes         []EvidenceChainNode   `json:"nodes"`
+	Edges         []EvidenceChainEdge   `json:"edges"`
+	UpsertNodes   []EvidenceChainNode   `json:"upsert_nodes,omitempty"`
+	UpsertEdges   []EvidenceChainEdge   `json:"upsert_edges,omitempty"`
+	DeleteNodeIDs []string              `json:"delete_node_ids,omitempty"`
+	DeleteEdgeIDs []string              `json:"delete_edge_ids,omitempty"`
 }
 
 // EvidenceGraphBlocker is a stable reason why a proposal cannot be accepted.
 type EvidenceGraphBlocker struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	NodeID     string `json:"node_id,omitempty"`
+	EdgeID     string `json:"edge_id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	SnapshotID string `json:"snapshot_id,omitempty"`
+}
+
+// EvidenceGraphWarning is advisory authoring feedback. Unlike a blocker, it
+// never prevents a proposal from being reviewed or accepted.
+type EvidenceGraphWarning struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	NodeID  string `json:"node_id,omitempty"`
 	EdgeID  string `json:"edge_id,omitempty"`
-	RunID   string `json:"run_id,omitempty"`
 }
 
 // EvidenceGraphProposalPlan is a side-effect-free acceptance preview.
@@ -1410,12 +1449,15 @@ type EvidenceGraphProposalPlan struct {
 	Status               string                 `json:"status"`
 	BaseGraphRevision    int64                  `json:"base_graph_revision"`
 	CurrentGraphRevision int64                  `json:"current_graph_revision"`
+	AppliedGraphRevision int64                  `json:"applied_graph_revision"`
+	AutoRebased          bool                   `json:"auto_rebased,omitempty"`
 	CurrentGraphHash     string                 `json:"current_graph_hash"`
 	ResultGraphHash      string                 `json:"result_graph_hash,omitempty"`
 	NodesAdded           int                    `json:"nodes_added"`
 	EdgesAdded           int                    `json:"edges_added"`
 	Eligible             bool                   `json:"eligible"`
 	Blockers             []EvidenceGraphBlocker `json:"blockers"`
+	Warnings             []EvidenceGraphWarning `json:"warnings"`
 }
 
 // EvidenceProposal is the Project-scoped, Run-optional proposal envelope used

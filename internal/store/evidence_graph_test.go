@@ -186,6 +186,36 @@ func TestValidateEvidenceChainGraphSemanticBlockers(t *testing.T) {
 	assertGraphValidationCode(t, ValidateEvidenceChainGraph(&cycle), "SEMANTIC_SELF_LOOP")
 }
 
+func TestValidateEvidenceChainGraphAllowsDesignToResultSpine(t *testing.T) {
+	graph := EvidenceChainGraph{
+		Nodes: []EvidenceChainNode{
+			{ID: "hypothesis", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"hypothesis"}`},
+			{ID: "design", Type: EvidenceNodePlan},
+			{ID: "result", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"result"}`},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "hypothesis-design", Type: EvidenceEdgeNextStep, SourceNodeID: "hypothesis", TargetNodeID: "design"},
+			{ID: "design-result", Type: EvidenceEdgeNextStep, SourceNodeID: "design", TargetNodeID: "result"},
+		},
+	}
+	if err := ValidateEvidenceChainGraph(&graph); err != nil {
+		t.Fatalf("hypothesis -> design -> result spine should be valid: %v", err)
+	}
+}
+
+func TestValidateEvidenceChainGraphRejectsHypothesisToResultBypass(t *testing.T) {
+	graph := EvidenceChainGraph{
+		Nodes: []EvidenceChainNode{
+			{ID: "hypothesis", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"hypothesis"}`},
+			{ID: "result", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"result"}`},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "hypothesis-result", Type: EvidenceEdgeNextStep, SourceNodeID: "hypothesis", TargetNodeID: "result"},
+		},
+	}
+	assertGraphValidationCode(t, ValidateEvidenceChainGraph(&graph), "INVALID_EDGE_DIRECTION")
+}
+
 func TestValidateEvidenceChainGraphRejectsContradictoryPolarity(t *testing.T) {
 	graph := EvidenceChainGraph{
 		Nodes: []EvidenceChainNode{

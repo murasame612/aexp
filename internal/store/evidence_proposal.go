@@ -91,6 +91,10 @@ func (s *SQLite) SubmitEvidenceGraphProposal(ctx context.Context, card *ProjectR
 	if chain.Role == "secondary" && patch.RoutingReason == "" {
 		return nil, graphValidationError("ROUTING_REASON_REQUIRED", "routing_reason is required when targeting a topic evidence graph")
 	}
+	patch.LayoutIntent, err = normalizeEvidenceLayoutIntent(patch.LayoutIntent)
+	if err != nil {
+		return nil, err
+	}
 	card.GraphRoutingReason = patch.RoutingReason
 	for i := range patch.Nodes {
 		patch.Nodes[i].ChainID = patch.ChainID
@@ -146,12 +150,13 @@ func canonicalEvidenceProposal(runID string, baseRevision int64, patch EvidenceG
 		return nil, "", err
 	}
 	payload, err := json.Marshal(map[string]interface{}{
-		"version":        1,
-		"run_id":         strings.TrimSpace(runID),
-		"chain_id":       strings.TrimSpace(patch.ChainID),
-		"routing_reason": strings.TrimSpace(patch.RoutingReason),
-		"base_revision":  baseRevision,
-		"patch":          canonicalPatch,
+		"version":                   2,
+		"evidence_contract_version": EvidenceResearchContractVersion,
+		"run_id":                    strings.TrimSpace(runID),
+		"chain_id":                  strings.TrimSpace(patch.ChainID),
+		"routing_reason":            strings.TrimSpace(patch.RoutingReason),
+		"base_revision":             baseRevision,
+		"patch":                     canonicalPatch,
 	})
 	if err != nil {
 		return nil, "", err
@@ -162,6 +167,7 @@ func canonicalEvidenceProposal(runID string, baseRevision int64, patch EvidenceG
 	persisted, err := json.Marshal(EvidenceGraphPatch{
 		ChainID:       patch.ChainID,
 		RoutingReason: patch.RoutingReason,
+		LayoutIntent:  patch.LayoutIntent,
 		Nodes:         patch.Nodes,
 		Edges:         patch.Edges,
 		UpsertNodes:   patch.UpsertNodes,
@@ -173,6 +179,75 @@ func canonicalEvidenceProposal(runID string, baseRevision int64, patch EvidenceG
 		return nil, "", err
 	}
 	return persisted, hex.EncodeToString(sum[:]), nil
+}
+
+func normalizeEvidenceLayoutIntent(intent *EvidenceLayoutIntent) (*EvidenceLayoutIntent, error) {
+	if intent == nil {
+		return nil, nil
+	}
+	flow := strings.TrimSpace(intent.Flow)
+	if flow == "" {
+		flow = "left_to_right"
+	}
+	if flow != "left_to_right" {
+		return nil, graphValidationError("INVALID_LAYOUT_INTENT", fmt.Sprintf("unsupported layout flow %q", flow))
+	}
+	if len(intent.Ranks) == 0 || len(intent.Ranks) > 80 {
+		return nil, graphValidationError("INVALID_LAYOUT_INTENT", "layout_intent.ranks must contain between 1 and 80 columns")
+	}
+	seen := make(map[string]bool)
+	ranks := make([][]string, 0, len(intent.Ranks))
+	for rankIndex, rank := range intent.Ranks {
+		if len(rank) == 0 {
+			return nil, graphValidationError("INVALID_LAYOUT_INTENT", fmt.Sprintf("layout rank %d is empty", rankIndex))
+		}
+		normalized := make([]string, 0, len(rank))
+		for _, rawID := range rank {
+			id := strings.TrimSpace(rawID)
+			if id == "" {
+				return nil, graphValidationError("INVALID_LAYOUT_INTENT", fmt.Sprintf("layout rank %d contains an empty node id", rankIndex))
+			}
+			if seen[id] {
+				return nil, graphValidationError("INVALID_LAYOUT_INTENT", fmt.Sprintf("layout node %q appears more than once", id))
+			}
+			seen[id] = true
+			normalized = append(normalized, id)
+		}
+		ranks = append(ranks, normalized)
+	}
+	if len(seen) > 500 {
+		return nil, graphValidationError("INVALID_LAYOUT_INTENT", "layout_intent may reference at most 500 nodes")
+	}
+	return &EvidenceLayoutIntent{
+		Flow:      flow,
+		Ranks:     ranks,
+		Rationale: strings.TrimSpace(intent.Rationale),
+	}, nil
+}
+
+func validateEvidenceLayoutIntent(intent *EvidenceLayoutIntent, graph EvidenceChainGraph) error {
+	if intent == nil {
+		return nil
+	}
+	nodeByID := make(map[string]EvidenceChainNode, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		nodeByID[node.ID] = node
+	}
+	for _, rank := range intent.Ranks {
+		for _, id := range rank {
+			node, exists := nodeByID[id]
+			if !exists {
+				return graphValidationError("LAYOUT_NODE_NOT_FOUND", fmt.Sprintf("layout node %q does not exist in the proposed graph", id))
+			}
+			var data map[string]interface{}
+			if json.Unmarshal([]byte(normalizeEvidenceDataJSON(node.DataJSON)), &data) == nil {
+				if groupID, _ := data["groupId"].(string); strings.TrimSpace(groupID) != "" {
+					return graphValidationError("LAYOUT_GROUP_MEMBER", fmt.Sprintf("layout node %q belongs to protocol %q; arrange the protocol container instead", id, groupID))
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func canonicalEvidencePatch(patch EvidenceGraphPatch) (interface{}, error) {
@@ -198,9 +273,144 @@ func canonicalEvidencePatch(patch EvidenceGraphPatch) (interface{}, error) {
 	return map[string]interface{}{
 		"additive":        additive,
 		"upserts":         upserts,
+		"layout_intent":   patch.LayoutIntent,
 		"delete_node_ids": normalizeEvidenceProposalIDs(patch.DeleteNodeIDs),
 		"delete_edge_ids": normalizeEvidenceProposalIDs(patch.DeleteEdgeIDs),
 	}, nil
+}
+
+type evidenceSemanticIndex struct {
+	Nodes map[string]json.RawMessage
+	Edges map[string]json.RawMessage
+}
+
+func evidenceSemanticIndexFromJSON(payload []byte) (evidenceSemanticIndex, error) {
+	var graph struct {
+		Nodes []json.RawMessage `json:"nodes"`
+		Edges []json.RawMessage `json:"edges"`
+	}
+	if len(payload) == 0 {
+		payload = []byte(`{"nodes":[],"edges":[]}`)
+	}
+	if err := json.Unmarshal(payload, &graph); err != nil {
+		return evidenceSemanticIndex{}, err
+	}
+	index := evidenceSemanticIndex{Nodes: make(map[string]json.RawMessage, len(graph.Nodes)), Edges: make(map[string]json.RawMessage, len(graph.Edges))}
+	for _, raw := range graph.Nodes {
+		var item struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return evidenceSemanticIndex{}, err
+		}
+		index.Nodes[strings.TrimSpace(item.ID)] = raw
+	}
+	for _, raw := range graph.Edges {
+		var item struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return evidenceSemanticIndex{}, err
+		}
+		index.Edges[strings.TrimSpace(item.ID)] = raw
+	}
+	return index, nil
+}
+
+func evidenceSemanticIndexFromGraph(graph EvidenceChainGraph) (evidenceSemanticIndex, error) {
+	payload, _, err := CanonicalEvidenceGraph(graph)
+	if err != nil {
+		return evidenceSemanticIndex{}, err
+	}
+	return evidenceSemanticIndexFromJSON(payload)
+}
+
+func sameEvidenceSemanticItem(left, right json.RawMessage) bool {
+	return string(left) == string(right)
+}
+
+// evidencePatchRebaseBlockers performs an object-level three-way comparison.
+// A stale proposal may be replayed when every node/edge it touches is unchanged
+// from its immutable base snapshot. Layout fields are intentionally absent from
+// these semantic snapshots, so moving cards never creates a false conflict.
+func (s *SQLite) evidencePatchRebaseBlockers(ctx context.Context, chainID string, baseRevision, currentRevision int64, current EvidenceChainGraph, patch EvidenceGraphPatch) ([]EvidenceGraphBlocker, error) {
+	if baseRevision == currentRevision {
+		return nil, nil
+	}
+	var basePayload []byte
+	if baseRevision > 0 {
+		revision, err := s.GetEvidenceChainRevision(ctx, chainID, baseRevision)
+		if err != nil {
+			return nil, err
+		}
+		if revision == nil {
+			return []EvidenceGraphBlocker{{Code: "REVISION_CONFLICT", Message: fmt.Sprintf("base revision %d is unavailable; graph is now revision %d", baseRevision, currentRevision)}}, nil
+		}
+		basePayload = []byte(revision.GraphJSON)
+	}
+	base, err := evidenceSemanticIndexFromJSON(basePayload)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := evidenceSemanticIndexFromGraph(current)
+	if err != nil {
+		return nil, err
+	}
+	proposed, err := evidenceSemanticIndexFromGraph(EvidenceChainGraph{
+		Nodes: append(append([]EvidenceChainNode(nil), patch.Nodes...), patch.UpsertNodes...),
+		Edges: append(append([]EvidenceChainEdge(nil), patch.Edges...), patch.UpsertEdges...),
+	})
+	if err != nil {
+		return nil, err
+	}
+	blockers := make([]EvidenceGraphBlocker, 0)
+	for id, next := range proposed.Nodes {
+		before, existedBefore := base.Nodes[id]
+		now, existsNow := latest.Nodes[id]
+		if (!existedBefore && !existsNow) || (existsNow && sameEvidenceSemanticItem(now, next)) || (existedBefore && existsNow && sameEvidenceSemanticItem(before, now)) {
+			continue
+		}
+		blockers = append(blockers, EvidenceGraphBlocker{Code: "NODE_CHANGED_SINCE_BASE", Message: fmt.Sprintf("node %q changed after proposal base revision %d", id, baseRevision), NodeID: id})
+	}
+	for id, next := range proposed.Edges {
+		before, existedBefore := base.Edges[id]
+		now, existsNow := latest.Edges[id]
+		if (!existedBefore && !existsNow) || (existsNow && sameEvidenceSemanticItem(now, next)) || (existedBefore && existsNow && sameEvidenceSemanticItem(before, now)) {
+			continue
+		}
+		blockers = append(blockers, EvidenceGraphBlocker{Code: "EDGE_CHANGED_SINCE_BASE", Message: fmt.Sprintf("edge %q changed after proposal base revision %d", id, baseRevision), EdgeID: id})
+	}
+	for _, rawID := range patch.DeleteNodeIDs {
+		id := strings.TrimSpace(rawID)
+		before, existedBefore := base.Nodes[id]
+		now, existsNow := latest.Nodes[id]
+		if existsNow && (!existedBefore || !sameEvidenceSemanticItem(before, now)) {
+			blockers = append(blockers, EvidenceGraphBlocker{Code: "NODE_CHANGED_SINCE_BASE", Message: fmt.Sprintf("node %q changed after proposal base revision %d", id, baseRevision), NodeID: id})
+			continue
+		}
+		for edgeID, currentEdge := range latest.Edges {
+			var edge canonicalEvidenceEdge
+			if err := json.Unmarshal(currentEdge, &edge); err != nil {
+				return nil, err
+			}
+			if edge.SourceNodeID != id && edge.TargetNodeID != id {
+				continue
+			}
+			baseEdge, existed := base.Edges[edgeID]
+			if !existed || !sameEvidenceSemanticItem(baseEdge, currentEdge) {
+				blockers = append(blockers, EvidenceGraphBlocker{Code: "EDGE_CHANGED_SINCE_BASE", Message: fmt.Sprintf("edge %q was added or changed after proposal base revision %d and would be removed with node %q", edgeID, baseRevision, id), NodeID: id, EdgeID: edgeID})
+			}
+		}
+	}
+	for _, rawID := range patch.DeleteEdgeIDs {
+		id := strings.TrimSpace(rawID)
+		before, existedBefore := base.Edges[id]
+		now, existsNow := latest.Edges[id]
+		if existsNow && (!existedBefore || !sameEvidenceSemanticItem(before, now)) {
+			blockers = append(blockers, EvidenceGraphBlocker{Code: "EDGE_CHANGED_SINCE_BASE", Message: fmt.Sprintf("edge %q changed after proposal base revision %d", id, baseRevision), EdgeID: id})
+		}
+	}
+	return blockers, nil
 }
 
 func (s *SQLite) PlanEvidenceGraphProposal(ctx context.Context, runID string) (*EvidenceGraphProposalPlan, error) {
@@ -219,6 +429,7 @@ func (s *SQLite) PlanEvidenceGraphProposal(ctx context.Context, runID string) (*
 		RoutingReason:     card.GraphRoutingReason,
 		BaseGraphRevision: card.BaseGraphRevision,
 		Blockers:          make([]EvidenceGraphBlocker, 0),
+		Warnings:          make([]EvidenceGraphWarning, 0),
 	}
 	if card.GraphStatus != GraphProposalPending {
 		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "PROPOSAL_NOT_PENDING", Message: fmt.Sprintf("proposal status is %q", card.GraphStatus)})
@@ -245,21 +456,27 @@ func (s *SQLite) PlanEvidenceGraphProposal(ctx context.Context, runID string) (*
 	}
 	plan.ProjectID = chain.ProjectID
 	plan.CurrentGraphRevision = chain.Revision
+	plan.AppliedGraphRevision = chain.Revision
 	plan.CurrentGraphHash = chain.GraphHash
 	if chain.Status == "archived" {
 		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "GRAPH_ARCHIVED", Message: "archived evidence graph is read-only"})
-	}
-	if chain.Revision != card.BaseGraphRevision {
-		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
-			Code:    "REVISION_CONFLICT",
-			Message: fmt.Sprintf("proposal is based on revision %d; graph is now revision %d", card.BaseGraphRevision, chain.Revision),
-		})
 	}
 	current, err := s.GetEvidenceChainGraph(ctx, patch.ChainID)
 	if err != nil {
 		return nil, err
 	}
+	if chain.Revision != card.BaseGraphRevision {
+		rebaseBlockers, rebaseErr := s.evidencePatchRebaseBlockers(ctx, chain.ID, card.BaseGraphRevision, chain.Revision, *current, patch)
+		if rebaseErr != nil {
+			return nil, rebaseErr
+		}
+		plan.Blockers = append(plan.Blockers, rebaseBlockers...)
+		plan.AutoRebased = len(rebaseBlockers) == 0
+	}
 	merged := mergeEvidenceGraph(*current, patch)
+	if err := validateEvidenceLayoutIntent(patch.LayoutIntent, merged); err != nil {
+		plan.Blockers = append(plan.Blockers, blockerFromError(err))
+	}
 	if err := ValidateEvidenceChainGraph(&merged); err != nil {
 		plan.Blockers = append(plan.Blockers, blockerFromError(err))
 	} else {
@@ -295,9 +512,10 @@ func (s *SQLite) PlanEvidenceGraphProposal(ctx context.Context, runID string) (*
 			plan.ResultGraphHash = resultHash
 		}
 	}
-	if err := s.appendEvidenceEligibilityBlockers(ctx, chain.ProjectID, &merged, patch, plan); err != nil {
+	if err := s.appendEvidenceEligibilityBlockers(ctx, chain.ProjectID, current, &merged, patch, plan); err != nil {
 		return nil, err
 	}
+	appendEvidenceAuthoringWarnings(merged, patch, plan)
 	plan.Eligible = len(plan.Blockers) == 0
 	return plan, nil
 }
@@ -326,6 +544,12 @@ func mergeEvidenceGraph(current EvidenceChainGraph, patch EvidenceGraphPatch) Ev
 			// save explicitly changes it.
 			node.X, node.Y = merged.Nodes[index].X, merged.Nodes[index].Y
 			node.Width, node.Height, node.Pinned = merged.Nodes[index].Width, merged.Nodes[index].Height, merged.Nodes[index].Pinned
+			if node.SourceRunIDs == nil {
+				node.SourceRunIDs = merged.Nodes[index].SourceRunIDs
+			}
+			if node.SourceSnapshotIDs == nil {
+				node.SourceSnapshotIDs = merged.Nodes[index].SourceSnapshotIDs
+			}
 			node.DataJSON = preserveEvidenceNodeLayoutData(merged.Nodes[index].DataJSON, node.DataJSON)
 			merged.Nodes[index] = node
 		} else {
@@ -404,10 +628,173 @@ func blockerFromError(err error) EvidenceGraphBlocker {
 	return EvidenceGraphBlocker{Code: "GRAPH_VALIDATION_FAILED", Message: err.Error()}
 }
 
-func (s *SQLite) appendEvidenceEligibilityBlockers(ctx context.Context, projectID string, merged *EvidenceChainGraph, patch EvidenceGraphPatch, plan *EvidenceGraphProposalPlan) error {
+func (s *SQLite) appendEvidenceEligibilityBlockers(ctx context.Context, projectID string, current, merged *EvidenceChainGraph, patch EvidenceGraphPatch, plan *EvidenceGraphProposalPlan) error {
 	nodes := make(map[string]EvidenceChainNode, len(merged.Nodes))
 	for _, node := range merged.Nodes {
 		nodes[node.ID] = node
+	}
+	patchedNodeIDs := make(map[string]bool)
+	for _, node := range append(append([]EvidenceChainNode(nil), patch.Nodes...), patch.UpsertNodes...) {
+		patchedNodeIDs[node.ID] = true
+	}
+	branchBlockers := make(map[string]bool)
+	appendBranchBlocker := func(edge EvidenceChainEdge) {
+		if branchBlockers[edge.ID] || !evidenceResearchBranchBypass(nodes, edge) {
+			return
+		}
+		branchBlockers[edge.ID] = true
+		plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+			Code:    "THREAD_BRANCH_HYPOTHESIS_REQUIRED",
+			Message: "a Conclusion or Issue may open a new research thread only through next_step to a canonical claimKind=hypothesis node",
+			NodeID:  edge.SourceNodeID,
+			EdgeID:  edge.ID,
+		})
+	}
+	// An edited outgoing outcome edge also touches the Result's interpretation.
+	// Neutral context links do not migrate a historical Result. A semantic edge
+	// that skips Conclusion/Issue is always blocked at the patch boundary.
+	for _, edge := range append(append([]EvidenceChainEdge(nil), patch.Edges...), patch.UpsertEdges...) {
+		appendBranchBlocker(edge)
+		source := nodes[edge.SourceNodeID]
+		if source.Type == EvidenceNodeClaim && evidenceAuthoringClaimKind(source) == "" && evidenceResearchNodeStage(source) == EvidenceResearchStageResult && evidenceResultOutcomeEdge(nodes, edge) {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "CLAIM_KIND_REQUIRED", Message: "a Claim used as a Result must declare claimKind=result", NodeID: source.ID, EdgeID: edge.ID,
+			})
+		}
+		if evidenceResultOutcomeBypass(nodes, edge) {
+			target := nodes[edge.TargetNodeID]
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code:    "RESULT_OUTCOME_BYPASS",
+				Message: fmt.Sprintf("Result %q cannot connect directly to %s %q with %s; route it to a Conclusion and/or Issue first", edge.SourceNodeID, target.Type, edge.TargetNodeID, edge.Type),
+				NodeID:  edge.SourceNodeID,
+				EdgeID:  edge.ID,
+			})
+			continue
+		}
+		if evidenceResultOutcomeEdge(nodes, edge) {
+			patchedNodeIDs[edge.SourceNodeID] = true
+		}
+	}
+	// Editing either endpoint of a historical bypass makes that semantic object
+	// part of the current proposal. Require the same patch to delete the bypass
+	// and replace it with an explicit child hypothesis. Merely reading the map or
+	// editing another thread does not inherit this historical debt.
+	deletedEdgesForBranch := make(map[string]bool, len(patch.DeleteEdgeIDs))
+	for _, id := range patch.DeleteEdgeIDs {
+		deletedEdgesForBranch[strings.TrimSpace(id)] = true
+	}
+	for _, edge := range merged.Edges {
+		if deletedEdgesForBranch[edge.ID] {
+			continue
+		}
+		if patchedNodeIDs[edge.SourceNodeID] || patchedNodeIDs[edge.TargetNodeID] {
+			appendBranchBlocker(edge)
+		}
+	}
+	// Deleting or replacing an accepted outcome edge/node also touches the
+	// source Result. Revalidate its disposition against the final merged graph
+	// so a deletion cannot leave a stale "conclusion" or "issue" declaration.
+	if current != nil {
+		deletedEdges := make(map[string]bool, len(patch.DeleteEdgeIDs))
+		for _, id := range patch.DeleteEdgeIDs {
+			deletedEdges[strings.TrimSpace(id)] = true
+		}
+		deletedNodes := make(map[string]bool, len(patch.DeleteNodeIDs))
+		for _, id := range patch.DeleteNodeIDs {
+			deletedNodes[strings.TrimSpace(id)] = true
+		}
+		upsertedEdges := make(map[string]bool, len(patch.UpsertEdges))
+		for _, edge := range patch.UpsertEdges {
+			upsertedEdges[edge.ID] = true
+		}
+		currentNodes := make(map[string]EvidenceChainNode, len(current.Nodes))
+		for _, node := range current.Nodes {
+			currentNodes[node.ID] = node
+		}
+		for _, edge := range current.Edges {
+			if !deletedEdges[edge.ID] && !deletedNodes[edge.TargetNodeID] && !upsertedEdges[edge.ID] {
+				continue
+			}
+			if evidenceResultOutcomeEdge(currentNodes, edge) && !deletedNodes[edge.SourceNodeID] {
+				patchedNodeIDs[edge.SourceNodeID] = true
+			}
+		}
+	}
+	patchedResultIDs := make([]string, 0)
+	for nodeID := range patchedNodeIDs {
+		node := nodes[nodeID]
+		if !evidenceResultNode(node) {
+			continue
+		}
+		patchedResultIDs = append(patchedResultIDs, nodeID)
+		if len(node.SourceRunIDs) == 0 && len(node.SourceSnapshotIDs) == 0 {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_PROVENANCE_REQUIRED", Message: "result claim requires at least one source_run_id or immutable source_snapshot_id", NodeID: node.ID,
+			})
+		}
+	}
+	sort.Strings(patchedResultIDs)
+	for _, nodeID := range patchedResultIDs {
+		node := nodes[nodeID]
+		for _, sourceRunID := range node.SourceRunIDs {
+			runID := strings.TrimSpace(sourceRunID)
+			run, err := s.GetRun(ctx, runID)
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "RUN_NOT_FOUND", Message: fmt.Sprintf("run %q does not exist", runID), NodeID: node.ID, RunID: runID})
+				continue
+			}
+			if strings.TrimSpace(run.ProjectID) == "" || run.ProjectID != projectID {
+				plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "RUN_PROJECT_MISMATCH", Message: fmt.Sprintf("run %q does not belong to project %q", run.ID, projectID), NodeID: node.ID, RunID: run.ID})
+				continue
+			}
+			if !IsRunTerminalStatus(run.Status) {
+				plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{Code: "RESULT_RUN_NOT_TERMINAL", Message: fmt.Sprintf("run %q is %q; Result provenance requires a terminal Run", run.ID, run.Status), NodeID: node.ID, RunID: run.ID})
+			}
+		}
+		disposition := evidenceAuthoringResultDisposition(node)
+		if disposition == "" {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_DISPOSITION_REQUIRED", Message: "result claim must declare resultDisposition as conclusion, issue, mixed, or pending", NodeID: node.ID,
+			})
+			continue
+		}
+		if !validEvidenceResultDisposition(disposition) {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_DISPOSITION_INVALID", Message: fmt.Sprintf("resultDisposition %q is invalid; use conclusion, issue, mixed, or pending", disposition), NodeID: node.ID,
+			})
+			continue
+		}
+		hasConclusion, hasIssue, issueExplained := evidenceResultDispositionOutcomes(*merged, node.ID)
+		matches := false
+		switch disposition {
+		case EvidenceResultDispositionConclusion:
+			matches = hasConclusion && !hasIssue
+		case EvidenceResultDispositionIssue:
+			matches = hasIssue && !hasConclusion
+		case EvidenceResultDispositionMixed:
+			matches = hasConclusion && hasIssue
+		case EvidenceResultDispositionPending:
+			matches = !hasConclusion && !hasIssue
+		}
+		if !matches {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_DISPOSITION_EDGE_MISMATCH", Message: fmt.Sprintf("resultDisposition %q does not match the Result's Conclusion/Issue outcome edges", disposition), NodeID: node.ID,
+			})
+		}
+		reason := strings.TrimSpace(evidenceAuthoringDispositionReason(node))
+		if disposition == EvidenceResultDispositionPending && reason == "" {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_PENDING_REASON_REQUIRED", Message: "pending result disposition requires dispositionReason", NodeID: node.ID,
+			})
+		}
+		if (disposition == EvidenceResultDispositionIssue || disposition == EvidenceResultDispositionMixed) && reason == "" && !issueExplained {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_ISSUE_WITHOUT_INCONCLUSIVE_REASON", Message: "a Result routed to an Issue must explain why it cannot form a stable conclusion, either in dispositionReason or the reveals_issue rationale", NodeID: node.ID,
+			})
+		}
 	}
 	uses := make([]formalRunEvidenceUse, 0)
 	for _, edge := range append(append([]EvidenceChainEdge(nil), patch.Edges...), patch.UpsertEdges...) {
@@ -419,6 +806,31 @@ func (s *SQLite) appendEvidenceEligibilityBlockers(ctx context.Context, projectI
 			continue
 		}
 		uses = append(uses, formalRunEvidenceUse{Node: source, EdgeID: edge.ID})
+	}
+	// The canonical v2 authoring model keeps Run identity on a Result's
+	// source_run_ids instead of requiring visual Run nodes. Formal readiness
+	// must therefore follow that provenance recursively; otherwise a Result
+	// card could support a Conclusion while silently bypassing the same gate
+	// that protects a legacy Run -> Claim edge.
+	for _, nodeID := range patchedResultIDs {
+		node := nodes[nodeID]
+		disposition := evidenceAuthoringResultDisposition(node)
+		if disposition != EvidenceResultDispositionConclusion && disposition != EvidenceResultDispositionMixed {
+			continue
+		}
+		edgeID := ""
+		for _, edge := range merged.Edges {
+			if edge.SourceNodeID == node.ID && evidenceResultOutcomeEdge(nodes, edge) {
+				edgeID = edge.ID
+				break
+			}
+		}
+		for _, runID := range node.SourceRunIDs {
+			uses = append(uses, formalRunEvidenceUse{Node: EvidenceChainNode{
+				ID:    node.ID,
+				RunID: strings.TrimSpace(runID),
+			}, EdgeID: edgeID})
+		}
 	}
 	blockers, err := s.formalRunEvidenceBlockers(ctx, projectID, uses)
 	if err != nil {
@@ -617,7 +1029,7 @@ func (s *SQLite) ReviewEvidenceGraphProposal(ctx context.Context, runID, action,
 	}
 	defer tx.Rollback()
 	if _, err := replaceEvidenceGraphTx(ctx, tx, patch.ChainID, merged, EvidenceGraphSaveOptions{
-		ExpectedRevision: card.BaseGraphRevision,
+		ExpectedRevision: plan.AppliedGraphRevision,
 		Actor:            strings.TrimSpace(reviewer),
 		SourceKind:       "project_run_card",
 		SourceID:         card.ID,

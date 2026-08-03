@@ -3603,6 +3603,11 @@ func scanEvidenceChainNode(n *EvidenceChainNode) func(rowScanner) error {
 			value := occurredAt.Time
 			n.OccurredAt = &value
 		}
+		normalized, err := normalizeEvidenceNodeProvenance(*n)
+		if err != nil {
+			return err
+		}
+		*n = normalized
 		return nil
 	}
 }
@@ -3814,6 +3819,11 @@ func replaceEvidenceGraphTx(ctx context.Context, tx *sql.Tx, chainID string, gra
 		return nil, err
 	}
 	for _, n := range graph.Nodes {
+		normalized, err := normalizeEvidenceNodeProvenance(n)
+		if err != nil {
+			return nil, err
+		}
+		n = normalized
 		if createdAt, ok := nodeCreatedAt[n.ID]; ok {
 			n.CreatedAt = createdAt
 		} else if n.CreatedAt.IsZero() {

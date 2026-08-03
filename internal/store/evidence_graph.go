@@ -65,6 +65,11 @@ func CanonicalEvidenceGraph(graph EvidenceChainGraph) ([]byte, string, error) {
 		Edges: make([]canonicalEvidenceEdge, 0, len(graph.Edges)),
 	}
 	for _, node := range graph.Nodes {
+		normalized, err := normalizeEvidenceNodeProvenance(node)
+		if err != nil {
+			return nil, "", &EvidenceGraphValidationError{Code: "INVALID_NODE_DATA", Message: fmt.Sprintf("node %q data_json is invalid: %v", node.ID, err)}
+		}
+		node = normalized
 		data, err := canonicalEvidenceData(node.DataJSON)
 		if err != nil {
 			return nil, "", &EvidenceGraphValidationError{
@@ -290,7 +295,7 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 				}
 				polarityEdges[polarityKey] = *edge
 			}
-			if !allowedEvidenceDirection(source.Type, target.Type, edge.Type) {
+			if !allowedEvidenceDirectionForNodes(source, target, edge.Type) {
 				return graphValidationError("INVALID_EDGE_DIRECTION", fmt.Sprintf("edge type %q does not allow %s -> %s", edge.Type, source.Type, target.Type))
 			}
 			adjacency[edge.SourceNodeID] = append(adjacency[edge.SourceNodeID], edge.TargetNodeID)
@@ -326,6 +331,24 @@ func validateEvidenceChainGraph(graph *EvidenceChainGraph, strictResearchGraph b
 		return graphValidationError("GRAPH_CYCLE", "semantic evidence edges must form a directed acyclic graph")
 	}
 	return nil
+}
+
+func allowedEvidenceDirectionForNodes(source, target EvidenceChainNode, edgeType string) bool {
+	if evidenceResultNode(source) && target.Type == EvidenceNodeConclusion {
+		return edgeType == EvidenceEdgeSupports || edgeType == EvidenceEdgeWeakens || edgeType == EvidenceEdgeDoesNotProve
+	}
+	if edgeType == EvidenceEdgeNextStep &&
+		evidenceResearchNodeStage(source) == EvidenceResearchStageDesign &&
+		evidenceResearchNodeStage(target) == EvidenceResearchStageResult {
+		return true
+	}
+	if edgeType == EvidenceEdgeNextStep &&
+		(source.Type == EvidenceNodeIssue || source.Type == EvidenceNodeConclusion) &&
+		target.Type == EvidenceNodeClaim &&
+		evidenceAuthoringClaimKind(target) == "hypothesis" {
+		return true
+	}
+	return allowedEvidenceDirection(source.Type, target.Type, edgeType)
 }
 
 func graphValidationError(code, message string) error {
