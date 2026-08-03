@@ -682,6 +682,8 @@ export interface EvidenceChainNode {
   title?: string;
   body?: string;
   run_id?: string;
+  source_run_ids?: string[];
+  source_snapshot_ids?: string[];
   project_card_id?: string;
   x: number;
   y: number;
@@ -712,6 +714,152 @@ export interface EvidenceChainDetail extends EvidenceChain {
   edges: EvidenceChainEdge[];
 }
 
+export interface EvidenceResearchCardDTO {
+  node: EvidenceChainNode;
+  relation_count: number;
+  member_count?: number;
+  member_node_ids?: string[];
+  member_titles?: string[];
+  shared_thread_ids?: string[];
+  canonical_thread_id?: string;
+}
+
+export interface EvidenceResearchThreadDTO {
+  id: string;
+  title: string;
+  root_node_id: string;
+  parent_thread_id?: string;
+  explicit_hypothesis: boolean;
+  stages: Record<"hypothesis" | "design" | "result" | "conclusion" | "issue", EvidenceResearchCardDTO[]>;
+  interpretations?: Array<{
+    id: string;
+    result_node_id: string;
+    outcome_node_id?: string;
+    outcome_type?: "conclusion" | "issue";
+    kind: string;
+    label: string;
+    rationale?: string;
+    edge_id?: string;
+    legacy_inferred?: boolean;
+  }>;
+}
+
+export interface EvidenceResearchCompletenessDTO {
+  total: number;
+  complete: number;
+  missing_node_ids?: string[];
+}
+
+export interface EvidenceResearchHealthFindingDTO {
+  code: string;
+  severity: "info" | "warning" | "critical" | string;
+  thread_id?: string;
+  node_ids?: string[];
+  message: string;
+}
+
+export interface EvidenceResearchThreadHealthDTO {
+  thread_id: string;
+  derived_phase: "hypothesis_recorded" | "design_recorded" | "result_recorded" | "outcome_recorded" | string;
+  complexity_level: "normal" | "warning" | "critical" | string;
+  semantic_node_count: number;
+  hypothesis_count: number;
+  design_count: number;
+  result_count: number;
+  conclusion_count: number;
+  issue_count: number;
+  parallel_design_node_ids?: string[];
+  parallel_result_node_ids?: string[];
+  provenance_declared: EvidenceResearchCompletenessDTO;
+  disposition_complete: EvidenceResearchCompletenessDTO;
+  outcome_complete: EvidenceResearchCompletenessDTO;
+  issue_follow_up_linked: EvidenceResearchCompletenessDTO;
+  possible_duplicate_result_groups?: string[][];
+  findings?: EvidenceResearchHealthFindingDTO[];
+}
+
+export interface EvidenceResearchStructuralHealthDTO {
+  policy_version: "research-health-v2" | string;
+  terminology: Record<string, string>;
+  readability_status: "clear" | "dense" | "needs_curation" | string;
+  compatibility_status: "v2_compliant" | "legacy_readable" | string;
+  topic_lifecycle: "draft" | "active" | "archived" | string;
+  derived_topic_phase: "empty" | "needs_curation" | "mixed" | "hypothesis_recorded" | "design_recorded" | "result_recorded" | "outcome_recorded" | string;
+  semantic_node_count: number;
+  assigned_count: number;
+  unassigned_count: number;
+  unassigned_ratio: number;
+  threads: EvidenceResearchThreadHealthDTO[];
+  findings?: EvidenceResearchHealthFindingDTO[];
+}
+
+export interface EvidenceChainAuditReportDTO {
+  schema_version: string;
+  chain_id: string;
+  project_id: string;
+  role: string;
+  revision: number;
+  stored_graph_hash: string;
+  current_graph_hash: string;
+  eligible: boolean;
+  readability_status?: "v2_readable" | "legacy_readable" | "broken" | string;
+  v2_compliance_status?: "v2_compliant" | "legacy_mixed" | "v2_noncompliant" | string;
+  publication_status?: "not_applicable" | "publication_ready" | "publication_blocked" | string;
+  publication_result_count?: number;
+  research_health?: EvidenceResearchStructuralHealthDTO;
+  blockers: Array<{ code: string; message: string; node_id?: string; edge_id?: string }>;
+  warnings: Array<{ code: string; message: string; node_id?: string; edge_id?: string }>;
+}
+
+export interface EvidenceResearchProtocolGroupDTO {
+  group: EvidenceChainNode;
+  members: Array<{ node: EvidenceChainNode; thread_id?: string }>;
+  relations: Array<{ edge: EvidenceChainEdge; scope: "internal" | "external" }>;
+}
+
+export interface EvidenceResearchProjectionDTO {
+  evidence_contract_version?: string;
+  chain_id: string;
+  revision: number;
+  graph_hash: string;
+  stage_order: Array<"hypothesis" | "design" | "result" | "conclusion" | "issue">;
+  presentation_stage_order?: Array<"hypothesis" | "design" | "result" | "interpretation" | "outcome">;
+  threads: EvidenceResearchThreadDTO[];
+  unassigned: Array<{ card: EvidenceResearchCardDTO; reason: string }>;
+  cross_thread_relations: Array<{
+    edge: EvidenceChainEdge;
+    source_thread_id: string;
+    target_thread_id: string;
+    kind: "branch" | "causal";
+  }>;
+  protocol_groups?: EvidenceResearchProtocolGroupDTO[];
+  owner_by_node: Record<string, string>;
+  structural_health?: EvidenceResearchStructuralHealthDTO;
+  capacity?: {
+    policy_version: string;
+    status: "healthy" | "near_limit" | "split_recommended" | "cleanup_required";
+    too_large: boolean;
+    split_recommended: boolean;
+    thread_count: number;
+    root_thread_count: number;
+    thread_node_count: number;
+    unassigned_count: number;
+    recommended_max_threads: number;
+    recommended_max_thread_nodes: number;
+    recommended_max_unassigned: number;
+    suggested_topic_count: number;
+    reasons: string[];
+    thread_families: Array<{
+      id: string;
+      root_thread_id: string;
+      title: string;
+      thread_ids: string[];
+      thread_count: number;
+      semantic_node_count: number;
+    }>;
+  };
+}
+
 export interface EvidenceChainRunCandidate {
   id: string;
   kind: "project_card" | "run";
@@ -736,9 +884,23 @@ export interface EvidenceGraphBlocker {
   run_id?: string;
 }
 
+export interface EvidenceGraphWarning {
+  code: string;
+  message: string;
+  node_id?: string;
+  edge_id?: string;
+}
+
+export interface EvidenceLayoutIntent {
+  flow: "left_to_right";
+  ranks: string[][];
+  rationale?: string;
+}
+
 export interface EvidenceGraphPatch {
   chain_id: string;
   routing_reason?: string;
+  layout_intent?: EvidenceLayoutIntent;
   nodes: EvidenceChainNode[];
   edges: EvidenceChainEdge[];
   upsert_nodes?: EvidenceChainNode[];
@@ -757,12 +919,15 @@ export interface EvidenceGraphProposalPlan {
   status: string;
   base_graph_revision: number;
   current_graph_revision: number;
+  applied_graph_revision: number;
+  auto_rebased?: boolean;
   current_graph_hash?: string;
   result_graph_hash?: string;
   nodes_added: number;
   edges_added: number;
   eligible: boolean;
   blockers: EvidenceGraphBlocker[];
+  warnings?: EvidenceGraphWarning[];
   routing_reason?: string;
 }
 

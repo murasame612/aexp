@@ -1,6 +1,8 @@
 import type {
   EvidenceChain,
   EvidenceChainDetail,
+  EvidenceChainAuditReportDTO,
+  EvidenceResearchProjectionDTO,
   EvidenceChainNode,
   EvidenceChainEdge,
   EvidenceChainRunCandidate,
@@ -49,11 +51,13 @@ const API = "/api/v1";
 export class ApiError extends Error {
   status: number;
   details: string;
+  code: string;
 
-  constructor(status: number, message: string, details = "") {
+  constructor(status: number, message: string, details = "", code = "") {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code;
   }
 }
 
@@ -78,13 +82,15 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   });
   if (!res.ok) {
     let details = "";
+    let code = "";
     try {
       const payload = await res.json();
+      code = String(payload.error || "");
       details = String(payload.details || payload.error || "");
     } catch {
       details = await res.text().catch(() => "");
     }
-    throw new ApiError(res.status, res.status === 401 ? "Unauthorized" : "Request failed", details);
+    throw new ApiError(res.status, res.status === 401 ? "Unauthorized" : "Request failed", details, code);
   }
   if (res.status === 204) return undefined as T;
 	const contentType = res.headers.get("content-type") || "";
@@ -558,6 +564,14 @@ export function deleteEvidenceChain(token: string, id: string, permanent = false
 
 export function getEvidenceChain(token: string, id: string) {
   return apiFetch<EvidenceChainDetail>(`/evidence-chains/${encodeURIComponent(id)}`, { token });
+}
+
+export function getEvidenceResearchThreads(token: string, id: string) {
+  return apiFetch<EvidenceResearchProjectionDTO>(`/evidence-chains/${encodeURIComponent(id)}/threads`, { token });
+}
+
+export function getEvidenceAudit(token: string, id: string) {
+  return apiFetch<EvidenceChainAuditReportDTO>(`/evidence-chains/${encodeURIComponent(id)}/audit`, { token });
 }
 
 export function saveEvidenceChainGraph(token: string, id: string, graph: { nodes: EvidenceChainNode[]; edges: EvidenceChainEdge[] }, expectedRevision: number) {
