@@ -1,10 +1,27 @@
 # aexp Research Evidence Graph Acceptance Standard
 
-Status: Binding acceptance criteria  
-Version: 1.0  
-Date: 2026-07-23
+Status: Binding acceptance criteria
+Version: 2.0
+Date: 2026-08-02
+Evidence contract: `research-thread-v2`
 
 This document is the completion contract for `docs/prd-research-evidence-graph.md`. A criterion passes only with an automated test or a recorded, reproducible verification command. “The page opens” or “the request returned 200” is not sufficient when the criterion concerns integrity or semantics.
+
+## 0. Product comprehension contract
+
+### READ-01 Ninety-second research read
+
+Using the default ResearchOS Evidence route, a reader can identify from one bounded thread, without opening the giant Overview graph: the hypothesis, experiment design and comparison, immutable Result and Run provenance, projected interpretation, durable Conclusion/claim or Issue, and any `next_step` child hypothesis.
+
+Acceptance requires UI fixtures for a positive thread, a stable negative thread, a mixed thread, and an issue-driven branch.
+
+### READ-02 One model, multiple projections
+
+Run facts, Project Journal, and accepted Evidence have distinct responsibilities. Research Threads, Cause/Effect focus, list search, and Overview render the same accepted semantic graph. No UI projection persists a second semantic truth or visual coordinates into `graph_hash`.
+
+### READ-03 Default simplicity
+
+The Project Evidence route defaults to Research Threads. Overview is explicitly secondary/advanced. Topic capacity, Result disposition, outcome counts, cross-thread branch targets, and unassigned reasons are visible without opening Overview.
 
 ## 1. Database and migration
 
@@ -69,26 +86,37 @@ An archived graph remains readable but rejects semantic writes and proposal acce
 
 ### SEM-05 Evidence eligibility
 
-A smoke Run cannot be accepted as `supports` or `weakens` evidence for a formal claim. A formal Run missing explicit dataset, protocol, seed, or provenance context produces structured blockers rather than inferred values. A dataset reference is eligible only when its immutable ID, `dataset@version`, and manifest SHA-256 match a registry row whose state is `verified`; a caller-supplied hash or metadata-only `registered` row is rejected by submit, proposal-plan, and freeze-plan.
+A smoke Run cannot be accepted as `supports`, `weakens`, or `does_not_prove` evidence for a formal claim. The gate follows every `source_run_id` on a newly added or touched Result even when no visual Run node exists. A conclusion-bearing Result requires succeeded `formal` or explicitly compatible `ablation` Runs and a released EvidenceSnapshot. Failed, canceled, pilot, smoke, cross-Project, and provenance-incomplete Run sources produce structured blockers. Failed/invalid terminal Runs may only be curated through a justified `reveals_issue` outcome or remain in Journal. Values are never inferred from titles, commands, or current project configuration.
+
+A dataset reference is eligible only when its immutable ID, `dataset@version`, and manifest SHA-256 match a registry row whose state is `verified`; a caller-supplied hash or metadata-only `registered` row is rejected by submit, proposal-plan, and freeze-plan.
+
+### SEM-05A Canonical authored nodes and outcomes
+
+Every newly added `claim` declares `claimKind=hypothesis|result`. Every touched Result declares `resultDisposition=conclusion|issue|mixed|pending`, provides immutable provenance, and has outgoing edges consistent with that disposition. Removing or replacing an outcome edge revalidates the final merged graph. Historical untyped Claims remain readable but cannot be copied or upserted to bypass this rule.
+
+Stable negative evidence routes to a negative Conclusion with `weakens`/`does_not_prove`. A setting, data, implementation, or interpretation limitation routes to Issue with a rationale. A pending Result supplies a reason. Direct Result → Hypothesis/Experiment/Result semantic edges are blocked.
 
 ### SEM-06 Evidence compatibility
 
 When a claim declares dataset manifest or evaluation protocol context, incompatible support/weakening evidence is rejected. A matching context passes.
 
-## 4. Project Run Card proposal workflow
+### AUDIT-01 Accepted-map audit
+
+Store, API, CLI, and typed MCP expose the same `evidence-map-audit-v1` read model. `blockers` and `warnings` are always arrays and deterministically ordered. `--fail-on-blockers` exits non-zero after emitting the JSON report. Unknown Maps return 404/a typed not-found error. Audit performs no write.
+
+### AUDIT-02 Result-aware provenance
+
+Audit follows every accepted v2 Result's `source_run_ids` and `source_snapshot_ids`, validates object existence, Project ownership, terminal Run state, disposition/outcome agreement, and—when the Result reaches a Conclusion—formal readiness plus the exact snapshot's released state. Missing or invalid v2 references block eligibility. Legacy visual Run readiness is a compatibility warning; history remains readable and is never rewritten automatically.
+
+## 4. Journal-backed Evidence proposal workflow
 
 ### PROP-01 Required Agent outcome
 
-A typed Agent workflow can record either:
-
-- a pending graph patch; or
-- `no_graph_impact=true` and a non-empty reason.
-
-Submitting neither is rejected for proposal-aware completion.
+A typed Agent workflow can append a Project Journal entry without opening a proposal. When a durable judgment changes, it can submit a project-scoped proposal optionally linked to Journal entries and zero, one, or many Runs. Ordinary Journal writing never requires `no_graph_impact`.
 
 ### PROP-02 Idempotency and cardinality
 
-Submitting the same proposal content for a Run returns the existing proposal hash/status. A Run never has more than one pending graph patch.
+Submitting the same canonical proposal content returns the existing proposal hash/status. Proposal idempotency is scoped by target map and semantic content rather than by a single Run.
 
 ### PROP-03 Review boundary
 
@@ -97,6 +125,8 @@ Submitting a proposal does not modify accepted graph nodes, edges, revision, or 
 ### PROP-04 Plan and accept
 
 Planning acceptance has no side effects and returns proposed changes and all blockers. Accepting a clean proposal applies the patch transactionally, records reviewer/time, advances the graph revision when semantic content changes, and marks the proposal `accepted`.
+
+A new or touched `Conclusion/Issue --next_step-->` branch is eligible only when its target is a canonical `claimKind=hypothesis`. A historical bypass remains readable and produces `LEGACY_THREAD_BRANCH_BYPASS` during accepted-map audit; it does not block an unrelated proposal. Editing either bypass endpoint without repairing the edge produces `THREAD_BRANCH_HYPOTHESIS_REQUIRED`.
 
 ### PROP-05 Stale, rejected, and expired proposals
 
@@ -120,22 +150,41 @@ API coverage exists for submit/update, plan, accept, reject, expire, list pendin
 CLI can:
 
 - inspect graph revision/hash;
-- submit a Run Card graph proposal or no-impact reason;
+- submit a Journal-backed, project-scoped Evidence proposal;
 - plan and accept/reject a proposal;
 - list pending proposals;
+- run a side-effect-free Result-aware audit with a stable schema version and machine-readable eligibility;
 - export a canonical read-only graph snapshot.
 
 JSON mode emits structured fields and does not mix progress prose into stdout.
 
 ### MCP-01 Agent workflow
 
-Typed MCP tools expose proposal submission, proposal planning/status, and no-impact reporting. No MCP tool directly mutates accepted graph without the review operation.
+Typed MCP tools expose Project Journal writing, proposal submission/planning/status, and Result-aware Evidence audit. No MCP tool directly mutates accepted graph without the review operation.
+
+The default tool surface also exposes the server-authored Research Thread projection, capacity/thread-family guidance, safe proposal rebase, bounded reorganization planning, and `aexp_branch_from_outcome`. The typed branch tool creates an idempotent pending proposal from an accepted Conclusion/Issue to a child Hypothesis, optionally adds its Experiment Design, immediately returns the side-effect-free plan, and exposes neither raw patch fields nor acceptance controls. `aexp_cli` rejects direct accepted-graph writes (`evidence add-node`, `add-edge`, and whole-graph save) while preserving read, audit, plan, and proposal commands. Rejected attempts leave graph revision and hash unchanged.
 
 ### MCP-02 Low-noise responses
 
 List tools default to compact summaries with bounded result counts. Full graph/revision payloads require an explicit get call.
 
-## 6. UI-v2
+### CTX-01 Compact default research entry
+
+Store, CLI, and typed MCP expose `project-research-context-v1` as a side-effect-free Project orientation read. It includes project identity, bounded active Map/Thread summaries, recent Journal headings and open next actions, total/active Run counts plus bounded compact recent Runs, pending proposal summaries, warnings, and typed `next_reads`. Unknown Projects return a typed not-found error.
+
+### CTX-02 Bounded payload and honest omissions
+
+Default context limits are deterministic and independently configurable. An automated representative fixture serializes to at most 8 KiB. The payload does not contain Journal Markdown bodies, full Run commands, log text, metric histories, artifacts, manifests, graph bodies, or revision snapshots. Every omitted detail that is useful for likely continuation has an exact-ID or filtered `next_reads` hint.
+
+### CTX-03 Run discoverability is preserved
+
+The default MCP surface includes compact, bounded `aexp_list_runs` with project/status/kind/resource filters and pagination, plus exact `aexp_get_run_snapshot` and `aexp_tail_run_logs`. A Project with many Runs remains discoverable without loading the full ledger into the Agent context.
+
+### MCP-03 Capability profiles and compatibility
+
+With no profile environment variable, `tools/list` exposes no more than 12 default research tools and includes Project Context, Journal create/get, resource list, Run submit/list/snapshot/logs, and proposal create/plan. `advanced` adds evidence curation and operational drill-down; `admin` adds maintenance controls; `all` exposes the complete registry. Tools hidden from `tools/list` remain callable by exact legacy name during the documented compatibility window. No profile permits direct accepted-graph mutation without reviewed acceptance.
+
+## 6. ResearchOS UI
 
 ### UI-01 Project hierarchy
 
@@ -155,11 +204,21 @@ Reloading preserves pins. Layout operations do not change semantic graph hash.
 
 ### UI-03 Proposal review
 
-The review surface shows the Run, Project Run Card, base/current revisions, proposed nodes/edges, blockers, and accept/reject actions. A stale proposal cannot be accepted from the UI without replanning.
+The review surface shows source Journal entries, Result-level Run/snapshot provenance, base/current revisions, proposed nodes/edges, blockers, and accept/reject actions. A stale proposal cannot be accepted without planning or a safe object-level rebase.
 
 ### UI-04 States and readability
 
 Eligible, pending, accepted, rejected, expired, conflicted, and blocked states have distinct text and visual treatment. Meaning is not conveyed by color alone. Long node text and large graphs remain contained and scrollable.
+
+### UI-04A Thread contract visibility
+
+The default reader names Topic, Research Thread (假设链), and Stage Column consistently. Its compact status row independently shows readability (`legacy_readable` or current), v2 contract compliance, and publication readiness; presentation density never masquerades as a semantic or release failure. Thread headers show the derived structural phase and only surface complexity when the advisory 12/16-node thresholds are crossed. Result cards display a disposition badge, and a Conclusion/Issue `next_step` to a child Hypothesis renders a named jump target. Capacity guidance is subordinate presentation advice. Every unassigned card displays its server-provided reason and identifies the section as a temporary inbox.
+
+The UI consumes server-provided Thread, interpretation, structural-health, and audit projections. When graph revision and projection revision differ, it shows a short syncing state and refetches; it must not reconstruct accepted Research Thread ownership locally or let proposal preview replace accepted health.
+
+### UI-04B Cause/effect focus
+
+Hovering, focusing, or activating a card always establishes it as the origin. Connected cards in the same thread remain emphasized and unrelated cards are muted. If the card has no direct adjacent-stage relation, only the origin remains emphasized and the UI explicitly says there is no direct cause/effect relation; it must not present every card as selected. Keyboard/touch activation has the same semantics. If a connected peer is hidden by search, the UI reports the hidden relation count. Cross-thread relations remain explicit jump chips instead of long overlay lines.
 
 ### UI-05 Legacy chain
 
@@ -173,7 +232,7 @@ All existing Go tests pass. New tests cover migration, hashing, CAS conflicts, a
 
 ### TEST-02 UI-v2
 
-All existing UI tests pass. New tests cover deterministic layout, pin/reset behavior, proposal states, conflict handling, and legacy graph rendering.
+All existing UI tests pass. New tests cover deterministic layout, proposal states, conflict handling, legacy rendering, the four canonical Result dispositions (positive, stable-negative, mixed, issue-driven), and connected/disconnected/filtered cause-effect focus including keyboard/touch activation.
 
 ### BUILD-01 Production artifacts
 
