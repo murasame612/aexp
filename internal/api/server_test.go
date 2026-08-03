@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1249,7 +1250,7 @@ func TestListRunsMetaResponseIsOptIn(t *testing.T) {
 	}
 }
 
-func TestUIV2StaticRoutesStayParallelToLegacyRoot(t *testing.T) {
+func TestResearchOSIsTheOnlyWebEntrypoint(t *testing.T) {
 	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
 	if err != nil {
 		t.Fatalf("NewSQLite: %v", err)
@@ -1257,15 +1258,23 @@ func TestUIV2StaticRoutesStayParallelToLegacyRoot(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	srv := NewServer(db, nil, nil, slog.Default(), "", true)
-	for _, path := range []string{"/", "/ui-v2/", "/ui-v2/runs/test"} {
+	for _, path := range []string{"/", "/index.html"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
+		if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/ui-v2/" {
 			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
 		}
-		if rec.Body.Len() == 0 {
-			t.Fatalf("%s returned empty body", path)
+	}
+	for _, path := range []string{"/ui-v2/", "/ui-v2/runs/test"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ResearchOS") {
+			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "aexp UI v2") {
+			t.Fatalf("%s still exposes legacy branding", path)
 		}
 	}
 }
@@ -1803,6 +1812,49 @@ func TestEvidenceChainAPIAndValidation(t *testing.T) {
 	if detail.Revision != 1 || detail.GraphHash == "" {
 		t.Fatalf("detail revision/hash = %#v", detail.EvidenceChain)
 	}
+	threadsReq := httptest.NewRequest(http.MethodGet, "/api/v1/evidence-chains/"+chain.ID+"/threads", nil)
+	threadsRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(threadsRec, threadsReq)
+	if threadsRec.Code != http.StatusOK {
+		t.Fatalf("threads status = %d body=%s", threadsRec.Code, threadsRec.Body.String())
+	}
+	var research store.EvidenceResearchProjection
+	if err := json.Unmarshal(threadsRec.Body.Bytes(), &research); err != nil {
+		t.Fatalf("decode research threads: %v", err)
+	}
+	if research.Revision != detail.Revision || research.GraphHash != detail.GraphHash || len(research.Threads) != 1 || research.Threads[0].RootNodeID != "node_h" {
+		t.Fatalf("research projection = %#v", research)
+	}
+	if !reflect.DeepEqual(research.PresentationStages, []string{"hypothesis", "design", "result", "interpretation", "outcome"}) {
+		t.Fatalf("research presentation stages = %#v", research.PresentationStages)
+	}
+	if research.Capacity.PolicyVersion != store.EvidenceTopicCapacityPolicyVersion || research.Capacity.Status != "healthy" || research.Capacity.TooLarge || research.Capacity.SplitRecommended || research.Capacity.ThreadCount != 1 || research.Capacity.SuggestedTopicCount != 1 || len(research.Capacity.ThreadFamilies) != 1 || research.Capacity.ThreadFamilies[0].RootThreadID != "thread:node_h" {
+		t.Fatalf("research capacity = %#v", research.Capacity)
+	}
+	if research.StructuralHealth.PolicyVersion != store.EvidenceResearchHealthPolicyVersion || research.StructuralHealth.CompatibilityStatus != "legacy_readable" {
+		t.Fatalf("research health = %#v", research.StructuralHealth)
+	}
+	auditReq := httptest.NewRequest(http.MethodGet, "/api/v1/evidence-chains/"+chain.ID+"/audit", nil)
+	auditRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(auditRec, auditReq)
+	if auditRec.Code != http.StatusOK {
+		t.Fatalf("audit status = %d body=%s", auditRec.Code, auditRec.Body.String())
+	}
+	var audit store.EvidenceChainAuditReport
+	if err := json.Unmarshal(auditRec.Body.Bytes(), &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if audit.SchemaVersion != "evidence-map-audit-v1" || len(audit.Warnings) == 0 || audit.ResearchHealth.PolicyVersion != store.EvidenceResearchHealthPolicyVersion || audit.ReadabilityStatus != "legacy_readable" || audit.V2ComplianceStatus != "legacy_mixed" {
+		t.Fatalf("audit contract = %#v", audit)
+	}
+	if !reflect.DeepEqual(audit.ResearchHealth, research.StructuralHealth) {
+		t.Fatalf("thread and audit health diverged: threads=%#v audit=%#v", research.StructuralHealth, audit.ResearchHealth)
+	}
+	missingAudit := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(missingAudit, httptest.NewRequest(http.MethodGet, "/api/v1/evidence-chains/chain_missing/audit", nil))
+	if missingAudit.Code != http.StatusNotFound {
+		t.Fatalf("missing audit status = %d body=%s", missingAudit.Code, missingAudit.Body.String())
+	}
 	staleBody := strings.Replace(graphBody, `"nodes":[`, `"expected_revision":0,"nodes":[`, 1)
 	staleReq := httptest.NewRequest(http.MethodPut, "/api/v1/evidence-chains/"+chain.ID+"/graph", bytes.NewBufferString(staleBody))
 	staleRec := httptest.NewRecorder()
@@ -1939,11 +1991,11 @@ func TestEvidenceWorkspaceBootstrapProposalAPIWithoutRun(t *testing.T) {
 				{"id":"hypothesis_api","type":"hypothesis","title":"Starting hypothesis"},
 				{"id":"claim_api","type":"claim","title":"Working claim"},
 				{"id":"issue_api","type":"issue","title":"Protocol is not yet verified"},
-				{"id":"plan_api","type":"plan","title":"Run controlled baseline"}
+				{"id":"child_hypothesis_api","type":"claim","title":"Verified data will resolve the protocol issue","data_json":"{\"claimKind\":\"hypothesis\"}"}
 			],
 			"edges":[
 				{"id":"edge_api_support","type":"supports","source_node_id":"hypothesis_api","target_node_id":"claim_api"},
-				{"id":"edge_api_next","type":"next_step","source_node_id":"issue_api","target_node_id":"plan_api"}
+				{"id":"edge_api_next","type":"next_step","source_node_id":"issue_api","target_node_id":"child_hypothesis_api"}
 			]
 		}
 	}`, topic.ID, topic.ID)
@@ -1976,6 +2028,26 @@ func TestEvidenceWorkspaceBootstrapProposalAPIWithoutRun(t *testing.T) {
 	if !plan.Eligible || plan.ProposalID != created.ID || plan.ProjectID != project.ID || plan.ResultGraphHash == "" {
 		t.Fatalf("plan = %#v", plan)
 	}
+	secondBody := fmt.Sprintf(`{
+		"target_map_id":%q,
+		"actor":"agent",
+		"summary":"Add an independent follow-up.",
+		"routing_reason":"This Topic owns the follow-up.",
+		"source_run_ids":[],
+		"patch":{"chain_id":%q,"nodes":[{"id":"plan_follow_up","type":"plan","title":"Independent follow-up"}],"edges":[]}
+	}`, topic.ID, topic.ID)
+	secondCreateReq := httptest.NewRequest(http.MethodPost,
+		"/api/v1/project-definitions/"+project.ID+"/evidence-proposals",
+		bytes.NewBufferString(secondBody))
+	secondCreateRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(secondCreateRec, secondCreateReq)
+	if secondCreateRec.Code != http.StatusAccepted {
+		t.Fatalf("create second proposal status = %d body=%s", secondCreateRec.Code, secondCreateRec.Body.String())
+	}
+	var secondCreated evidenceProposalView
+	if err := json.Unmarshal(secondCreateRec.Body.Bytes(), &secondCreated); err != nil {
+		t.Fatal(err)
+	}
 
 	reviewReq := httptest.NewRequest(http.MethodPost,
 		"/api/v1/evidence-proposals/"+created.ID+"/review",
@@ -1988,6 +2060,27 @@ func TestEvidenceWorkspaceBootstrapProposalAPIWithoutRun(t *testing.T) {
 	acceptedTopic, _ := db.GetEvidenceChain(ctx, topic.ID)
 	if acceptedTopic.Revision != 1 || acceptedTopic.GraphHash != plan.ResultGraphHash {
 		t.Fatalf("accepted topic = %#v", acceptedTopic)
+	}
+	secondPlanReq := httptest.NewRequest(http.MethodPost, "/api/v1/evidence-proposals/"+secondCreated.ID+"/plan", bytes.NewBufferString(`{}`))
+	secondPlanRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(secondPlanRec, secondPlanReq)
+	if secondPlanRec.Code != http.StatusOK {
+		t.Fatalf("second plan status = %d body=%s", secondPlanRec.Code, secondPlanRec.Body.String())
+	}
+	var secondPlan store.EvidenceGraphProposalPlan
+	if err := json.Unmarshal(secondPlanRec.Body.Bytes(), &secondPlan); err != nil {
+		t.Fatal(err)
+	}
+	if !secondPlan.Eligible || !secondPlan.AutoRebased || secondPlan.AppliedGraphRevision != 1 {
+		t.Fatalf("second plan = %#v", secondPlan)
+	}
+	secondReviewReq := httptest.NewRequest(http.MethodPost,
+		"/api/v1/evidence-proposals/"+secondCreated.ID+"/review",
+		bytes.NewBufferString(`{"action":"accept","reviewer":"user"}`))
+	secondReviewRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(secondReviewRec, secondReviewReq)
+	if secondReviewRec.Code != http.StatusOK || !strings.Contains(secondReviewRec.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("second review status = %d body=%s", secondReviewRec.Code, secondReviewRec.Body.String())
 	}
 	unchangedPrimary, _ := db.GetEvidenceChain(ctx, primary.ID)
 	if unchangedPrimary.Revision != primary.Revision || unchangedPrimary.GraphHash != primary.GraphHash {

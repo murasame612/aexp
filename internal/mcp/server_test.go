@@ -47,65 +47,61 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &listResp); err != nil {
 		t.Fatalf("decode tools/list response: %v", err)
 	}
-	if len(listResp.Result.Tools) == 0 {
-		t.Fatalf("expected tool definitions")
+	if len(listResp.Result.Tools) != 12 {
+		t.Fatalf("default research profile should expose 12 intent-level tools, got %d: %#v", len(listResp.Result.Tools), listResp.Result.Tools)
 	}
 	if listResp.Result.Tools[0].Name != "aexp_agent_card" {
 		t.Fatalf("unexpected first tool %q", listResp.Result.Tools[0].Name)
 	}
-	var statusDescription string
-	for _, tool := range listResp.Result.Tools {
-		if tool.Name == "aexp_get_run_status" {
-			statusDescription = tool.Description
-			break
-		}
-	}
-	if !strings.Contains(statusDescription, "Do not use for monitoring loops") ||
-		!strings.Contains(statusDescription, "prefer aexp_get_run_snapshot") {
-		t.Fatalf("status tool description should steer agents to snapshot monitoring, got %q", statusDescription)
-	}
-	for _, name := range []string{"aexp_asset_publish", "aexp_asset_get", "aexp_asset_list"} {
-		if !toolListed(listResp.Result.Tools, name) {
-			t.Fatalf("asset tool %s should be listed", name)
-		}
-	}
-	for _, name := range []string{"aexp_project_list", "aexp_project_get"} {
-		if !toolListed(listResp.Result.Tools, name) {
-			t.Fatalf("project tool %s should be listed", name)
-		}
-	}
 	for _, name := range []string{
-		"aexp_create_project_journal_entry",
-		"aexp_list_project_journal",
-		"aexp_get_project_journal_entry",
-		"aexp_update_project_journal_next_action",
+		"aexp_agent_card", "aexp_project_list", "aexp_get_project_research_context",
+		"aexp_create_project_journal_entry", "aexp_get_project_journal_entry",
+		"aexp_list_resources", "aexp_submit_run", "aexp_list_runs", "aexp_get_run_snapshot",
+		"aexp_tail_run_logs", "aexp_create_evidence_proposal", "aexp_plan_evidence_graph_proposal",
 	} {
 		if !toolListed(listResp.Result.Tools, name) {
-			t.Fatalf("project journal tool %s should be listed", name)
+			t.Fatalf("default research tool %s should be listed", name)
 		}
 	}
-	if !toolListed(listResp.Result.Tools, "aexp_get_evidence_chain") ||
-		!toolListed(listResp.Result.Tools, "aexp_list_project_evidence_graphs") ||
-		!toolListed(listResp.Result.Tools, "aexp_create_topic_evidence_graph") ||
-		!toolListed(listResp.Result.Tools, "aexp_create_evidence_proposal") ||
-		!toolListed(listResp.Result.Tools, "aexp_list_evidence_proposals") ||
-		!toolListed(listResp.Result.Tools, "aexp_get_evidence_proposal") ||
-		!toolListed(listResp.Result.Tools, "aexp_reroute_evidence_proposal") ||
-		!toolListed(listResp.Result.Tools, "aexp_plan_evidence_promotion") ||
-		!toolListed(listResp.Result.Tools, "aexp_create_evidence_promotion") ||
-		!toolListed(listResp.Result.Tools, "aexp_propose_evidence_graph") ||
-		!toolListed(listResp.Result.Tools, "aexp_plan_evidence_graph_proposal") ||
-		!toolListed(listResp.Result.Tools, "aexp_review_evidence_graph_proposal") {
-		t.Fatalf("evidence chain tools should be listed: %#v", listResp.Result.Tools)
+	var contextDescription string
+	for _, tool := range listResp.Result.Tools {
+		if tool.Name == "aexp_get_project_research_context" {
+			contextDescription = tool.Description
+		}
 	}
-	if toolListed(listResp.Result.Tools, "aexp_propose_evidence_graph_patch") {
-		t.Fatalf("legacy evidence patch tool must be hidden from the default research tool list: %#v", listResp.Result.Tools)
+	for _, phrase := range []string{"project-research-context-v1", "next_reads", "omits", "aexp_list_runs"} {
+		if !strings.Contains(contextDescription, phrase) {
+			t.Fatalf("project context description missing %q: %q", phrase, contextDescription)
+		}
 	}
-	if toolListed(listResp.Result.Tools, "aexp_add_evidence_node") ||
-		toolListed(listResp.Result.Tools, "aexp_add_evidence_edge") {
-		t.Fatalf("agent tools must not directly mutate an accepted evidence graph: %#v", listResp.Result.Tools)
+
+	t.Setenv("AEXP_MCP_TOOL_PROFILE", "advanced")
+	advanced := toolDefinitions()
+	if len(advanced) <= len(listResp.Result.Tools) {
+		t.Fatalf("advanced profile should expose more tools, got %d", len(advanced))
+	}
+	if !definitionListed(advanced, "aexp_get_evidence_thread_map") || !definitionListed(advanced, "aexp_rebase_evidence_proposal") || !definitionListed(advanced, "aexp_cancel_run") {
+		t.Fatalf("advanced profile is missing evidence/run drill-down tools")
+	}
+	for _, definition := range toolDefinitions() {
+		if definition["name"] != "aexp_branch_from_outcome" {
+			continue
+		}
+		schema, _ := definition["inputSchema"].(map[string]interface{})
+		properties, _ := schema["properties"].(map[string]interface{})
+		for _, forbidden := range []string{"patch_json", "action", "source_node_id", "target_node_id", "x", "y"} {
+			if _, exists := properties[forbidden]; exists {
+				t.Fatalf("typed branch tool exposes forbidden field %q: %#v", forbidden, properties)
+			}
+		}
+		for _, required := range []string{"map_id", "outcome_node_id", "hypothesis_title", "branch_rationale"} {
+			if _, exists := properties[required]; !exists {
+				t.Fatalf("typed branch tool missing %q: %#v", required, properties)
+			}
+		}
 	}
 	for _, name := range []string{
+		"aexp_get_evidence_thread_map", "aexp_rebase_evidence_proposal", "aexp_cancel_run",
 		"aexp_mark_run", "aexp_list_run_marks",
 		"aexp_project_card", "aexp_project_runs", "aexp_project_digest",
 		"aexp_list_matrices", "aexp_create_matrix", "aexp_sync_dataset_push",
@@ -117,6 +113,19 @@ func TestServerInitializeAndListTools(t *testing.T) {
 			t.Fatalf("legacy/admin tool %s must be hidden from the default research tool list", name)
 		}
 	}
+	t.Setenv("AEXP_MCP_TOOL_PROFILE", "all")
+	if len(toolDefinitions()) != len(toolRegistry()) {
+		t.Fatalf("all profile must preserve compatibility discovery")
+	}
+}
+
+func definitionListed(definitions []map[string]interface{}, name string) bool {
+	for _, definition := range definitions {
+		if definition["name"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func toolListed(tools []struct {
@@ -508,6 +517,36 @@ printf '{"id":"journal_123","project_id":"project-a"}\n'
 	}
 }
 
+func TestProjectResearchContextToolInvokesCompactCLI(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\n' "$arg"
+done > "$AEXP_STUB_ARGS"
+printf '{"contract_version":"project-research-context-v1"}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("AEXP_STUB_ARGS", argsFile)
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_get_project_research_context","arguments":{"project_id":"project-a","map_limit":6,"thread_limit":2,"journal_limit":4,"run_limit":7}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
+	}
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	wantArgs := []string{"project", "context", "project-a", "--json", "--map-limit", "6", "--thread-limit", "2", "--journal-limit", "4", "--run-limit", "7"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
+	}
+}
+
 func TestProjectCardToolInvokesAexpBinary(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args.txt")
@@ -598,6 +637,21 @@ func TestEvidenceChainToolsInvokeAexpBinary(t *testing.T) {
 			want:  []string{"evidence", "show", "chain_ABC", "--json"},
 		},
 		{
+			name:  "get shared thread map",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_get_evidence_thread_map","arguments":{"map_id":"chain_ABC"}}}` + "\n",
+			want:  []string{"evidence", "threads", "chain_ABC", "--json"},
+		},
+		{
+			name:  "audit accepted map",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_audit_evidence_map","arguments":{"map_id":"chain_ABC"}}}` + "\n",
+			want:  []string{"evidence", "audit", "chain_ABC", "--json"},
+		},
+		{
+			name:  "archive secondary map",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_archive_evidence_map","arguments":{"map_id":"chain_ABC"}}}` + "\n",
+			want:  []string{"evidence", "archive", "chain_ABC", "--json"},
+		},
+		{
 			name:  "list project graphs",
 			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_list_project_evidence_graphs","arguments":{"project_id":"project_ABC","status":"active","limit":12}}}` + "\n",
 			want:  []string{"evidence", "list", "--project", "project_ABC", "--status", "active", "--limit", "12", "--json"},
@@ -611,6 +665,11 @@ func TestEvidenceChainToolsInvokeAexpBinary(t *testing.T) {
 			name:  "submit Run-optional proposal",
 			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_create_evidence_proposal","arguments":{"project_id":"project_ABC","target_map_id":"chain_ABC","summary":"Bootstrap context","actor":"agent","routing_reason":"This Topic owns the protocol question.","source_run_ids":[],"patch_json":"{\"chain_id\":\"chain_ABC\",\"nodes\":[],\"edges\":[]}"}}}` + "\n",
 			want:  []string{"evidence", "proposal-submit", "project_ABC", "--json", "--summary", "Bootstrap context", "--patch-json", `{"chain_id":"chain_ABC","nodes":[],"edges":[]}`, "--target-map", "chain_ABC", "--actor", "agent", "--routing-reason", "This Topic owns the protocol question."},
+		},
+		{
+			name:  "branch from accepted outcome",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_branch_from_outcome","arguments":{"map_id":"chain_ABC","outcome_node_id":"issue_1","hypothesis_title":"Matched data resolves the issue","hypothesis_body_md":"Hold the split fixed.","branch_rationale":"The accepted issue is testable.","experiment_design_title":"Run matched ablation","experiment_design_body_md":"Use five seeds.","summary":"Open matched-data branch","actor":"agent"}}}` + "\n",
+			want:  []string{"evidence", "branch-from-outcome", "chain_ABC", "--json", "--outcome-node", "issue_1", "--hypothesis-title", "Matched data resolves the issue", "--branch-rationale", "The accepted issue is testable.", "--hypothesis-body-md", "Hold the split fixed.", "--experiment-design-title", "Run matched ablation", "--experiment-design-body-md", "Use five seeds.", "--summary", "Open matched-data branch", "--actor", "agent"},
 		},
 		{
 			name:  "list independent proposals",
@@ -641,6 +700,21 @@ func TestEvidenceChainToolsInvokeAexpBinary(t *testing.T) {
 			name:  "plan independent proposal",
 			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_plan_evidence_graph_proposal","arguments":{"proposal_id":"proposal_ABC"}}}` + "\n",
 			want:  []string{"evidence", "proposal-plan", "proposal_ABC", "--json"},
+		},
+		{
+			name:  "plan evidence reorganization",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_plan_evidence_reorganization","arguments":{"map_id":"chain_ABC","patch_json":"{\"chain_id\":\"chain_ABC\",\"nodes\":[],\"edges\":[]}"}}}` + "\n",
+			want:  []string{"evidence", "reorganization-plan", "chain_ABC", "--patch-json", `{"chain_id":"chain_ABC","nodes":[],"edges":[]}`, "--json"},
+		},
+		{
+			name:  "create evidence reorganization proposal",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_create_evidence_reorganization_proposal","arguments":{"map_id":"chain_ABC","summary":"Clean one thread","patch_json":"{\"chain_id\":\"chain_ABC\",\"nodes\":[],\"edges\":[]}","expected_plan_hash":"plan123","actor":"agent","routing_reason":"Bounded cleanup","source_run_ids":["run_1"]}}}` + "\n",
+			want:  []string{"evidence", "reorganization-create", "chain_ABC", "--summary", "Clean one thread", "--patch-json", `{"chain_id":"chain_ABC","nodes":[],"edges":[]}`, "--expected-plan-hash", "plan123", "--json", "--actor", "agent", "--routing-reason", "Bounded cleanup", "--source-run", "run_1"},
+		},
+		{
+			name:  "rebase evidence proposal",
+			input: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_rebase_evidence_proposal","arguments":{"proposal_id":"proposal_ABC","actor":"agent"}}}` + "\n",
+			want:  []string{"evidence", "proposal-rebase", "proposal_ABC", "--json", "--actor", "agent"},
 		},
 		{
 			name:  "review independent proposal",
@@ -937,6 +1011,27 @@ func TestCLIRejectsManualEventEmission(t *testing.T) {
 	}
 	if !resp.Result.IsError || len(resp.Result.Content) == 0 || !strings.Contains(resp.Result.Content[0].Text, "instrument the training/eval script") {
 		t.Fatalf("manual event CLI should be rejected with instrumentation guidance: %s", out.String())
+	}
+}
+
+func TestCLIRejectsDirectEvidenceMutation(t *testing.T) {
+	for _, args := range [][]string{
+		{"evidence", "add-node", "chain_ABC", "--title", "Bypass"},
+		{"evidence", "add-edge", "chain_ABC", "--from", "a", "--to", "b"},
+		{"evidence", "save", "chain_ABC"},
+	} {
+		if err := validateCLIArgs(args); err == nil || !strings.Contains(err.Error(), "reviewed Evidence proposal") {
+			t.Fatalf("validateCLIArgs(%#v) = %v, want proposal-only rejection", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"evidence", "threads", "chain_ABC", "--json"},
+		{"evidence", "proposal-plan", "proposal_ABC", "--json"},
+		{"evidence", "audit", "chain_ABC", "--json"},
+	} {
+		if err := validateCLIArgs(args); err != nil {
+			t.Fatalf("validateCLIArgs(%#v) = %v, want read/proposal command allowed", args, err)
+		}
 	}
 }
 

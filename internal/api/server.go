@@ -285,6 +285,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/evidence-chains", s.handleListEvidenceChains)
 		r.Post("/evidence-chains", s.handleCreateEvidenceChain)
 		r.Get("/evidence-chains/{id}", s.handleGetEvidenceChain)
+		r.Get("/evidence-chains/{id}/threads", s.handleGetEvidenceResearchThreads)
 		r.Get("/evidence-chains/{id}/audit", s.handleAuditEvidenceChain)
 		r.Put("/evidence-chains/{id}", s.handleUpdateEvidenceChain)
 		r.Delete("/evidence-chains/{id}", s.handleDeleteEvidenceChain)
@@ -311,9 +312,9 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/ws/runs/{id}/logs", s.handleWSLogs)
 	r.Get("/ws/resources/{id}/metrics", s.handleWSMetrics)
 
-	// React UI v2. Kept parallel to the legacy root dashboard so existing
-	// deployments can validate the new app without changing their entrypoint.
-	staticContent, _ := fs.Sub(staticFS, "static")
+	// ResearchOS is the only user-facing web application. /ui-v2 remains a
+	// compatibility URL so existing deep links and browser history keep working;
+	// the legacy root dashboard is deliberately no longer served.
 	uiV2Content, uiV2Err := fs.Sub(staticFS, "static/ui-v2")
 	if uiV2Err == nil {
 		uiV2Server := http.StripPrefix("/ui-v2", http.FileServer(http.FS(uiV2Content)))
@@ -340,35 +341,15 @@ func (s *Server) Handler() http.Handler {
 		})
 	}
 
-	// Static files (embedded legacy web UI)
-	fileServer := http.FileServer(http.FS(staticContent))
-
-	serveIndex := func(w http.ResponseWriter, r *http.Request) {
-		data, err := staticFS.ReadFile("static/index.html")
-		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
-	}
-
-	// Use NotFound as fallback: serves index.html for SPA routes,
-	// real static files for anything that matches.
+	// Redirect every historical non-API entrypoint into ResearchOS. This keeps
+	// old bookmarks useful without leaving a second UI or its static assets
+	// reachable from the running service.
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		if strings.HasPrefix(req.URL.Path, "/api/") {
 			writeError(w, http.StatusNotFound, "API_ROUTE_NOT_FOUND", "API route not found; verify that the UI and aexp backend versions match")
 			return
 		}
-		// Try to serve as static file first
-		f, err := staticContent.Open(strings.TrimPrefix(req.URL.Path, "/"))
-		if err == nil {
-			f.Close()
-			fileServer.ServeHTTP(w, req)
-			return
-		}
-		// Fallback to index.html (SPA)
-		serveIndex(w, req)
+		http.Redirect(w, req, "/ui-v2/", http.StatusMovedPermanently)
 	})
 
 	return r
@@ -3994,6 +3975,25 @@ func (s *Server) handleGetEvidenceChain(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) handleGetEvidenceResearchThreads(w http.ResponseWriter, r *http.Request) {
+	chainID := chi.URLParam(r, "id")
+	chain, err := s.store.GetEvidenceChain(r.Context(), chainID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	if chain == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "evidence chain not found")
+		return
+	}
+	graph, err := s.store.GetEvidenceChainGraph(r.Context(), chainID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, store.BuildEvidenceResearchProjection(*chain, *graph))
 }
 
 func (s *Server) evidenceChainDetail(ctx context.Context, chainID string, w http.ResponseWriter) (evidenceChainDetail, bool) {

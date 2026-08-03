@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -434,6 +435,23 @@ func (s *Server) toolListRuns(ctx context.Context, args map[string]interface{}) 
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
 
+func (s *Server) toolProjectResearchContext(ctx context.Context, args map[string]interface{}) (string, error) {
+	projectID, err := requiredString(args, "project_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"project", "context", projectID, "--json"}
+	for _, option := range [][2]string{
+		{"map_limit", "--map-limit"}, {"thread_limit", "--thread-limit"},
+		{"journal_limit", "--journal-limit"}, {"run_limit", "--run-limit"},
+	} {
+		if value, ok := optionalIntArg(args, option[0]); ok {
+			cli = append(cli, option[1], strconv.Itoa(value))
+		}
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
 func (s *Server) toolListWorkspacePaths(ctx context.Context, args map[string]interface{}) (string, error) {
 	cli := []string{"fs", "roots", "--json"}
 	addOptionalStringFlag(&cli, args, "workspace", "--workspace")
@@ -796,46 +814,28 @@ func (s *Server) toolEvidenceGet(ctx context.Context, args map[string]interface{
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "show", chainID, "--json")
 }
 
-func (s *Server) toolEvidenceAddNode(ctx context.Context, args map[string]interface{}) (string, error) {
-	chainID, err := requiredString(args, "chain_id")
+func (s *Server) toolEvidenceThreadMap(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
 	if err != nil {
 		return "", err
 	}
-	cli := []string{"evidence", "add-node", chainID, "--json"}
-	addOptionalStringFlag(&cli, args, "id", "--id")
-	addOptionalStringFlag(&cli, args, "type", "--type")
-	addOptionalStringFlag(&cli, args, "title", "--title")
-	addOptionalStringFlag(&cli, args, "body", "--body")
-	addOptionalStringFlag(&cli, args, "run_id", "--run-id")
-	addOptionalStringFlag(&cli, args, "project_card_id", "--project-card-id")
-	if v, ok := optionalIntArg(args, "width"); ok {
-		cli = append(cli, "--width", strconv.Itoa(v))
-	}
-	if v, ok := optionalIntArg(args, "height"); ok {
-		cli = append(cli, "--height", strconv.Itoa(v))
-	}
-	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "threads", mapID, "--json")
 }
 
-func (s *Server) toolEvidenceAddEdge(ctx context.Context, args map[string]interface{}) (string, error) {
-	chainID, err := requiredString(args, "chain_id")
+func (s *Server) toolEvidenceAudit(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
 	if err != nil {
 		return "", err
 	}
-	fromNodeID, err := requiredString(args, "from_node_id")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "audit", mapID, "--json")
+}
+
+func (s *Server) toolArchiveEvidenceMap(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
 	if err != nil {
 		return "", err
 	}
-	toNodeID, err := requiredString(args, "to_node_id")
-	if err != nil {
-		return "", err
-	}
-	cli := []string{"evidence", "add-edge", chainID, "--json", "--from", fromNodeID, "--to", toNodeID}
-	addOptionalStringFlag(&cli, args, "id", "--id")
-	addOptionalStringFlag(&cli, args, "type", "--type")
-	addOptionalStringFlag(&cli, args, "label", "--label")
-	addOptionalStringFlag(&cli, args, "rationale", "--rationale")
-	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "archive", mapID, "--json")
 }
 
 func (s *Server) toolEvidencePropose(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -877,6 +877,54 @@ func (s *Server) toolEvidenceProposalPlan(ctx context.Context, args map[string]i
 		target = runID
 	}
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "proposal-plan", target, "--json")
+}
+
+func (s *Server) toolEvidenceReorganizationPlan(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
+	if err != nil {
+		return "", err
+	}
+	patchJSON, err := requiredString(args, "patch_json")
+	if err != nil {
+		return "", err
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), "evidence", "reorganization-plan", mapID, "--patch-json", patchJSON, "--json")
+}
+
+func (s *Server) toolEvidenceReorganizationCreate(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
+	if err != nil {
+		return "", err
+	}
+	summary, err := requiredString(args, "summary")
+	if err != nil {
+		return "", err
+	}
+	patchJSON, err := requiredString(args, "patch_json")
+	if err != nil {
+		return "", err
+	}
+	expectedPlanHash, err := requiredString(args, "expected_plan_hash")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"evidence", "reorganization-create", mapID, "--summary", summary, "--patch-json", patchJSON, "--expected-plan-hash", expectedPlanHash, "--json"}
+	addOptionalStringFlag(&cli, args, "actor", "--actor")
+	addOptionalStringFlag(&cli, args, "routing_reason", "--routing-reason")
+	for _, runID := range stringSliceArg(args, "source_run_ids") {
+		cli = append(cli, "--source-run", runID)
+	}
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolEvidenceProposalRebase(ctx context.Context, args map[string]interface{}) (string, error) {
+	proposalID, err := requiredString(args, "proposal_id")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{"evidence", "proposal-rebase", proposalID, "--json"}
+	addOptionalStringFlag(&cli, args, "actor", "--actor")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
 
 func (s *Server) toolEvidenceProposalReview(ctx context.Context, args map[string]interface{}) (string, error) {
@@ -922,6 +970,37 @@ func (s *Server) toolEvidenceProposalSubmit(ctx context.Context, args map[string
 		cli = append(cli, "--source-snapshot", snapshotID)
 	}
 	addBoolFlag(&cli, args, "project_level_impact", "--project-level-impact")
+	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
+}
+
+func (s *Server) toolEvidenceBranchFromOutcome(ctx context.Context, args map[string]interface{}) (string, error) {
+	mapID, err := requiredString(args, "map_id")
+	if err != nil {
+		return "", err
+	}
+	outcomeNodeID, err := requiredString(args, "outcome_node_id")
+	if err != nil {
+		return "", err
+	}
+	hypothesisTitle, err := requiredString(args, "hypothesis_title")
+	if err != nil {
+		return "", err
+	}
+	branchRationale, err := requiredString(args, "branch_rationale")
+	if err != nil {
+		return "", err
+	}
+	cli := []string{
+		"evidence", "branch-from-outcome", mapID, "--json",
+		"--outcome-node", outcomeNodeID,
+		"--hypothesis-title", hypothesisTitle,
+		"--branch-rationale", branchRationale,
+	}
+	addOptionalStringFlag(&cli, args, "hypothesis_body_md", "--hypothesis-body-md")
+	addOptionalStringFlag(&cli, args, "experiment_design_title", "--experiment-design-title")
+	addOptionalStringFlag(&cli, args, "experiment_design_body_md", "--experiment-design-body-md")
+	addOptionalStringFlag(&cli, args, "summary", "--summary")
+	addOptionalStringFlag(&cli, args, "actor", "--actor")
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
 
@@ -1577,6 +1656,10 @@ func validateCLIArgs(args []string) error {
 		return fmt.Errorf("aexp_cli does not start long-lived %q; run it outside MCP", args[0])
 	case "event", "events":
 		return fmt.Errorf("aexp_cli does not emit manual training events; instrument the training/eval script with aexp_events.py before submitting the run, and use aexp_create_project_journal_entry for post-hoc reasoning")
+	case "evidence":
+		if len(args) > 1 && (args[1] == "add-node" || args[1] == "add-edge" || args[1] == "save") {
+			return fmt.Errorf("aexp_cli does not mutate accepted Evidence directly; read the Research Thread projection and submit a reviewed Evidence proposal")
+		}
 	}
 	for _, arg := range args {
 		if arg == "--follow" {
@@ -1943,8 +2026,12 @@ func stringMapArg(args map[string]interface{}, key string) map[string]string {
 func toolDefinitions() []map[string]interface{} {
 	tools := toolRegistry()
 	out := make([]map[string]interface{}, 0, len(tools))
+	profile := strings.ToLower(strings.TrimSpace(os.Getenv("AEXP_MCP_TOOL_PROFILE")))
+	if profile == "" {
+		profile = "research"
+	}
 	for _, tool := range tools {
-		if !defaultResearchTool(tool.Name) {
+		if !toolVisibleInProfile(tool.Name, profile) {
 			continue
 		}
 		out = append(out, map[string]interface{}{
@@ -1956,24 +2043,57 @@ func toolDefinitions() []map[string]interface{} {
 	return out
 }
 
+func toolVisibleInProfile(name, profile string) bool {
+	switch profile {
+	case "research":
+		return defaultResearchTool(name)
+	case "advanced":
+		return defaultResearchTool(name) || advancedResearchTool(name)
+	case "admin":
+		return defaultResearchTool(name) || administrativeTool(name)
+	case "all", "compatibility":
+		return true
+	default:
+		return defaultResearchTool(name)
+	}
+}
+
 func defaultResearchTool(name string) bool {
 	switch name {
 	case "aexp_agent_card",
-		"aexp_project_init", "aexp_project_list", "aexp_project_get", "aexp_project_detect", "aexp_project_doctor",
-		"aexp_create_project_journal_entry", "aexp_list_project_journal",
-		"aexp_get_project_journal_entry", "aexp_update_project_journal_next_action",
-		"aexp_asset_publish", "aexp_asset_get", "aexp_asset_list",
-		"aexp_doctor", "aexp_list_resources",
-		"aexp_submit_run", "aexp_assign_run_project", "aexp_list_runs", "aexp_get_run_status", "aexp_get_run_snapshot",
-		"aexp_tail_run_logs", "aexp_cancel_run",
-		"aexp_create_evidence_snapshot", "aexp_get_evidence_snapshot", "aexp_list_evidence_snapshots",
-		"aexp_evaluate_evidence_release", "aexp_list_evidence_releases",
-		"aexp_list_project_evidence_graphs", "aexp_create_topic_evidence_graph",
-		"aexp_get_evidence_chain", "aexp_create_evidence_proposal",
-		"aexp_list_evidence_proposals", "aexp_get_evidence_proposal", "aexp_reroute_evidence_proposal",
-		"aexp_plan_evidence_promotion", "aexp_create_evidence_promotion",
-		"aexp_propose_evidence_graph",
-		"aexp_plan_evidence_graph_proposal", "aexp_review_evidence_graph_proposal":
+		"aexp_project_list", "aexp_get_project_research_context",
+		"aexp_create_project_journal_entry", "aexp_get_project_journal_entry",
+		"aexp_list_resources", "aexp_submit_run", "aexp_list_runs", "aexp_get_run_snapshot", "aexp_tail_run_logs",
+		"aexp_create_evidence_proposal", "aexp_plan_evidence_graph_proposal":
+		return true
+	default:
+		return false
+	}
+}
+
+func advancedResearchTool(name string) bool {
+	switch name {
+	case "aexp_project_get", "aexp_list_project_journal", "aexp_update_project_journal_next_action",
+		"aexp_asset_publish", "aexp_asset_get", "aexp_asset_list", "aexp_assign_run_project",
+		"aexp_get_run_status", "aexp_cancel_run", "aexp_create_evidence_snapshot", "aexp_get_evidence_snapshot",
+		"aexp_list_evidence_snapshots", "aexp_evaluate_evidence_release", "aexp_list_evidence_releases",
+		"aexp_list_project_evidence_graphs", "aexp_create_topic_evidence_graph", "aexp_get_evidence_chain",
+		"aexp_get_evidence_thread_map", "aexp_audit_evidence_map", "aexp_archive_evidence_map",
+		"aexp_branch_from_outcome", "aexp_list_evidence_proposals", "aexp_get_evidence_proposal",
+		"aexp_reroute_evidence_proposal", "aexp_plan_evidence_promotion", "aexp_create_evidence_promotion",
+		"aexp_plan_evidence_reorganization", "aexp_create_evidence_reorganization_proposal",
+		"aexp_rebase_evidence_proposal":
+		return true
+	default:
+		return false
+	}
+}
+
+func administrativeTool(name string) bool {
+	switch name {
+	case "aexp_project_init", "aexp_project_detect", "aexp_project_doctor", "aexp_doctor",
+		"aexp_archive_evidence_map", "aexp_assign_run_project", "aexp_asset_publish",
+		"aexp_asset_get", "aexp_asset_list", "aexp_cancel_run":
 		return true
 	default:
 		return false
@@ -2028,6 +2148,21 @@ func toolRegistry() []toolSpec {
 			}, nil),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.runAexp(ctx, timeoutFromArgs(args, 30), "project", "list", "--json")
+			},
+		},
+		{
+			Name:        "aexp_get_project_research_context",
+			Description: "Default Agent entry for one Project. Returns a compact project-research-context-v1 summary of Topic routing, Research Threads, recent Journal decisions, paged Run discovery hints, pending Evidence proposals, warnings, and explicit next_reads. It deliberately omits full graph bodies, Journal Markdown, logs, artifact manifests, and Run provenance; use aexp_list_runs for paged history and follow next_reads only when relevant.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"project_id":    stringSchema("Canonical Project id."),
+				"map_limit":     numberSchema("Maximum active Maps summarized; default 8, maximum 20."),
+				"thread_limit":  numberSchema("Maximum Research Threads summarized per Map; default 3, maximum 8."),
+				"journal_limit": numberSchema("Maximum recent Journal entries summarized; default 5, maximum 20."),
+				"run_limit":     numberSchema("Maximum recent compact Run summaries; default 8, maximum 30. Use aexp_list_runs for the full paged history."),
+				"timeout":       numberSchema("Tool timeout in seconds."),
+			}, []string{"project_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolProjectResearchContext(ctx, args)
 			},
 		},
 		{
@@ -2819,7 +2954,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_get_evidence_chain",
-			Description: "Read an agent-friendly Evidence Chain snapshot: node ids, run ids with short intros, note cards, and typed edges. Use run tools for detailed run logs/metrics.",
+			Description: "Read the full compatibility/advanced raw Evidence Map snapshot, including node data_json and the accepted Research Thread projection. Prefer aexp_get_evidence_thread_map for normal Topic reading; use run tools for detailed run logs/metrics.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"chain_id": stringSchema("Evidence Chain id."),
 				"timeout":  numberSchema("Tool timeout in seconds."),
@@ -2829,8 +2964,41 @@ func toolRegistry() []toolSpec {
 			},
 		},
 		{
+			Name:        "aexp_get_evidence_thread_map",
+			Description: "Read one accepted Topic using the research-thread-v2 contract as Research Threads arranged into fixed Stage Columns before routing or authoring Evidence. presentation_stage_order is authoritative. Returns research-health-v2 advisory diagnostics, Result interpretations, parent/child Threads, capacity/thread_families (including presentation-only split_recommended), unassigned reasons, revision, and graph hash. Never invent a split from titles or move evidence automatically. This does not run provenance audit or mutate the Map.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":  stringSchema("Evidence Map id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceThreadMap(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_audit_evidence_map",
+			Description: "Audit the accepted Evidence Map after user acceptance. Returns hard eligibility/blockers plus separate readability, v2 compliance, publication status, and the same research-health-v2 advisory snapshot. It cannot audit an unaccepted proposal; use proposal-plan first. Legacy visual Run nodes remain compatibility warnings and are never rewritten.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":  stringSchema("Evidence Map id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceAudit(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_archive_evidence_map",
+			Description: "Archive one secondary Topic Map while preserving nodes, edges, revisions and hashes. Primary Maps cannot be archived. This never permanently deletes evidence.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":  stringSchema("Secondary Topic Map id."),
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolArchiveEvidenceMap(ctx, args)
+			},
+		},
+		{
 			Name:        "aexp_create_evidence_proposal",
-			Description: "Create an independent, Run-optional Evidence Proposal. target_map_id is explicit for a pending proposal; omit it only to preserve an unrouted draft. Topic proposals require routing_reason and direct Primary proposals require project_level_impact.",
+			Description: "Create a reviewable research-thread-v2 Evidence Proposal; it never accepts the change. Read aexp_get_evidence_thread_map first. Submit hypothesis, experiment design, Result provenance/disposition, and durable Conclusion and/or Issue semantics; Interpretation is server-derived, not a node. Stable negative evidence belongs in a Conclusion, while an unresolved data/protocol/implementation limitation belongs in an Issue. Route to an explicit matching Topic or leave a draft; never use Primary as fallback.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"project_id":           stringSchema("Canonical Project id."),
 				"target_map_id":        stringSchema("Explicit target Map id. Omit only for an unrouted draft."),
@@ -2840,11 +3008,30 @@ func toolRegistry() []toolSpec {
 				"project_level_impact": boolSchema("Required true for a direct Primary Map proposal."),
 				"source_run_ids":       arrayStringSchema("Optional source Runs; zero Runs is valid for bootstrap context."),
 				"source_snapshot_ids":  arrayStringSchema("Optional immutable Evidence Snapshot sources."),
-				"patch_json":           stringSchema("Additive patch JSON with nodes and edges. Agent coordinates are ignored. A protocol collection is a node with type=group and data_json.groupKind=protocol; member nodes reference it through data_json.groupId. Do not create edges to group nodes, do not nest groups, and never send collapsed because collapse is UI-only."),
+				"patch_json":           stringSchema("Reviewable patch JSON with nodes and typed edges. Agent coordinates are ignored. Use type=experiment for an experiment design. A result node uses type=claim, data_json.claimKind=result, resultDisposition=conclusion|issue|mixed|pending, and node-level source_run_ids/source_snapshot_ids. conclusion requires only Conclusion outcome edges; issue requires only reveals_issue; mixed requires both; pending requires neither. A Result must not connect directly to a Hypothesis, design, or another Result. issue/mixed/pending require dispositionReason unless the reveals_issue edge itself has a rationale. Interpretation cards are read-only UI/MCP projections and must never be submitted as nodes. Reference Run, dataset and config identity as provenance rather than graph containers. Do not create protocol groups. Optional layout_intent remains left-to-right semantic intent only."),
 				"timeout":              numberSchema("Tool timeout in seconds."),
 			}, []string{"project_id", "summary", "patch_json"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolEvidenceProposalSubmit(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_branch_from_outcome",
+			Description: "Create and immediately plan a reviewable child-thread proposal from one accepted Conclusion or Issue in a Topic Map. Read aexp_get_evidence_thread_map first. The server generates Conclusion/Issue --next_step--> canonical child Hypothesis and, optionally, Hypothesis --next_step--> Experiment Design. It never accepts the proposal, never writes coordinates, and exposes no raw patch_json. The returned next_action is user_review when the plan is eligible.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":                    stringSchema("Active secondary Topic Map id."),
+				"outcome_node_id":           stringSchema("Accepted Conclusion or Issue node that motivates the branch."),
+				"hypothesis_title":          stringSchema("Testable child hypothesis title."),
+				"hypothesis_body_md":        stringSchema("Optional Markdown explanation of the child hypothesis."),
+				"branch_rationale":          stringSchema("Why this accepted outcome motivates the new hypothesis."),
+				"experiment_design_title":   stringSchema("Optional first experiment-design title."),
+				"experiment_design_body_md": stringSchema("Optional Markdown design details; requires experiment_design_title."),
+				"summary":                   stringSchema("Optional proposal summary; derived from the hypothesis when omitted."),
+				"actor":                     stringSchema("Proposal author identity; defaults to agent."),
+				"timeout":                   numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id", "outcome_node_id", "hypothesis_title", "branch_rationale"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceBranchFromOutcome(ctx, args)
 			},
 		},
 		{
@@ -2923,7 +3110,7 @@ func toolRegistry() []toolSpec {
 				"run_id":          stringSchema("Run id whose Project Run Card owns the proposal."),
 				"graph_id":        stringSchema("Target evidence graph id. Omit only to use the Run Project's primary graph."),
 				"routing_reason":  stringSchema("Why the selected topic graph is the unique or clearly best match."),
-				"patch_json":      stringSchema("Additive patch JSON with nodes and edges. Agent coordinates are ignored."),
+				"patch_json":      stringSchema("Reviewable patch JSON with nodes and edges. Agent coordinates are ignored. Optional layout_intent uses left-to-right ranks: {\"flow\":\"left_to_right\",\"ranks\":[[\"node_id\"]],\"rationale\":\"...\"}; list protocol containers rather than their members."),
 				"base_revision":   numberSchema("Optional expected graph revision; otherwise the current selected graph revision is resolved."),
 				"no_graph_impact": boolSchema("Record that this run does not change the research graph."),
 				"reason":          stringSchema("Required explanation when no_graph_impact is true."),
@@ -2939,7 +3126,7 @@ func toolRegistry() []toolSpec {
 			InputSchema: objectSchema(map[string]interface{}{
 				"run_id":          stringSchema("Run id whose Project Run Card owns the proposal."),
 				"chain_id":        stringSchema("Optional explicit graph id. Omit to use the Run project's active primary Evidence Map."),
-				"patch_json":      stringSchema("Additive patch JSON with nodes and edges. Agent coordinates are ignored."),
+				"patch_json":      stringSchema("Reviewable patch JSON with nodes and edges. Agent coordinates are ignored. Optional layout_intent uses left-to-right ranks: {\"flow\":\"left_to_right\",\"ranks\":[[\"node_id\"]],\"rationale\":\"...\"}; list protocol containers rather than their members."),
 				"base_revision":   numberSchema("Revision for an explicit chain override. The project primary resolves its current revision automatically."),
 				"no_graph_impact": boolSchema("Record that this run does not change the research graph."),
 				"reason":          stringSchema("Required explanation when no_graph_impact is true."),
@@ -2952,7 +3139,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_plan_evidence_graph_proposal",
-			Description: "Plan proposal acceptance without side effects. Returns revision conflicts, provenance blockers, and the resulting graph hash.",
+			Description: "Plan proposal acceptance without side effects. Returns revision conflicts and provenance blockers, plus advisory research-thread warnings such as a missing hypothesis, disconnected semantic node, Run without an outcome, or issue without a next step. Warnings guide Agent authoring but do not prevent acceptance; blockers do.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"proposal_id": stringSchema("Independent Evidence Proposal id (preferred)."),
 				"run_id":      stringSchema("Legacy Run id owning an old Project Run Card proposal."),
@@ -2960,6 +3147,47 @@ func toolRegistry() []toolSpec {
 			}, nil),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolEvidenceProposalPlan(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_plan_evidence_reorganization",
+			Description: "Plan one bounded semantic cleanup inside an existing Evidence Map without side effects. Supply upserts/deletes/typed edges, not pixel coordinates. The result includes before/after research threads, blockers, warnings and a revision-bound plan_hash. Cross-Map moves must be split into separately reviewed proposals.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":     stringSchema("Target Evidence Map id."),
+				"patch_json": stringSchema("Bounded EvidenceGraphPatch JSON using node/edge ids, upserts and deletes. Keep each proposal to roughly 8-12 semantic nodes."),
+				"timeout":    numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id", "patch_json"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceReorganizationPlan(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_create_evidence_reorganization_proposal",
+			Description: "Create the reviewable Evidence Proposal described by an unchanged reorganization plan. This never directly edits the Map; the user still accepts or rejects it.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"map_id":             stringSchema("Target Evidence Map id."),
+				"summary":            stringSchema("Short semantic cleanup summary."),
+				"patch_json":         stringSchema("Exact patch_json used for planning."),
+				"expected_plan_hash": stringSchema("Exact plan_hash returned by aexp_plan_evidence_reorganization."),
+				"actor":              stringSchema("Proposal author identity; defaults to agent."),
+				"routing_reason":     stringSchema("Why the selected Map owns this cleanup."),
+				"source_run_ids":     arrayStringSchema("Optional Run ids referenced by the cleanup."),
+				"timeout":            numberSchema("Tool timeout in seconds."),
+			}, []string{"map_id", "summary", "patch_json", "expected_plan_hash"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceReorganizationCreate(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_rebase_evidence_proposal",
+			Description: "Create a current-revision replacement for a stale pending Evidence Proposal only when every touched node and edge is unchanged. The old Proposal becomes expired history; semantic conflicts are reported precisely.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"proposal_id": stringSchema("Pending Evidence Proposal id."),
+				"actor":       stringSchema("Actor recorded on the replacement Proposal."),
+				"timeout":     numberSchema("Tool timeout in seconds."),
+			}, []string{"proposal_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.toolEvidenceProposalRebase(ctx, args)
 			},
 		},
 		{

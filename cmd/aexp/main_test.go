@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/store"
 )
@@ -46,6 +47,17 @@ func TestSimplifiedResearchCommandSurface(t *testing.T) {
 	}
 
 	evidence := evidenceCmd()
+	audit, _, err := evidence.Find([]string{"audit"})
+	if err != nil || audit == nil || audit.Hidden {
+		t.Fatalf("evidence audit command missing or hidden: child=%v err=%v", audit, err)
+	}
+	if audit.Flags().Lookup("json") == nil || audit.Flags().Lookup("fail-on-blockers") == nil {
+		t.Fatalf("evidence audit must expose JSON and machine-readable failure flags")
+	}
+	branch, _, err := evidence.Find([]string{"branch-from-outcome"})
+	if err != nil || branch == nil || branch.Hidden {
+		t.Fatalf("typed evidence branch command missing or hidden: child=%v err=%v", branch, err)
+	}
 	for _, name := range []string{"create", "add-node", "add-edge", "list"} {
 		child, _, err := evidence.Find([]string{name})
 		if err != nil || child == nil || !child.Hidden {
@@ -54,13 +66,43 @@ func TestSimplifiedResearchCommandSurface(t *testing.T) {
 	}
 }
 
+func TestDirectEvidenceSemanticWritesRequireProposal(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{name: "add-node", cmd: evidenceAddNodeCmd()},
+		{name: "add-edge", cmd: evidenceAddEdgeCmd()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.cmd.RunE(test.cmd, []string{"chain_test"})
+			if err == nil || !strings.Contains(err.Error(), "SEMANTIC_WRITE_REQUIRES_PROPOSAL") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestAgentCardUsesProjectJournalForResearchReasoning(t *testing.T) {
 	steps, rules := agentCardContent()
 	content := strings.Join(append(append([]string{}, steps...), rules...), "\n")
 	for _, want := range []string{
-		"project journal list",
+		"project context",
+		"next_reads",
 		"project journal create",
 		"Do not create new Run marks or Project cards",
+		"one bounded evidence thread",
+		"claimKind=hypothesis",
+		"Never connect a Result directly to a hypothesis, plan, experiment, or another result",
+		"evidence proposal-plan",
+		"evidence branch-from-outcome",
+		"After user acceptance, run evidence audit",
+		"historical visual Run",
+		"Topic is one decision question",
+		"Research Thread is one hypothesis-led causal chain",
+		"Stage Column is one of the five read-only presentation columns",
+		"structural_health as advisory",
+		"audit blockers as the hard gate",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("agent card missing %q:\n%s", want, content)

@@ -1355,7 +1355,7 @@ func agentCmd() *cobra.Command {
 func agentCardContent() ([]string, []string) {
 	steps := []string{
 		"Check resources: aexp resource list --verbose",
-		"Read current project memory: aexp project journal list <project_id> --next-action-status open --json",
+		"Orient from one compact entry: aexp project context <project_id> --json; follow next_reads only when the current decision needs more detail",
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
 		"Submit formal run: aexp run submit --resource <name> --project <project-id> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
@@ -1363,7 +1363,8 @@ func agentCardContent() ([]string, []string) {
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
 		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
 		"Preserve reasoning: aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...",
-		"Route research evidence: aexp evidence list --project <project_id> --status active --json; choose a clearly matching topic graph or use the primary graph",
+		"Route and propose research evidence: use project context to choose a Topic; in an advanced curation session read its Research Thread projection, structural_health and capacity, then create one bounded research-thread-v2 proposal and run proposal-plan. To open a follow-up, prefer evidence branch-from-outcome so Conclusion/Issue --next_step--> child Hypothesis is generated safely",
+		"Review and verify: stop for user review after an eligible proposal plan; never accept on the user's behalf. After acceptance, audit the accepted Map; proposal-plan validates the candidate change and audit validates the stored graph",
 	}
 	rules := []string{
 		"aexp runs locally; do not ssh aexp. Use aexp exec/run to dispatch to registered resources.",
@@ -1377,7 +1378,14 @@ func agentCardContent() ([]string, []string) {
 		"--cwd must be under the resource root_dir; update root_dir if the project lives elsewhere.",
 		"After interpreting logs/metrics/artifacts, append a Project journal entry. Linking the Run is optional; use Run marks only for legacy compatibility.",
 		"For project-organized work, use .aexp.yaml project.id. Do not create new Run marks or Project cards for research reasoning.",
-		"Before proposing evidence, list the Project's active graphs. Use a topic graph only when its purpose or routing hints clearly match; otherwise use the primary graph. Explain explicit topic routing with --routing-reason.",
+		"Start from project context. Before proposing evidence, use its active Topic summaries; only an advanced curation session needs the full target thread map. Continue a clearly matching Topic, create a focused Topic, or keep an unrouted draft. Never use Primary as a fallback; it is only a concise project-level index.",
+		"Use the terms consistently: Topic is one decision question; Research Thread is one hypothesis-led causal chain; Stage Column is one of the five read-only presentation columns. Stage Columns are not nodes or containers.",
+		"Treat structural_health as advisory, capacity as presentation load, and evidence audit blockers as the hard gate. legacy_readable, v2_compliant, and publication_ready answer different questions and must not be collapsed into one eligible flag.",
+		"Author one bounded evidence thread at a time: hypothesis -> experiment design -> result -> interpretation -> conclusion and/or issue. Continue a matching thread before creating a new one.",
+		"Do not create protocol groups for new evidence. Put comparison, split, metrics, seeds and decision rules in the experiment design; keep Run, dataset and config identity in provenance.",
+		"Use claimKind=hypothesis and claimKind=result in node data for new proposals. Every touched result declares resultDisposition=conclusion|issue|mixed|pending; issue/mixed/pending also explains dispositionReason. Interpretation is a read-only projection of the real outcome edges, not a stored node. Never connect a Result directly to a hypothesis, plan, experiment, or another result; route it to a conclusion and/or issue first. Both a conclusion and an issue may next_step to a new child hypothesis.",
+		"Before user review, run evidence proposal-plan and resolve blockers. Never accept a proposal on the user's behalf. After user acceptance, run evidence audit on the accepted Map. New or touched v2 semantic failures are blockers; historical visual Run, plan, protocol-group and branch-bypass warnings remain read-only compatibility evidence and are not automatically rewritten.",
+		"When a Conclusion or Issue motivates a follow-up, prefer evidence branch-from-outcome over a raw patch. It creates a pending child-Hypothesis proposal, optionally including its experiment design, but never accepts or directly mutates the accepted Map.",
 	}
 	return steps, rules
 }
@@ -2055,6 +2063,7 @@ Evidence Map. Runtime detection and recipes remain Project operations.`,
 	cmd.AddCommand(projectInitCmd())
 	cmd.AddCommand(projectRunCmd())
 	cmd.AddCommand(projectJournalCmd())
+	cmd.AddCommand(projectResearchContextCmd())
 	cmd.AddCommand(projectSyncCmd())
 	cmd.AddCommand(projectCardCmd())
 	cmd.AddCommand(projectRunsCmd())
@@ -2065,6 +2074,46 @@ Evidence Map. Runtime detection and recipes remain Project operations.`,
 			command.Hidden = true
 		}
 	}
+	return cmd
+}
+
+func projectResearchContextCmd() *cobra.Command {
+	var mapLimit, threadLimit, journalLimit, runLimit int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "context PROJECT_ID",
+		Short: "Read a compact Agent-oriented Project research context",
+		Long: `Return Project identity, active Evidence Map routing summaries,
+recent Journal decisions, compact Run summaries, pending proposals, warnings,
+and explicit next reads. Full graph bodies, Journal Markdown, logs, and Run
+provenance remain on their dedicated drill-down commands.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			context, err := db.GetProjectResearchContext(cmd.Context(), args[0], store.ProjectResearchContextOptions{
+				MapLimit: mapLimit, ThreadLimit: threadLimit, JournalLimit: journalLimit, RunLimit: runLimit,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(context)
+			}
+			fmt.Printf("%s  %s\n", context.Project.ID, context.Project.Name)
+			fmt.Printf("topics=%d runs=%d active=%d journal=%d pending_proposals=%d\n",
+				len(context.Topics), context.Runs.Total, context.Runs.Active, len(context.Journal), len(context.PendingProposals))
+			for _, warning := range context.Warnings {
+				fmt.Printf("- %s: %s\n", warning.Code, warning.Message)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&mapLimit, "map-limit", 6, "Maximum active Maps summarized (capped at 20)")
+	cmd.Flags().IntVar(&threadLimit, "thread-limit", 1, "Maximum Research Threads summarized per Map (capped at 8)")
+	cmd.Flags().IntVar(&journalLimit, "journal-limit", 5, "Maximum recent Journal entries summarized (capped at 20)")
+	cmd.Flags().IntVar(&runLimit, "run-limit", 4, "Maximum recent compact Run summaries (capped at 30)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -3267,19 +3316,20 @@ func projectDigestCmd() *cobra.Command {
 }
 
 type evidenceChainAgentSnapshot struct {
-	ChainID      string                          `json:"chain_id"`
-	Title        string                          `json:"title"`
-	Description  string                          `json:"description,omitempty"`
-	RoutingHints store.EvidenceGraphRoutingHints `json:"routing_hints"`
-	ProjectID    string                          `json:"project_id,omitempty"`
-	Role         string                          `json:"role"`
-	Status       string                          `json:"status"`
-	Revision     int64                           `json:"revision"`
-	GraphHash    string                          `json:"graph_hash"`
-	Intro        string                          `json:"intro"`
-	UpdatedAt    time.Time                       `json:"updated_at"`
-	Nodes        []evidenceChainAgentNode        `json:"nodes"`
-	Edges        []evidenceChainAgentEdge        `json:"edges"`
+	ChainID      string                           `json:"chain_id"`
+	Title        string                           `json:"title"`
+	Description  string                           `json:"description,omitempty"`
+	RoutingHints store.EvidenceGraphRoutingHints  `json:"routing_hints"`
+	ProjectID    string                           `json:"project_id,omitempty"`
+	Role         string                           `json:"role"`
+	Status       string                           `json:"status"`
+	Revision     int64                            `json:"revision"`
+	GraphHash    string                           `json:"graph_hash"`
+	Intro        string                           `json:"intro"`
+	UpdatedAt    time.Time                        `json:"updated_at"`
+	Nodes        []evidenceChainAgentNode         `json:"nodes"`
+	Edges        []evidenceChainAgentEdge         `json:"edges"`
+	Research     store.EvidenceResearchProjection `json:"research_threads"`
 }
 
 type evidenceChainAgentNode struct {
@@ -3293,6 +3343,7 @@ type evidenceChainAgentNode struct {
 	Run           *evidenceChainRunSummary     `json:"run,omitempty"`
 	ProjectCard   *evidenceChainProjectSummary `json:"project_card,omitempty"`
 	Marks         []evidenceChainMarkSummary   `json:"marks,omitempty"`
+	DataJSON      string                       `json:"data_json"`
 }
 
 type evidenceChainAgentEdge struct {
@@ -3373,15 +3424,22 @@ unrouted drafts; the primary graph is never a fallback.`,
 	cmd.AddCommand(evidenceListCmd())
 	cmd.AddCommand(evidenceCreateCmd())
 	cmd.AddCommand(evidenceShowCmd())
+	cmd.AddCommand(evidenceThreadsCmd())
+	cmd.AddCommand(evidenceAuditCmd())
+	cmd.AddCommand(evidenceArchiveCmd())
 	cmd.AddCommand(evidenceAddNodeCmd())
 	cmd.AddCommand(evidenceAddEdgeCmd())
 	cmd.AddCommand(evidenceProposeCmd())
 	cmd.AddCommand(evidenceProposalSubmitCmd())
+	cmd.AddCommand(evidenceBranchFromOutcomeCmd())
 	cmd.AddCommand(evidenceProposalListCmd())
 	cmd.AddCommand(evidenceProposalGetCmd())
 	cmd.AddCommand(evidenceProposalPlanCmd())
 	cmd.AddCommand(evidenceProposalReviewCmd())
 	cmd.AddCommand(evidenceProposalRerouteCmd())
+	cmd.AddCommand(evidenceReorganizationPlanCmd())
+	cmd.AddCommand(evidenceReorganizationCreateCmd())
+	cmd.AddCommand(evidenceProposalRebaseCmd())
 	cmd.AddCommand(evidenceMigrateOrphansCmd())
 	cmd.AddCommand(evidencePromotionPlanCmd())
 	cmd.AddCommand(evidencePromotionCreateCmd())
@@ -3518,6 +3576,128 @@ func evidenceShowCmd() *cobra.Command {
 	return cmd
 }
 
+func evidenceThreadsCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "threads [chain_id]",
+		Short: "Show the deterministic hypothesis-led research threads",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			chain, graph, err := loadEvidenceChainGraphForEdit(cmd.Context(), db, args[0])
+			if err != nil {
+				return err
+			}
+			projection := store.BuildEvidenceResearchProjection(*chain, *graph)
+			if asJSON {
+				return printJSON(projection)
+			}
+			fmt.Printf("Topic %s r%d: %d Research Threads, %d unassigned\n", chain.Title, chain.Revision, len(projection.Threads), len(projection.Unassigned))
+			fmt.Printf("Research health: %s · compatibility %s · phase %s · capacity %s\n", projection.StructuralHealth.ReadabilityStatus, projection.StructuralHealth.CompatibilityStatus, projection.StructuralHealth.DerivedTopicPhase, projection.Capacity.Status)
+			healthByThread := make(map[string]store.EvidenceResearchThreadHealth, len(projection.StructuralHealth.Threads))
+			for _, health := range projection.StructuralHealth.Threads {
+				healthByThread[health.ThreadID] = health
+			}
+			for _, thread := range projection.Threads {
+				prefix := "thread"
+				if thread.ParentThreadID != "" {
+					prefix = "child"
+				}
+				health := healthByThread[thread.ID]
+				fmt.Printf("- Research Thread (%s) %s: %s [%s, %s]\n", prefix, thread.ID, thread.Title, health.DerivedPhase, health.ComplexityLevel)
+				fmt.Printf("  Stage Columns: Hypothesis %d · Experiment Design %d · Result %d · Interpretation %d · Outcome %d\n",
+					len(thread.Stages[store.EvidenceResearchStageHypothesis]), len(thread.Stages[store.EvidenceResearchStageDesign]), len(thread.Stages[store.EvidenceResearchStageResult]), len(thread.Interpretations), len(thread.Stages[store.EvidenceResearchStageConclusion])+len(thread.Stages[store.EvidenceResearchStageIssue]))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceAuditCmd() *cobra.Command {
+	var asJSON, failOnBlockers bool
+	cmd := &cobra.Command{
+		Use:   "audit [map_id]",
+		Short: "Audit accepted Evidence semantics and Result provenance without writing",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			report, err := db.AuditEvidenceChain(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if report == nil {
+				return fmt.Errorf("evidence Map %q not found", args[0])
+			}
+			if asJSON {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				status := "eligible"
+				if !report.Eligible {
+					status = "blocked"
+				}
+				fmt.Printf("%s r%d: %s (%d blockers, %d warnings)\n", report.ChainID, report.Revision, status, len(report.Blockers), len(report.Warnings))
+				fmt.Printf("Research health: readability %s · contract %s · publication %s\n", report.ReadabilityStatus, report.V2ComplianceStatus, report.PublicationStatus)
+				for _, blocker := range report.Blockers {
+					fmt.Printf("- BLOCKER %s: %s\n", blocker.Code, blocker.Message)
+				}
+				for _, warning := range report.Warnings {
+					fmt.Printf("- WARNING %s: %s\n", warning.Code, warning.Message)
+				}
+			}
+			if failOnBlockers && !report.Eligible {
+				return fmt.Errorf("evidence audit found %d blocker(s)", len(report.Blockers))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&failOnBlockers, "fail-on-blockers", false, "Exit non-zero when the audit is ineligible")
+	return cmd
+}
+
+func evidenceArchiveCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "archive [chain_id]",
+		Short: "Archive a secondary Topic Map without deleting its history",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			chain, err := db.GetEvidenceChain(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if chain == nil {
+				return fmt.Errorf("evidence Map %q not found", args[0])
+			}
+			if chain.Role == "primary" {
+				return fmt.Errorf("the Project Primary Map cannot be archived")
+			}
+			if err := db.DeleteEvidenceChain(cmd.Context(), chain.ID); err != nil {
+				return err
+			}
+			archived, err := db.GetEvidenceChain(cmd.Context(), chain.ID)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(archived)
+			}
+			fmt.Printf("Archived Evidence Map %s; graph history is preserved\n", chain.ID)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
 func evidenceAddNodeCmd() *cobra.Command {
 	var nodeID, nodeType, title, body, runID, projectCardID string
 	var width, height float64
@@ -3528,9 +3708,12 @@ func evidenceAddNodeCmd() *cobra.Command {
 		Long: `Add one card to an Evidence Chain.
 
 This only creates a non-overlapping card. It does not attempt to arrange the
-board; humans should move and resize cards in the UI.`,
+		board; humans should move and resize cards in the UI.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if directEvidenceSemanticWriteDisabled() {
+				return fmt.Errorf("SEMANTIC_WRITE_REQUIRES_PROPOSAL: direct add-node is disabled; use evidence proposal-submit or branch-from-outcome")
+			}
 			nodeType = strings.TrimSpace(nodeType)
 			if nodeType == "" {
 				nodeType = store.EvidenceNodeNote
@@ -3625,6 +3808,11 @@ board; humans should move and resize cards in the UI.`,
 	return cmd
 }
 
+// Direct semantic writes are retained only as hidden command names for old
+// scripts to receive a structured migration error. All new Evidence changes
+// must be revision-aware, reviewable proposals.
+func directEvidenceSemanticWriteDisabled() bool { return true }
+
 func evidenceAddEdgeCmd() *cobra.Command {
 	var edgeID, fromNodeID, toNodeID, edgeType, label, rationale string
 	var asJSON bool
@@ -3633,6 +3821,9 @@ func evidenceAddEdgeCmd() *cobra.Command {
 		Short: "Add one typed relationship edge to an Evidence Chain",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if directEvidenceSemanticWriteDisabled() {
+				return fmt.Errorf("SEMANTIC_WRITE_REQUIRES_PROPOSAL: direct add-edge is disabled; use evidence proposal-submit or branch-from-outcome")
+			}
 			fromNodeID = strings.TrimSpace(fromNodeID)
 			toNodeID = strings.TrimSpace(toNodeID)
 			if fromNodeID == "" || toNodeID == "" {
@@ -3861,6 +4052,49 @@ func evidenceProposalSubmitCmd() *cobra.Command {
 	return cmd
 }
 
+func evidenceBranchFromOutcomeCmd() *cobra.Command {
+	var outcomeNodeID, hypothesisTitle, hypothesisBodyMD, branchRationale string
+	var experimentDesignTitle, experimentDesignBodyMD, summary, actor string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "branch-from-outcome MAP_ID",
+		Short: "Propose a child hypothesis from an accepted Conclusion or Issue",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			result, err := db.CreateEvidenceBranchProposal(cmd.Context(), store.EvidenceBranchProposalRequest{
+				MapID: args[0], OutcomeNodeID: outcomeNodeID,
+				HypothesisTitle: hypothesisTitle, HypothesisBodyMD: hypothesisBodyMD,
+				BranchRationale:       branchRationale,
+				ExperimentDesignTitle: experimentDesignTitle, ExperimentDesignBodyMD: experimentDesignBodyMD,
+				Summary: summary, Actor: actor,
+			})
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(result)
+			}
+			fmt.Printf("Created branch proposal %s from %s; eligible=%t; next=%s\n", result.Proposal.ID, result.Branch.OutcomeNodeID, result.Plan.Eligible, result.NextAction)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&outcomeNodeID, "outcome-node", "", "Accepted Conclusion or Issue node id")
+	cmd.Flags().StringVar(&hypothesisTitle, "hypothesis-title", "", "Child hypothesis title")
+	cmd.Flags().StringVar(&hypothesisBodyMD, "hypothesis-body-md", "", "Optional child hypothesis Markdown body")
+	cmd.Flags().StringVar(&branchRationale, "branch-rationale", "", "Why the accepted outcome motivates this child hypothesis")
+	cmd.Flags().StringVar(&experimentDesignTitle, "experiment-design-title", "", "Optional first experiment-design title")
+	cmd.Flags().StringVar(&experimentDesignBodyMD, "experiment-design-body-md", "", "Optional first experiment-design Markdown body")
+	cmd.Flags().StringVar(&summary, "summary", "", "Optional proposal summary")
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Proposal author identity")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("outcome-node")
+	_ = cmd.MarkFlagRequired("hypothesis-title")
+	_ = cmd.MarkFlagRequired("branch-rationale")
+	return cmd
+}
+
 func evidenceProposalListCmd() *cobra.Command {
 	var status string
 	var limit, offset int
@@ -3972,6 +4206,118 @@ func evidenceProposalPlanCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceReorganizationPlanCmd() *cobra.Command {
+	var patchJSON string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "reorganization-plan MAP_ID",
+		Short: "Plan one bounded semantic cleanup without changing the Map",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(patchJSON) == "" {
+				return fmt.Errorf("--patch-json is required")
+			}
+			var patch store.EvidenceGraphPatch
+			if err := json.Unmarshal([]byte(patchJSON), &patch); err != nil {
+				return fmt.Errorf("decode --patch-json: %w", err)
+			}
+			db := openDB()
+			defer db.Close()
+			plan, err := db.PlanEvidenceReorganization(cmd.Context(), args[0], patch)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return printJSON(plan)
+			}
+			fmt.Printf("reorganization plan %s eligible=%t map=%s r%d\n", plan.PlanHash, plan.Eligible, plan.MapID, plan.BaseRevision)
+			for _, blocker := range plan.Blockers {
+				fmt.Printf("- %s: %s\n", blocker.Code, blocker.Message)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&patchJSON, "patch-json", "", "Bounded semantic patch JSON; coordinates are ignored by proposals")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceReorganizationCreateCmd() *cobra.Command {
+	var summary, actor, routingReason, patchJSON, expectedPlanHash string
+	var sourceRunIDs []string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "reorganization-create MAP_ID",
+		Short: "Create the reviewable Proposal described by an unchanged cleanup plan",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(summary) == "" {
+				return fmt.Errorf("--summary is required")
+			}
+			if strings.TrimSpace(patchJSON) == "" {
+				return fmt.Errorf("--patch-json is required")
+			}
+			var patch store.EvidenceGraphPatch
+			if err := json.Unmarshal([]byte(patchJSON), &patch); err != nil {
+				return fmt.Errorf("decode --patch-json: %w", err)
+			}
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.CreateEvidenceReorganizationProposal(cmd.Context(), args[0], summary, actor, routingReason, sourceRunIDs, patch, expectedPlanHash)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			fmt.Printf("Created reviewable Evidence reorganization Proposal %s for %s\n", proposal.ID, proposal.TargetChainID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&summary, "summary", "", "Short cleanup summary")
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Proposal author identity")
+	cmd.Flags().StringVar(&routingReason, "routing-reason", "Agent semantic cleanup inside the selected Map", "Why this Map owns the cleanup")
+	cmd.Flags().StringVar(&patchJSON, "patch-json", "", "The exact semantic patch used for planning")
+	cmd.Flags().StringVar(&expectedPlanHash, "expected-plan-hash", "", "Exact plan_hash returned by reorganization-plan")
+	cmd.Flags().StringSliceVar(&sourceRunIDs, "source-run", nil, "Source Run id (repeatable)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func evidenceProposalRebaseCmd() *cobra.Command {
+	var actor string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "proposal-rebase PROPOSAL_ID",
+		Short: "Safely replay an untouched pending Proposal onto the current Map revision",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db := openDB()
+			defer db.Close()
+			proposal, err := db.RebaseEvidenceProposal(cmd.Context(), args[0], actor)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				view, viewErr := buildEvidenceProposalCLIView(cmd.Context(), db, proposal)
+				if viewErr != nil {
+					return viewErr
+				}
+				return printJSON(view)
+			}
+			fmt.Printf("Evidence Proposal %s is based on current revision %d\n", proposal.ID, proposal.BaseGraphRevision)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&actor, "actor", "agent", "Actor recorded on the replacement Proposal")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
@@ -4575,15 +4921,7 @@ func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chai
 		return nil, err
 	}
 	nodes := append([]store.EvidenceChainNode(nil), graph.Nodes...)
-	sort.SliceStable(nodes, func(i, j int) bool {
-		if nodes[i].Y == nodes[j].Y {
-			if nodes[i].X == nodes[j].X {
-				return nodes[i].ID < nodes[j].ID
-			}
-			return nodes[i].X < nodes[j].X
-		}
-		return nodes[i].Y < nodes[j].Y
-	})
+	sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	edges := append([]store.EvidenceChainEdge(nil), graph.Edges...)
 	sort.SliceStable(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	snapshot := &evidenceChainAgentSnapshot{
@@ -4600,6 +4938,7 @@ func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chai
 		UpdatedAt:    chain.UpdatedAt,
 		Nodes:        make([]evidenceChainAgentNode, 0, len(nodes)),
 		Edges:        make([]evidenceChainAgentEdge, 0, len(edges)),
+		Research:     store.BuildEvidenceResearchProjection(*chain, *graph),
 	}
 	for _, node := range nodes {
 		view := evidenceChainAgentNode{
@@ -4609,6 +4948,7 @@ func buildEvidenceChainAgentSnapshot(ctx context.Context, db *store.SQLite, chai
 			Body:          node.Body,
 			RunID:         node.RunID,
 			ProjectCardID: node.ProjectCardID,
+			DataJSON:      node.DataJSON,
 		}
 		var run *store.Run
 		var card *store.ProjectRunCard
