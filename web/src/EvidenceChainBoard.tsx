@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   addEdge,
   Background,
@@ -12,6 +12,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   ViewportPortal,
+  getBezierPath,
   getSmoothStepPath,
   useEdgesState,
   useNodesState,
@@ -24,7 +25,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, Archive, ArrowUpRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, GripVertical, ListPlus, Network, PinOff, Plus, RefreshCcw, Route, Save, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUpRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, Focus, GitBranch, GripVertical, List, ListPlus, Network, PinOff, Plus, RefreshCcw, Route, Save, Search, Trash2, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
@@ -36,6 +37,8 @@ import {
   ensureProjectEvidenceMap,
   getEvidenceChain,
   getEvidenceChains,
+  getEvidenceAudit,
+  getEvidenceResearchThreads,
   getProjectEvidenceMap,
   getProjectEvidenceProposals,
   getEvidenceRunCandidates,
@@ -50,6 +53,7 @@ import {
 import {
   apiEdgeToFlowEdge,
   apiNodeToFlowNode,
+  apiResearchProjectionToFlow,
   candidateMatches,
   candidateRunNodeFields,
   candidateToNode,
@@ -59,20 +63,32 @@ import {
   evidenceMapReferenceStatus,
   evidenceProposalPreview,
   evidenceWorkspaceProposalPreview,
-  evidenceGroupFrameBounds,
   evidenceMarkerEnd,
   edgeStyle,
   edgeTypeLabel,
+  evidenceNeighborhood,
+  evidenceReadingSections,
+  evidenceAuthoringNodeTypes,
+  evidenceThreadRibbonPath,
+  evidenceThreadFocusRelations,
+  evidenceThreadRelationFocus,
+  evidenceResearchStages,
+  layoutEvidenceNeighborhood,
   evidenceEdgeTypes,
   evidenceNodeTypes,
   filterRunCandidatesForProject,
   groupRunCandidatesByProject,
   isProtocolGroupMemberType,
   nodeTypeLabel,
+  proposalNoticeScopeKey,
   projectEvidenceGroups,
   prepareLoadedEvidenceGraph,
   serializeEvidenceGraph,
+  shouldOverlayEvidenceProposal,
   layoutEvidenceGraph,
+  layoutEvidenceGraphFromIntent,
+  remapEvidenceLayoutIntent,
+  resolveProjectEvidenceChainSelection,
   inspectProtocolFrameMigration,
   convertProtocolToFrame,
   protocolContainerMoveDeltaForKey,
@@ -82,7 +98,14 @@ import {
   type EvidenceHandleSide,
   type EvidenceGroupDescriptor,
   type EvidenceGroupFrameBounds,
-  type EvidenceNodeData
+  type EvidenceNeighborhood,
+  type EvidenceNodeData,
+  type EvidenceReadingSection,
+  type EvidenceAdjacentStageRelation,
+  type EvidenceThreadRelationFocus,
+  type EvidenceResearchProjection,
+  type EvidenceResearchThread,
+  type EvidenceResearchStage
 } from "./evidenceChain";
 import {
   evidenceOrthogonalPath,
@@ -92,13 +115,136 @@ import {
 } from "./evidenceRouting";
 import type { I18nKey } from "./i18n";
 import { readEvidenceMapFromSearch, withEvidenceMapSearch } from "./projectRoute";
-import type { EvidenceChainDetail, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceNodeType, EvidenceProposal } from "./types";
+import type { EvidenceChainAuditReportDTO, EvidenceChainDetail, EvidenceChainRunCandidate, EvidenceEdgeType, EvidenceLayoutIntent, EvidenceNodeType, EvidenceProposal } from "./types";
 import { fmtShortTime, text } from "./utils";
 
 const candidateMime = "application/x-aexp-run-candidate";
 const evidenceHandleSides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
 const compactEvidenceNodeSize = { width: 306, height: 138 };
+type EvidenceWorkspaceView = "threads" | "list" | "focus" | "overview";
+type EvidenceFocusDepth = 1 | 2 | 3 | "all";
 type ProposalPreview = NonNullable<ReturnType<typeof evidenceProposalPreview>>;
+
+export function EvidenceThreadRelationHint({ focus }: { focus: EvidenceThreadRelationFocus | null }) {
+  if (!focus) return null;
+  if (focus.disconnected) {
+    return <span className="evidence-thread-card-open is-disconnected" role="status">没有直接前因/后果</span>;
+  }
+  if (focus.hiddenRelationCount > 0) {
+    return <span className="evidence-thread-card-open is-disconnected" role="status">清空搜索可查看 {focus.hiddenRelationCount} 个关系</span>;
+  }
+  return null;
+}
+
+interface EvidenceThreadRibbonRelation {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  type: EvidenceEdgeType;
+  direct: boolean;
+}
+
+interface EvidenceThreadRibbonPath extends EvidenceThreadRibbonRelation {
+  d: string;
+  color: string;
+  neutral: boolean;
+}
+
+function EvidenceThreadRelationOverlay({
+  relations,
+  reducedMotion
+}: {
+  relations: EvidenceThreadRibbonRelation[];
+  reducedMotion: boolean;
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const markerPrefix = useId().replace(/:/g, "");
+  const [paths, setPaths] = useState<EvidenceThreadRibbonPath[]>([]);
+
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    const container = svg?.parentElement;
+    if (!svg || !container || !relations.length) {
+      setPaths([]);
+      return;
+    }
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const containerRect = container.getBoundingClientRect();
+        const rects = new Map<string, { left: number; top: number; width: number; height: number }>();
+        container.querySelectorAll<HTMLElement>("[data-evidence-node-id]").forEach((element) => {
+          const nodeID = element.dataset.evidenceNodeId;
+          if (!nodeID) return;
+          const rect = element.getBoundingClientRect();
+          rects.set(nodeID, {
+            left: rect.left - containerRect.left,
+            top: rect.top - containerRect.top,
+            width: rect.width,
+            height: rect.height
+          });
+        });
+        setPaths(relations.flatMap((relation) => {
+          const source = rects.get(relation.sourceNodeId);
+          const target = rects.get(relation.targetNodeId);
+          if (!source || !target) return [];
+          return [{
+            ...relation,
+            d: evidenceThreadRibbonPath(source, target),
+            color: evidenceColor(relation.type),
+            neutral: relation.type === "related_to" || relation.type === "custom"
+          }];
+        }));
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    container.querySelectorAll<HTMLElement>("[data-evidence-node-id]").forEach((element) => observer.observe(element));
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [relations]);
+
+  return (
+    <svg
+      ref={svgRef}
+      className={`evidence-thread-relation-ribbons${reducedMotion ? " is-reduced-motion" : ""}`}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <defs>
+        {paths.map((path, index) => (
+          <marker
+            id={`${markerPrefix}-${index}`}
+            key={`${path.id}:${path.sourceNodeId}:${path.targetNodeId}`}
+            markerWidth="7"
+            markerHeight="7"
+            refX="6"
+            refY="3.5"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
+            <path d="M 0 0 L 7 3.5 L 0 7 Z" fill={path.color} />
+          </marker>
+        ))}
+      </defs>
+      {paths.map((path, index) => (
+        <g
+          className={`evidence-thread-ribbon${path.direct ? " is-direct" : " is-context"}${path.neutral ? " is-neutral" : ""}`}
+          key={`${path.id}:${path.sourceNodeId}:${path.targetNodeId}`}
+          style={{ "--relation-ribbon-color": path.color } as CSSProperties}
+        >
+          <path className="evidence-thread-ribbon-halo" d={path.d} />
+          <path className="evidence-thread-ribbon-band" d={path.d} />
+          <path className="evidence-thread-ribbon-core" d={path.d} markerEnd={`url(#${markerPrefix}-${index})`} />
+        </g>
+      ))}
+    </svg>
+  );
+}
 type EvidencePreviewEntry =
   | { kind: "workspace"; key: string; title: string; proposal: EvidenceProposal; preview: ProposalPreview }
   | { kind: "legacy"; key: string; title: string; candidate: EvidenceChainRunCandidate; preview: ProposalPreview };
@@ -144,10 +290,19 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const reduceMotion = useReducedMotion();
   const [chainQuery, setChainQuery] = useState("");
   const [candidateQuery, setCandidateQuery] = useState("");
-  const [selectedChainId, setSelectedChainId] = useState(() => (
-    projectId && typeof window !== "undefined" ? readEvidenceMapFromSearch(window.location.search) : ""
-  ));
+  const [chainSelection, setChainSelection] = useState(() => ({
+    projectId,
+    chainId: projectId && typeof window !== "undefined" ? readEvidenceMapFromSearch(window.location.search) : ""
+  }));
+  const selectedChainId = chainSelection.projectId === projectId ? chainSelection.chainId : "";
+  const setSelectedChainId = useCallback((chainId: string) => {
+    setChainSelection({ projectId, chainId });
+  }, [projectId]);
   const [selected, setSelected] = useState<{ kind: "node" | "edge"; id: string } | null>(null);
+  const [workspaceView, setWorkspaceView] = useState<EvidenceWorkspaceView>("threads");
+  const [readerQuery, setReaderQuery] = useState("");
+  const [focusNodeID, setFocusNodeID] = useState("");
+  const [focusDepth, setFocusDepth] = useState<EvidenceFocusDepth>("all");
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
   const appliedDetailRef = useRef<{ chainId: string; key: string; nodeCount: number } | null>(null);
@@ -165,10 +320,14 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const nodeMenuRef = useRef<HTMLDivElement | null>(null);
   const [selectedCandidateGroup, setSelectedCandidateGroup] = useState("");
   const [proposalNotice, setProposalNotice] = useState("");
+  const proposalNoticeScopeRef = useRef("");
   const [reviewingRunID, setReviewingRunID] = useState("");
   const [promoting, setPromoting] = useState(false);
   const [draftDockOpen, setDraftDockOpen] = useState(false);
   const [previewRunID, setPreviewRunID] = useState("");
+  const [proposalCanvasPreview, setProposalCanvasPreview] = useState(false);
+  const proposalReturnViewRef = useRef<EvidenceWorkspaceView>("threads");
+  const [layoutIntentPreview, setLayoutIntentPreview] = useState(true);
   const lastSavedMeta = useRef<{ id: string; title: string; description: string; routingHintsKey: string } | null>(null);
   const [chainMetaComposing, setChainMetaComposing] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<EvidenceFlowNode>([]);
@@ -203,7 +362,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     queryKey: ["project-evidence-map", token, projectId],
     queryFn: () => getProjectEvidenceMap(token, projectId),
     enabled: Boolean(projectId),
-    retry: false,
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 2,
     refetchInterval: 15000
   });
   const chains = useQuery({
@@ -222,7 +381,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     }),
     [chains.data]
   );
-  const selectChain = useCallback((chainId: string, replace = false) => {
+  const selectChain = useCallback((chainId: string, replace = false, preserveProposal = false) => {
     if (chainId !== selectedChainId) {
       appliedDetailRef.current = null;
       setNodes([]);
@@ -231,7 +390,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       setNodeMenuOpen(false);
       setRunTrayOpen(false);
       setRoutingOpen(false);
-      setPreviewRunID("");
+      if (!preserveProposal) setPreviewRunID("");
+      setWorkspaceView("threads");
+      setReaderQuery("");
+      setFocusNodeID("");
     }
     setSelectedChainId(chainId);
     if (!projectId || typeof window === "undefined") return;
@@ -278,6 +440,20 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     refetchInterval: () => dirtyRef.current ? false : 5000,
     refetchOnWindowFocus: true
   });
+  const researchThreads = useQuery({
+    queryKey: ["evidence-research-threads", token, selectedChainId],
+    queryFn: () => getEvidenceResearchThreads(token, selectedChainId),
+    enabled: !!selectedChainId,
+    refetchInterval: () => dirtyRef.current ? false : 5000,
+    refetchOnWindowFocus: true
+  });
+  const evidenceAudit = useQuery({
+    queryKey: ["evidence-audit", token, selectedChainId],
+    queryFn: () => getEvidenceAudit(token, selectedChainId),
+    enabled: !!selectedChainId,
+    refetchInterval: () => dirtyRef.current ? false : 15000,
+    refetchOnWindowFocus: true
+  });
   const candidates = useQuery({
     queryKey: ["evidence-run-candidates", token, projectId],
     queryFn: () => getEvidenceRunCandidates(token, projectId, 160),
@@ -293,33 +469,35 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
 
   useEffect(() => {
     if (projectId) {
-      // Do not treat a deep-linked Map as invalid while the Project Map list is
-      // still loading. The Primary query often resolves first.
-      if (!chains.data) return;
-      const projectChains = orderedChains;
-      if (selectedChainId && projectChains.some((chain) => chain.id === selectedChainId)) return;
-      const preferred = primaryMap.data?.id || projectChains.find((chain) => chain.role === "primary" && chain.status === "active")?.id || projectChains[0]?.id;
-      if (preferred) {
-        setSelectedChainId(preferred);
-        if (selectedChainId && typeof window !== "undefined") {
-          const primaryId = primaryMap.data?.id || projectChains.find((chain) => chain.role === "primary" && chain.status === "active")?.id || "";
-          const search = withEvidenceMapSearch(window.location.search, preferred === primaryId ? "" : preferred);
-          window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
-        }
-      }
+      const requestedId = typeof window !== "undefined" ? readEvidenceMapFromSearch(window.location.search) : "";
+      const preferred = resolveProjectEvidenceChainSelection({
+        requestedId,
+        currentId: selectedChainId,
+        chains: chains.data,
+        primaryId: primaryMap.data?.id
+      });
+      // undefined means the discovery queries have not supplied enough facts
+      // yet. It must never be converted into the definitive "no Map" state.
+      if (preferred === undefined || preferred === selectedChainId) return;
+      selectChain(preferred, true);
       return;
     }
-    if (!projectId && !selectedChainId && chains.data?.length) setSelectedChainId(chains.data[0].id);
-  }, [chains.data, orderedChains, primaryMap.data, projectId, selectedChainId]);
+    if (!selectedChainId && chains.data?.length) selectChain(chains.data[0].id, true);
+  }, [chains.data, primaryMap.data?.id, projectId, selectChain, selectedChainId]);
 
   useEffect(() => {
-    setSelectedChainId(projectId && typeof window !== "undefined" ? readEvidenceMapFromSearch(window.location.search) : "");
     appliedDetailRef.current = null;
+    setNodes([]);
+    setEdges([]);
+    setSelected(null);
     setLeftOpen(false);
     setRunTrayOpen(false);
     setSelectedCandidateGroup("");
     setPreviewRunID("");
-  }, [projectId]);
+    setWorkspaceView("threads");
+    setReaderQuery("");
+    setFocusNodeID("");
+  }, [projectId, setEdges, setNodes]);
 
   useEffect(() => {
     if (!projectId || typeof window === "undefined") return;
@@ -475,19 +653,52 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     () => pendingPreviews.find((item) => item.key === previewRunID) || null,
     [pendingPreviews, previewRunID]
   );
-  const activeCanvasPreview = activePreviewEntry?.preview.chainId === selectedChainId ? activePreviewEntry : null;
+  const activePreviewTarget = useMemo(
+    () => orderedChains.find((chain) => chain.id === activePreviewEntry?.preview.chainId) || null,
+    [activePreviewEntry, orderedChains]
+  );
+  const activeCanvasPreview = activePreviewEntry && shouldOverlayEvidenceProposal(
+    activePreviewEntry.preview.chainId,
+    selectedChainId,
+    proposalCanvasPreview
+  ) ? activePreviewEntry : null;
   const previewPlan = useQuery({
-    queryKey: ["evidence-proposal-plan", token, previewRunID],
+    // A proposal may become safely replayable or genuinely conflicted after
+    // the target Map changes. Bind the cached plan to the target identity so
+    // the inspector never keeps an obsolete REVISION_CONFLICT until refresh.
+    queryKey: [
+      "evidence-proposal-plan",
+      token,
+      previewRunID,
+      activePreviewTarget?.revision || 0,
+      activePreviewTarget?.graph_hash || ""
+    ],
     queryFn: () => activePreviewEntry?.kind === "workspace"
       ? planEvidenceProposal(token, activePreviewEntry.key)
       : planEvidenceGraphProposal(token, activePreviewEntry?.key || previewRunID),
     enabled: Boolean(previewRunID && activePreviewEntry),
     retry: false
   });
+  const proposalNoticeScope = proposalNoticeScopeKey(
+    selectedChainId,
+    activePreviewEntry?.key || "",
+    activePreviewTarget?.revision || 0
+  );
+
+  useEffect(() => {
+    if (proposalNoticeScopeRef.current && proposalNoticeScopeRef.current !== proposalNoticeScope) {
+      setProposalNotice("");
+    }
+    proposalNoticeScopeRef.current = proposalNoticeScope;
+  }, [proposalNoticeScope]);
 
   useEffect(() => {
     if (previewRunID && !activePreviewEntry) setPreviewRunID("");
   }, [activePreviewEntry, previewRunID]);
+  useEffect(() => {
+    setProposalCanvasPreview(false);
+    setLayoutIntentPreview(true);
+  }, [previewRunID]);
 
   const candidateByRunId = useMemo(() => {
     const out = new Map<string, EvidenceChainRunCandidate>();
@@ -543,7 +754,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     const rawNodes = (detail.data.nodes || []).map(apiNodeToFlowNode).map(hydrateRunNodeFromCandidate);
     const rawEdges = (detail.data.edges || []).map(apiEdgeToFlowEdge);
     const nextNodes = prepareLoadedEvidenceGraph(rawNodes, rawEdges).map(withNodeHandlers);
-    const nextEdges = routeEvidenceGraphEdges(rawEdges.map(withEdgeHandlers), nextNodes);
+    // Thread/list/focus views do not need obstacle-aware canvas routing. Keep
+    // loading cheap and defer the expensive route pass until overview is
+    // explicitly opened.
+    const nextEdges = rawEdges.map(withEdgeHandlers);
     const shouldFitLoadedGraph = chainChanged || (previous?.nodeCount === 0 && nextNodes.length > 0);
     appliedDetailRef.current = { chainId: detail.data.id, key: detailKey, nodeCount: nextNodes.length };
     setNodes(nextNodes);
@@ -824,27 +1038,38 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const edgeTypes = useMemo(() => ({ evidence: EvidenceEdge }), []);
   const canvasBase = useMemo(() => {
     if (!activeCanvasPreview) return { nodes, edges };
-    const acceptedPinned = nodes.map((node) => ({ ...node, data: { ...node.data, pinned: true } }));
     const mergedEdges = [...edges, ...activeCanvasPreview.preview.edges];
-    const laidOut = layoutEvidenceGraph([...acceptedPinned, ...activeCanvasPreview.preview.nodes], mergedEdges);
+    const acceptedPinned = nodes.map((node) => ({ ...node, data: { ...node.data, pinned: true } }));
+    const mergedNodes = [...nodes, ...activeCanvasPreview.preview.nodes];
+    const previewNodeIDs = new Map(activeCanvasPreview.preview.nodes.flatMap((node) => (
+      node.data.sourceNodeId ? [[node.data.sourceNodeId, node.id] as const] : []
+    )));
+    const previewIntent = layoutIntentPreview
+      ? remapEvidenceLayoutIntent(activeCanvasPreview.preview.layoutIntent, previewNodeIDs)
+      : undefined;
+    const laidOut = previewIntent
+      ? layoutEvidenceGraphFromIntent(mergedNodes, previewIntent)
+      : layoutEvidenceGraph([...acceptedPinned, ...activeCanvasPreview.preview.nodes], mergedEdges);
     const draftNodes = laidOut.filter((node) => node.data.draft === true).map(withNodeHandlers);
-    return { nodes: [...nodes, ...draftNodes], edges: mergedEdges };
-  }, [activeCanvasPreview, edges, nodes, withNodeHandlers]);
+    if (!previewIntent) return { nodes: [...nodes, ...draftNodes], edges: mergedEdges };
+    const draftIDs = new Set(draftNodes.map((node) => node.id));
+    return {
+      nodes: laidOut.map((node) => draftIDs.has(node.id) ? withNodeHandlers(node) : node),
+      edges: mergedEdges
+    };
+  }, [activeCanvasPreview, edges, layoutIntentPreview, nodes, withNodeHandlers]);
   const groupProjection = useMemo(
     () => projectEvidenceGroups(canvasBase.nodes, canvasBase.edges),
     [canvasBase]
   );
-  const groupFrames = useMemo(
-    () => groupProjection.groups
-      .map((group) => ({
-        id: group.id,
-        descriptor: group,
-        bounds: draggingProtocolFrame?.id === group.id
-          ? draggingProtocolFrame.bounds
-          : evidenceGroupFrameBounds(group, canvasBase.nodes)
-      })),
-    [canvasBase.nodes, draggingProtocolFrame, groupProjection.groups]
-  );
+  // Protocol containers are a legacy storage shape, not a current research
+  // concept. Keep their membership in the persisted graph for compatibility,
+  // but render the member nodes directly instead of reviving the old frame UI.
+  const groupFrames = useMemo<Array<{
+    id: string;
+    descriptor: EvidenceGroupDescriptor;
+    bounds: EvidenceGroupFrameBounds;
+  }>>(() => [], []);
   const beginProtocolContainerMove = useCallback((groupId: string, client: { x: number; y: number }) => {
     if (detail.data?.status === "archived") return;
     const group = nodes.find((node) => node.id === groupId && node.data.type === "group");
@@ -922,7 +1147,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       window.clearTimeout(routingTimerRef.current);
       routingTimerRef.current = null;
     }
-    if (!visibleNodes.length || !visibleEdges.length) return;
+    if (workspaceView !== "overview" || !visibleNodes.length || !visibleEdges.length) return;
     routingTimerRef.current = window.setTimeout(() => {
       routingTimerRef.current = null;
       setEdges((current) => routeEvidenceGraphEdges(current, visibleNodes));
@@ -933,7 +1158,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
         routingTimerRef.current = null;
       }
     };
-  }, [routingGeometryKey, routingTopologyKey, setEdges]);
+  }, [routingGeometryKey, routingTopologyKey, setEdges, workspaceView]);
   const selectedNode = useMemo(
     () => selected?.kind === "node" ? nodes.find((node) => node.id === selected.id) || null : null,
     [nodes, selected]
@@ -958,12 +1183,55 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     () => selectedEdge ? nodes.find((node) => node.id === selectedEdge.target) || null : null,
     [nodes, selectedEdge]
   );
+  const researchProjection = useMemo(() => {
+    const shared = researchThreads.data;
+    if (!shared || shared.revision !== (detail.data?.revision || 0)) return null;
+    return apiResearchProjectionToFlow(shared);
+  }, [detail.data?.revision, researchThreads.data]);
+  const readerSections = useMemo(() => evidenceReadingSections(nodes, readerQuery), [nodes, readerQuery]);
+  const focusedNeighborhood = useMemo(
+    () => evidenceNeighborhood(nodes, edges, focusNodeID, focusDepth),
+    [edges, focusDepth, focusNodeID, nodes]
+  );
+
+  const inspectNode = useCallback((nodeID: string) => {
+    setSelected({ kind: "node", id: nodeID });
+    setNodes((current) => current.map((node) => ({ ...node, selected: node.id === nodeID })));
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    setRunTrayOpen(false);
+    setPreviewRunID("");
+  }, [setEdges, setNodes]);
+
+  const openNodeFocus = useCallback((nodeID: string) => {
+    setFocusNodeID(nodeID);
+    inspectNode(nodeID);
+    setWorkspaceView("focus");
+  }, [inspectNode]);
+
+  const openProposalCanvasPreview = useCallback(() => {
+    if (!activePreviewEntry || activePreviewEntry.preview.chainId !== selectedChainId) return;
+    if (workspaceView !== "overview") proposalReturnViewRef.current = workspaceView;
+    setProposalCanvasPreview(true);
+    setWorkspaceView("overview");
+  }, [activePreviewEntry, selectedChainId, workspaceView]);
+
+  const closeProposalCanvasPreview = useCallback(() => {
+    setProposalCanvasPreview(false);
+    setWorkspaceView(proposalReturnViewRef.current);
+  }, []);
 
   useEffect(() => {
     if (!activeCanvasPreview) return;
+    const sourceToPreview = new Map(activeCanvasPreview.preview.nodes.flatMap((node) => (
+      node.data.sourceNodeId ? [[node.data.sourceNodeId, node.id] as const] : []
+    )));
+    const previewNodeIDs = activeCanvasPreview.preview.layoutIntent?.ranks
+      .flat()
+      .map((id) => sourceToPreview.get(id) || id)
+      || activeCanvasPreview.preview.nodes.map((node) => node.id);
     const timer = window.setTimeout(() => {
       void flow.fitView({
-        nodes: activeCanvasPreview.preview.nodes.map((node) => ({ id: node.id })),
+        nodes: previewNodeIDs.map((id) => ({ id })),
         padding: 0.32,
         duration: reduceMotion ? 0 : 260,
         maxZoom: 1
@@ -971,6 +1239,19 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     }, reduceMotion ? 0 : 80);
     return () => window.clearTimeout(timer);
   }, [activeCanvasPreview, flow, reduceMotion]);
+
+  const applyAcceptedLayoutIntent = useCallback(async (chainID: string, intent: EvidenceLayoutIntent) => {
+    const accepted = await getEvidenceChain(token, chainID);
+    const acceptedNodes = (accepted.nodes || []).map(apiNodeToFlowNode);
+    const acceptedEdges = (accepted.edges || []).map(apiEdgeToFlowEdge);
+    const arranged = layoutEvidenceGraphFromIntent(acceptedNodes, intent);
+    return saveEvidenceChainGraph(
+      token,
+      chainID,
+      serializeEvidenceGraph(arranged, acceptedEdges),
+      accepted.revision || 0
+    );
+  }, [token]);
 
   const reviewProposal = useCallback(async (entry: EvidencePreviewEntry, action: "accept" | "reject") => {
     setReviewingRunID(entry.key);
@@ -1000,7 +1281,16 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       }
       setPreviewRunID("");
       if (action === "accept") {
-        setProposalNotice(`${t("proposalAcceptedInto")}：${targetLabel}`);
+        if (entry.preview.layoutIntent) {
+          try {
+            await applyAcceptedLayoutIntent(targetChainID, entry.preview.layoutIntent);
+            setProposalNotice(`${t("proposalAcceptedInto")}：${targetLabel}；Agent 编排已应用。`);
+          } catch (layoutError) {
+            setProposalNotice(`语义已接受，但 Agent 编排未保存：${layoutError instanceof Error ? layoutError.message : String(layoutError)}`);
+          }
+        } else {
+          setProposalNotice(`${t("proposalAcceptedInto")}：${targetLabel}`);
+        }
       } else {
         setProposalNotice("建议已拒绝，证据图未改变。");
       }
@@ -1016,7 +1306,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     } finally {
       setReviewingRunID("");
     }
-  }, [orderedChains, queryClient, selectedChainId, t, token]);
+  }, [applyAcceptedLayoutIntent, orderedChains, queryClient, selectedChainId, t, token]);
 
   const promoteSelectedNode = useCallback(async () => {
     if (!selectedChainId || selected?.kind !== "node" || detail.data?.role === "primary") return;
@@ -1108,14 +1398,25 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!selected || detail.data?.status === "archived" || (event.key !== "Delete" && event.key !== "Backspace")) return;
+      if (workspaceView !== "overview" || !selected || detail.data?.status === "archived" || (event.key !== "Delete" && event.key !== "Backspace")) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
       deleteSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelection, detail.data?.status, selected]);
+  }, [deleteSelection, detail.data?.status, selected, workspaceView]);
+
+  useEffect(() => {
+    if (workspaceView !== "focus") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isEditableTarget(event.target)) return;
+      clearSelection();
+      setWorkspaceView("threads");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [clearSelection, workspaceView]);
 
   const onNodeClick: NodeMouseHandler<EvidenceFlowNode> = (_event, node) => {
     if (node.data.draft && node.data.proposalRunId) {
@@ -1124,6 +1425,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
       clearSelection();
       return;
     }
+    setFocusNodeID(node.id);
     setSelected({ kind: "node", id: node.id });
     setNodes((current) => current.map((row) => ({ ...row, selected: row.id === node.id })));
     setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
@@ -1152,6 +1454,28 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
     setSelected({ kind: "node", id: node.id });
     markDirty();
   };
+
+  const primaryMapAbsent = primaryMap.error instanceof ApiError
+    && primaryMap.error.status === 404
+    && primaryMap.error.code === "PRIMARY_MAP_NOT_FOUND";
+  const mapDiscoveryPending = Boolean(projectId && !selectedChainId && (
+    chains.isPending
+    || chains.isFetching
+    || primaryMap.isPending
+    || primaryMap.isFetching
+    || primaryMap.isSuccess
+    || orderedChains.length > 0
+  ));
+  const mapDiscoveryError = chains.error || (!primaryMapAbsent ? primaryMap.error : null);
+  const projectHasNoEvidenceMap = Boolean(
+    projectId
+    && !selectedChainId
+    && !mapDiscoveryPending
+    && !mapDiscoveryError
+    && chains.isSuccess
+    && chains.data.length === 0
+    && primaryMapAbsent
+  );
 
   return (
     <div className={`evidence-shell ${leftOpen ? "" : "left-collapsed"}`}>
@@ -1289,8 +1613,50 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
               <span aria-live="polite" className={`save-state ${saveState}`}>{saveState === "saving" ? t("saving") : saveState === "conflict" ? "图已更新，请重新载入" : saveState === "failed" ? t("saveFailed") : dirty ? t("unsaved") : t("saved")}</span>
             </div>
           </div>
+          {selectedChainId ? (
+            <div className="evidence-view-switch" role="tablist" aria-label="证据图阅读方式">
+              <button
+                type="button"
+                role="tab"
+                className={workspaceView === "threads" ? "active" : ""}
+                aria-selected={workspaceView === "threads"}
+                onClick={() => setWorkspaceView("threads")}
+              >
+                <GitBranch size={14} />线程
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className={workspaceView === "list" ? "active" : ""}
+                aria-selected={workspaceView === "list"}
+                onClick={() => setWorkspaceView("list")}
+              >
+                <List size={14} />清单
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className={workspaceView === "focus" ? "active" : ""}
+                aria-selected={workspaceView === "focus"}
+                disabled={!selectedNode && !focusedNeighborhood.center}
+                title={selectedNode || focusedNeighborhood.center ? "查看当前节点的前因后果" : "先从研究线程选择一个节点"}
+                onClick={() => selectedNode ? openNodeFocus(selectedNode.id) : setWorkspaceView("focus")}
+              >
+                <Focus size={14} />焦点
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className={workspaceView === "overview" ? "active" : ""}
+                aria-selected={workspaceView === "overview"}
+                onClick={() => setWorkspaceView("overview")}
+              >
+                <Network size={14} />全景
+              </button>
+            </div>
+          ) : null}
         </div>
-        {selectedChainId ? (
+        {selectedChainId && workspaceView === "overview" ? (
           <motion.aside
             className="evidence-edit-rail"
             aria-label="证据图编辑工具"
@@ -1322,7 +1688,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                   role="menu"
                   aria-label="选择节点类型"
                 >
-                  {evidenceNodeTypes.map((type) => (
+                  {evidenceAuthoringNodeTypes.map((type) => (
                     <button
                       key={type}
                       type="button"
@@ -1460,17 +1826,34 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             </div>
           </motion.aside>
         ) : null}
-        {projectId && !selectedChainId && !chains.isLoading && !primaryMap.isLoading ? (
+        {mapDiscoveryPending ? (
+          <div className="evidence-primary-empty" role="status" aria-live="polite">
+            <RefreshCcw size={18} className="spin" />
+            <strong>正在打开证据图</strong>
+            <span>正在确认这个项目的主图与专题图，请稍候。</span>
+          </div>
+        ) : mapDiscoveryError && projectId && !selectedChainId ? (
+          <div className="evidence-primary-empty" role="alert">
+            <AlertTriangle size={18} />
+            <strong>证据图暂时加载失败</strong>
+            <span>{mapDiscoveryError instanceof ApiError ? mapDiscoveryError.details || mapDiscoveryError.message : String(mapDiscoveryError)}</span>
+            <button type="button" onClick={() => void Promise.all([chains.refetch(), primaryMap.refetch()])}>
+              <RefreshCcw size={14} />
+              重新加载
+            </button>
+          </div>
+        ) : projectHasNoEvidenceMap ? (
           <div className="evidence-primary-empty">
             <strong>{t("noProjectEvidenceGraph")}</strong>
-            <span>{primaryMap.error instanceof Error ? primaryMap.error.message : t("primaryGraphAgentHint")}</span>
+            <span>{t("primaryGraphAgentHint")}</span>
             <button className="primary" disabled={createChain.isPending} onClick={() => createChain.mutate()}>
               <Plus size={14} />
               {createChain.isPending ? t("creating") : t("createPrimaryEvidenceGraph")}
             </button>
           </div>
         ) : null}
-        <div className="evidence-canvas" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+        <div className={`evidence-canvas evidence-canvas--${workspaceView}`} onDragOver={(event) => event.preventDefault()} onDrop={workspaceView === "overview" ? onDrop : undefined}>
+          {workspaceView === "overview" ? (
           <ReactFlow
             nodes={visibleNodes}
             edges={visibleEdges}
@@ -1540,8 +1923,8 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             onPaneClick={clearSelection}
             connectionMode={ConnectionMode.Loose}
             minZoom={0.12}
-            nodesDraggable={detail.data?.status !== "archived"}
-            nodesConnectable={detail.data?.status !== "archived"}
+            nodesDraggable={detail.data?.status !== "archived" && !activeCanvasPreview}
+            nodesConnectable={detail.data?.status !== "archived" && !activeCanvasPreview}
           >
             <Background gap={24} color="#dce2e8" />
             <ViewportPortal>
@@ -1579,7 +1962,51 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
             <Controls />
             <MiniMap pannable zoomable />
           </ReactFlow>
-          {selectedChainId
+          ) : workspaceView === "focus" ? (
+            <EvidenceFocusView
+              neighborhood={focusedNeighborhood}
+              depth={focusDepth}
+              selected={selected}
+              onOpenNode={inspectNode}
+              onFocusNode={openNodeFocus}
+              onOpenEdge={selectEdge}
+              onDepthChange={setFocusDepth}
+              onBack={() => {
+                clearSelection();
+                setWorkspaceView("threads");
+              }}
+            />
+          ) : workspaceView === "list" ? (
+            <EvidenceListView
+              sections={readerSections}
+              edges={edges}
+              query={readerQuery}
+              totalCount={nodes.filter((node) => !node.data.draft).length}
+              onQueryChange={setReaderQuery}
+              onOpenNode={inspectNode}
+              onFocusNode={openNodeFocus}
+              onOpenEdge={selectEdge}
+            />
+          ) : researchProjection ? (
+            <EvidenceThreadView
+              projection={researchProjection}
+              audit={evidenceAudit.data}
+              edges={edges}
+              query={readerQuery}
+              totalCount={nodes.filter((node) => !node.data.draft).length}
+              onQueryChange={setReaderQuery}
+              onOpenNode={inspectNode}
+              onFocusNode={openNodeFocus}
+              onOpenEdge={selectEdge}
+            />
+          ) : (
+            <section className="evidence-reader evidence-reader-syncing" aria-live="polite">
+              <RefreshCcw size={18} />
+              <strong>正在同步研究状态…</strong>
+              <span>证据图与假设链必须来自同一 revision，完成后会自动显示。</span>
+            </section>
+          )}
+          {workspaceView === "overview" && selectedChainId
             && detail.isSuccess
             && appliedDetailRef.current?.chainId === selectedChainId
             && !detail.error
@@ -1680,7 +2107,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                           <strong>{entry.title}</strong>
                           <Eye size={14} />
                         </span>
-                        <span>{preview.nodes.length} 节点 · {preview.edges.length} 关系</span>
+                        <span>
+                          {preview.nodes.length} 节点 · {preview.edges.length} 关系
+                          {preview.layoutIntent ? ` · Agent 编排 ${preview.layoutIntent.ranks.length} 列` : ""}
+                        </span>
                         <small>{entry.kind === "workspace" ? "独立 Proposal" : "历史 Run Card Proposal"}</small>
                         {preview.chainId !== selectedChainId ? <small className="target-mismatch">目标不是当前图 · 查看阻断</small> : null}
                         {preview.routingReason ? <small>{preview.routingReason}</small> : null}
@@ -1828,15 +2258,16 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 key={selectedNode.id}
                 node={selectedNode}
                 groups={nodes.filter((node) => node.data.type === "group" && !node.data.draft)}
-                memberCount={selectedNode.data.type === "group"
-                  ? nodes.filter((node) => node.data.groupId === selectedNode.id).length
-                  : 0}
+                members={selectedNode.data.type === "group"
+                  ? nodes.filter((node) => node.data.groupId === selectedNode.id)
+                  : []}
                 protocolMigration={selectedProtocolMigration}
                 migrationMembers={selectedProtocolMigration
                   ? nodes.filter((node) => selectedProtocolMigration.memberIds.includes(node.id))
                   : []}
                 onClose={clearSelection}
                 onUpdate={updateNodeData}
+                onOpenMember={inspectNode}
                 onConvertProtocol={() => convertProtocolNodeToFrame(selectedNode.id)}
               />
             ) : selectedEdge ? (
@@ -1868,7 +2299,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 <h2>{activePreviewEntry.title}</h2>
                 <code>{activePreviewEntry.key}</code>
               </div>
-              <button className="icon-button" type="button" aria-label="收起预览" title="收起预览" onClick={() => setPreviewRunID("")}>
+              <button className="icon-button" type="button" aria-label="收起预览" title="收起预览" onClick={() => {
+                if (activeCanvasPreview) closeProposalCanvasPreview();
+                setPreviewRunID("");
+              }}>
                 <X size={16} />
               </button>
             </header>
@@ -1886,7 +2320,10 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 {activePreviewEntry.preview.chainId !== selectedChainId ? (
                   <div className="evidence-proposal-blocker">
                     <AlertTriangle size={15} />
-                    <span>草稿未叠加到当前画布；先确认它的目标图或让 Agent 重新路由。</span>
+                    <span>这份草稿属于另一张证据图，切换过去后才能预览。</span>
+                    {orderedChains.some((chain) => chain.id === activePreviewEntry.preview.chainId) ? (
+                      <button type="button" onClick={() => selectChain(activePreviewEntry.preview.chainId, false, true)}>打开目标图</button>
+                    ) : null}
                   </div>
                 ) : null}
               </section>
@@ -1894,6 +2331,62 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 <section>
                   <span className="evidence-proposal-kicker">为什么放在这里</span>
                   <p>{activePreviewEntry.preview.routingReason}</p>
+                </section>
+              ) : null}
+              <section className="evidence-proposal-patch">
+                <div className="evidence-proposal-patch-heading">
+                  <div>
+                    <span className="evidence-proposal-kicker">本次变更</span>
+                    <strong>只审核草稿，不加载整张图</strong>
+                  </div>
+                  <button
+                    type="button"
+                    className={activeCanvasPreview ? "active" : ""}
+                    disabled={activePreviewEntry.preview.chainId !== selectedChainId}
+                    onClick={activeCanvasPreview ? closeProposalCanvasPreview : openProposalCanvasPreview}
+                  >
+                    {activeCanvasPreview ? "退出全景" : "在全景中预览"}
+                  </button>
+                </div>
+                <div className="evidence-proposal-patch-list" aria-label="Proposal 变更节点">
+                  {activePreviewEntry.preview.nodes.map((node) => (
+                    <div className="evidence-proposal-patch-node" key={node.id}>
+                      <span>{nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}</span>
+                      <strong>{node.data.title || node.data.sourceNodeId || node.id}</strong>
+                    </div>
+                  ))}
+                  {activePreviewEntry.preview.nodes.length === 0 ? <small>没有新增或修改节点</small> : null}
+                </div>
+                {activePreviewEntry.preview.edges.length ? (
+                  <div className="evidence-proposal-patch-edges" aria-label="Proposal 变更关系">
+                    {activePreviewEntry.preview.edges.map((edge) => (
+                      <span key={edge.id}>{String(edge.label || edgeTypeLabel(edge.data?.type || "related_to"))}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+              {activePreviewEntry.preview.layoutIntent ? (
+                <section className="evidence-layout-intent">
+                  <div className="evidence-layout-intent-heading">
+                    <div>
+                      <span className="evidence-proposal-kicker">Agent 编排</span>
+                      <strong>
+                        {activePreviewEntry.preview.layoutIntent.ranks.length} 列 ·{" "}
+                        {activePreviewEntry.preview.layoutIntent.ranks.flat().length} 个节点
+                      </strong>
+                    </div>
+                    {activeCanvasPreview ? (
+                      <button
+                        type="button"
+                        className={layoutIntentPreview ? "active" : ""}
+                        onClick={() => setLayoutIntentPreview((current) => !current)}
+                      >
+                        {layoutIntentPreview ? "使用 Agent 编排" : "使用自动排版"}
+                      </button>
+                    ) : null}
+                  </div>
+                  <p>{activePreviewEntry.preview.layoutIntent.rationale || "按 Agent 给出的列和列内顺序排列；不改变节点、关系或证据内容。"}</p>
+                  <small>只移动本提案明确列出的卡片；未列出的卡片不动，协议内部节点保持原来的相对位置。</small>
                 </section>
               ) : null}
               <section>
@@ -1906,8 +2399,25 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                   </div>
                 ) : null}
                 {previewPlan.data?.eligible ? (
-                  <div className="evidence-proposal-ready"><Check size={15} />检查通过，可接受到正式图</div>
+                  <div className="evidence-proposal-ready">
+                    <Check size={15} />
+                    {previewPlan.data.auto_rebased
+                      ? `已基于最新 r${previewPlan.data.applied_graph_revision} 安全重放（草稿原为 r${previewPlan.data.base_graph_revision}），可接受到正式图`
+                      : "检查通过，可接受到正式图"}
+                  </div>
                 ) : null}
+                {previewPlan.data?.eligible && previewPlan.data.auto_rebased ? (
+                  <div className="evidence-proposal-warning">
+                    <AlertTriangle size={15} />
+                    <span><strong>语义时效仍需判断</strong>安全重放只表示没有覆盖并发编辑，不表示旧建议仍符合当前研究结论。</span>
+                  </div>
+                ) : null}
+                {previewPlan.data?.warnings?.map((warning) => (
+                  <div className="evidence-proposal-warning" key={`${warning.code}:${warning.node_id || ""}:${warning.message}`}>
+                    <AlertTriangle size={15} />
+                    <span><strong>{warning.code}</strong>{warning.message}</span>
+                  </div>
+                ))}
                 {previewPlan.data?.blockers.map((blocker) => (
                   <div className="evidence-proposal-blocker" key={`${blocker.code}:${blocker.message}`}>
                     <AlertTriangle size={15} />
@@ -1943,13 +2453,651 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
                 onClick={() => void reviewProposal(activePreviewEntry, "accept")}
               >
                 <Check size={15} />
-                接受到正式图
+                {activePreviewEntry.preview.layoutIntent ? "接受并应用编排" : "接受到正式图"}
               </button>
             </footer>
           </motion.aside>
         ) : null}
       </AnimatePresence>
     </div>
+  );
+}
+
+function EvidenceListView({
+  sections,
+  edges,
+  query,
+  totalCount,
+  onQueryChange,
+  onOpenNode,
+  onFocusNode,
+  onOpenEdge
+}: {
+  sections: EvidenceReadingSection[];
+  edges: EvidenceFlowEdge[];
+  query: string;
+  totalCount: number;
+  onQueryChange: (value: string) => void;
+  onOpenNode: (nodeID: string) => void;
+  onFocusNode: (nodeID: string) => void;
+  onOpenEdge: (edgeID: string) => void;
+}) {
+  const relationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const edge of edges) {
+      if (edge.data?.draft) continue;
+      counts.set(edge.source, (counts.get(edge.source) || 0) + 1);
+      counts.set(edge.target, (counts.get(edge.target) || 0) + 1);
+    }
+    return counts;
+  }, [edges]);
+  const visibleCount = sections.reduce((sum, section) => sum + section.nodes.length, 0);
+  return (
+    <motion.section
+      className="evidence-reader"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      aria-label="证据结构化清单"
+    >
+      <header className="evidence-reader-head">
+        <div>
+          <span className="eyebrow">STRUCTURED EVIDENCE</span>
+          <h2>结构化清单</h2>
+          <p>旧图和零散上下文的完整入口；点击节点后查看局部前因后果。</p>
+        </div>
+        <label className="evidence-reader-search">
+          <Search size={16} />
+          <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="搜索标题、正文、类型或 Run ID" />
+          <span>{query ? `${visibleCount}/${totalCount}` : totalCount}</span>
+        </label>
+      </header>
+      {sections.length ? (
+        <div className="evidence-reader-sections">
+          {sections.map((section) => (
+            <section className="evidence-reader-section" key={section.id}>
+              <header>
+                <div><h3>{section.label}</h3><p>{section.description}</p></div>
+                <span>{section.nodes.length}</span>
+              </header>
+              <div className="evidence-reader-rows">
+                {section.nodes.map((node) => (
+                  <button
+                    type="button"
+                    className="evidence-reader-row"
+                    key={node.id}
+                    onClick={() => onOpenNode(node.id)}
+                    onDoubleClick={() => onFocusNode(node.id)}
+                    title="单击查看详情，双击打开焦点"
+                    style={{ "--evidence-accent": evidenceColor(node.data.type) } as CSSProperties}
+                  >
+                    <span className="evidence-reader-row-type">{nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}</span>
+                    <span className="evidence-reader-row-copy">
+                      <strong>{node.data.title || nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}</strong>
+                      <small>{node.data.body || node.data.summary || "暂无摘要；打开后可在右侧补充详情。"}</small>
+                    </span>
+                    <span className="evidence-reader-row-meta">
+                      {node.data.occurredAt ? <time>{fmtShortTime(String(node.data.occurredAt))}</time> : null}
+                      <span>{relationCounts.get(node.id) || 0} 条关系</span>
+                      <ChevronRight size={16} />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="evidence-reader-empty">
+          <Search size={20} />
+          <strong>{totalCount ? "没有匹配的证据" : "这张图还没有研究上下文"}</strong>
+          <span>{totalCount ? "换一个关键词，或清空搜索。" : "切换到全景即可添加第一个节点或让 Agent 起草。"}</span>
+          {query ? <button type="button" onClick={() => onQueryChange("")}>清空搜索</button> : null}
+        </div>
+      )}
+    </motion.section>
+  );
+}
+
+function EvidenceThreadView({
+  projection,
+  audit,
+  edges,
+  query,
+  totalCount,
+  onQueryChange,
+  onOpenNode,
+  onFocusNode,
+  onOpenEdge
+}: {
+  projection: EvidenceResearchProjection;
+  audit?: EvidenceChainAuditReportDTO;
+  edges: EvidenceFlowEdge[];
+  query: string;
+  totalCount: number;
+  onQueryChange: (value: string) => void;
+  onOpenNode: (nodeID: string) => void;
+  onFocusNode: (nodeID: string) => void;
+  onOpenEdge: (edgeID: string) => void;
+}) {
+  const prefersReducedMotion = useReducedMotion();
+  const [relationFocus, setRelationFocus] = useState<{ threadID: string; nodeID: string } | null>(null);
+  const relationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const edge of edges) {
+      if (edge.data?.draft) continue;
+      counts.set(edge.source, (counts.get(edge.source) || 0) + 1);
+      counts.set(edge.target, (counts.get(edge.target) || 0) + 1);
+    }
+    return counts;
+  }, [edges]);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matches = useCallback((node: EvidenceFlowNode) => {
+    if (!normalizedQuery) return true;
+    return [node.data.title, node.data.body, node.data.runId, nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery));
+  }, [normalizedQuery]);
+  const visibleThreads = useMemo(() => projection.threads.map((thread) => {
+    const threadMatches = normalizedQuery && thread.title.toLocaleLowerCase().includes(normalizedQuery);
+    const stages = Object.fromEntries(evidenceResearchStages.map((stage) => [
+      stage.id,
+      threadMatches ? thread.stages[stage.id] : thread.stages[stage.id].filter(matches)
+    ])) as Record<EvidenceResearchStage, EvidenceFlowNode[]>;
+    return { ...thread, stages };
+  }).filter((thread) => evidenceResearchStages.some((stage) => thread.stages[stage.id].length)), [edges, matches, projection.threads]);
+  const visibleUnassigned = projection.unassigned.filter(matches);
+  const focusRelationsByThread = useMemo(() => new Map(visibleThreads.map((thread) => [
+    thread.id,
+    evidenceThreadFocusRelations(thread, edges)
+  ])), [edges, visibleThreads]);
+  const canonicalThreadsByID = useMemo(() => new Map(projection.threads.map((thread) => [thread.id, thread])), [projection.threads]);
+  const activeFocusState = useMemo(() => {
+    if (!relationFocus) return null;
+    const canonicalThread = canonicalThreadsByID.get(relationFocus.threadID);
+    const visibleThread = visibleThreads.find((thread) => thread.id === relationFocus.threadID);
+    if (!canonicalThread || !visibleThread) return null;
+    return evidenceThreadRelationFocus(canonicalThread, visibleThread, edges, relationFocus.nodeID);
+  }, [canonicalThreadsByID, edges, relationFocus, visibleThreads]);
+  const activeRibbonRelations = useMemo(() => {
+    if (!relationFocus || !activeFocusState) return [];
+    const relations = focusRelationsByThread.get(relationFocus.threadID);
+    if (!relations) return [];
+    const visibleNodeIDs = new Set([activeFocusState.originNodeId, ...activeFocusState.visiblePeerNodeIds]);
+    const seen = new Set<string>();
+    const ribbons: EvidenceThreadRibbonRelation[] = [];
+    for (const sourceNodeId of [...visibleNodeIDs].sort()) {
+      for (const relation of relations.get(sourceNodeId) || []) {
+        if (relation.direction !== "outgoing" || !visibleNodeIDs.has(relation.otherNode.id)) continue;
+        const key = `${relation.edge.id}:${sourceNodeId}:${relation.otherNode.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ribbons.push({
+          id: relation.edge.id,
+          sourceNodeId,
+          targetNodeId: relation.otherNode.id,
+          type: relation.edge.data?.type || "related_to",
+          direct: sourceNodeId === activeFocusState.originNodeId || relation.otherNode.id === activeFocusState.originNodeId
+        });
+      }
+    }
+    return ribbons.sort((left, right) => `${left.sourceNodeId}:${left.targetNodeId}:${left.id}`.localeCompare(`${right.sourceNodeId}:${right.targetNodeId}:${right.id}`));
+  }, [activeFocusState, focusRelationsByThread, relationFocus]);
+  const activeDirectPeerNodeIDs = useMemo(() => {
+    if (!relationFocus) return new Set<string>();
+    return new Set((focusRelationsByThread.get(relationFocus.threadID)?.get(relationFocus.nodeID) || [])
+      .map((relation) => relation.otherNode.id));
+  }, [focusRelationsByThread, relationFocus]);
+  const threadTitles = useMemo(() => new Map(projection.threads.map((thread) => [thread.id, thread.title])), [projection.threads]);
+  const relationsByThread = useMemo(() => {
+    const rows = new Map<string, Array<{ direction: "in" | "out"; otherThreadId: string; label: string; kind: "branch" | "causal" }>>();
+    for (const relation of projection.crossThreadRelations || []) {
+      const label = String(relation.edge.label || edgeTypeLabel(relation.edge.data?.type || "next_step"));
+      rows.set(relation.sourceThreadId, [...(rows.get(relation.sourceThreadId) || []), {
+        direction: "out", otherThreadId: relation.targetThreadId, label, kind: relation.kind
+      }]);
+      rows.set(relation.targetThreadId, [...(rows.get(relation.targetThreadId) || []), {
+        direction: "in", otherThreadId: relation.sourceThreadId, label, kind: relation.kind
+      }]);
+    }
+    for (const relations of rows.values()) {
+      relations.sort((left, right) => `${left.kind}:${left.direction}:${left.otherThreadId}:${left.label}`.localeCompare(`${right.kind}:${right.direction}:${right.otherThreadId}:${right.label}`));
+    }
+    return rows;
+  }, [projection.crossThreadRelations]);
+  const visibleCount = visibleThreads.reduce((sum, thread) => (
+    sum + evidenceResearchStages.reduce((stageSum, stage) => stageSum + thread.stages[stage.id].filter((node) => node.data.projectionOnly !== "interpretation").length, 0)
+  ), 0) + visibleUnassigned.length;
+  const capacity = projection.capacity;
+  const capacityLabel = capacity?.status === "split_recommended"
+    ? "建议拆分专题图"
+    : capacity?.status === "cleanup_required"
+      ? "需要先整理当前专题"
+      : capacity?.status === "near_limit"
+        ? "专题接近建议容量"
+        : "";
+  const structuralHealth = projection.structuralHealth;
+  const threadHealthByID = useMemo(() => new Map((structuralHealth?.threads || []).map((health) => [health.thread_id, health])), [structuralHealth]);
+  const readabilityLabel: Record<string, string> = {
+    clear: "清晰",
+    dense: "结构较密",
+    needs_curation: "需要整理",
+    v2_readable: "新版可读",
+    legacy_readable: "历史可读",
+    broken: "读取异常"
+  };
+  const complianceLabel: Record<string, string> = {
+    v2_compliant: "v2 合规",
+    legacy_mixed: "历史混合",
+    v2_noncompliant: "不合规"
+  };
+  const publicationLabel: Record<string, string> = {
+    not_applicable: "尚无发布结论",
+    publication_ready: "证据可发布",
+    publication_blocked: "发布被阻断"
+  };
+  const phaseLabel: Record<string, string> = {
+    empty: "空白",
+    needs_curation: "待整理",
+    mixed: "多阶段进行中",
+    hypothesis_recorded: "假设已记录",
+    design_recorded: "设计已记录",
+    result_recorded: "结果待解释",
+    outcome_recorded: "已有结果处置"
+  };
+  const lifecycleLabel: Record<string, string> = { draft: "草稿", active: "活跃", archived: "已归档" };
+  const threadOutcomeSummary = (thread: EvidenceResearchThread) => {
+    const outcomes = thread.stages.issue;
+    const conclusions = outcomes.filter((node) => node.data.type === "conclusion").length;
+    const issues = outcomes.filter((node) => node.data.type === "issue").length;
+    const pending = thread.stages.conclusion.filter((node) => node.data.interpretationKind === "pending").length;
+    return `${conclusions} 结论 · ${issues} 问题 · ${pending} 待解释`;
+  };
+  const threadDOMID = useCallback((threadID: string) => `evidence-thread-${encodeURIComponent(threadID)}`, []);
+  const jumpToThread = useCallback((threadID: string) => {
+    const revealAndScroll = () => {
+      const target = document.getElementById(threadDOMID(threadID));
+      if (!target) return;
+      target.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
+      target.focus({ preventScroll: true });
+    };
+    if (!document.getElementById(threadDOMID(threadID)) && query) {
+      onQueryChange("");
+      requestAnimationFrame(() => requestAnimationFrame(revealAndScroll));
+      return;
+    }
+    revealAndScroll();
+  }, [onQueryChange, prefersReducedMotion, query, threadDOMID]);
+  const renderCard = (node: EvidenceFlowNode, threadID = "", stage?: EvidenceResearchStage) => {
+    const relationCount = node.data.projectedRelationCount ?? relationCounts.get(node.id) ?? 0;
+    const threadRelations = focusRelationsByThread.get(threadID);
+    const adjacentRelations = threadRelations?.get(node.id) || [];
+    const focusState = relationFocus?.threadID === threadID ? activeFocusState : null;
+    const isRelationOrigin = Boolean(focusState && relationFocus?.nodeID === node.id);
+    const isRelationDirectPeer = Boolean(focusState?.visiblePeerNodeIds.includes(node.id) && activeDirectPeerNodeIDs.has(node.id));
+    const isRelationContextPeer = Boolean(focusState?.visiblePeerNodeIds.includes(node.id) && !isRelationDirectPeer);
+    const isRelationMuted = Boolean(focusState && !isRelationOrigin && !isRelationDirectPeer && !isRelationContextPeer);
+    const visibleRelations: EvidenceAdjacentStageRelation[] = [...(isRelationOrigin
+      ? adjacentRelations
+      : isRelationDirectPeer
+        ? adjacentRelations.filter((relation) => relation.otherNode.id === relationFocus?.nodeID)
+        : [])].sort((left, right) => {
+          // A swimlane is read left-to-right. On the focused card, surface the
+          // next-stage consequence before the previous-stage context so a
+          // design immediately answers “which result did this produce?”.
+          if (isRelationOrigin && left.direction !== right.direction) {
+            return left.direction === "outgoing" ? -1 : 1;
+          }
+          return left.otherNode.id.localeCompare(right.otherNode.id);
+        });
+    const primaryVisibleRelation = visibleRelations[0];
+    const primaryRelationType = primaryVisibleRelation?.edge.data?.type || "next_step";
+    const primaryRelationLabel = primaryVisibleRelation
+      ? String(primaryVisibleRelation.edge.label || edgeTypeLabel(primaryRelationType))
+      : "";
+    const relationSummary = visibleRelations.map((relation) => {
+      const direction = relation.direction === "outgoing" ? "指向" : "来自";
+      const label = String(relation.edge.label || edgeTypeLabel(relation.edge.data?.type || "next_step"));
+      return `${direction}${relation.otherNode.data.title || nodeTypeLabel(relation.otherNode.data.type, relation.otherNode.data.claimKind || relation.otherNode.data.claim_kind)}：${label}`;
+    }).join("；");
+    const resultDisposition = stage === "result"
+      ? String(node.data.resultDisposition || node.data.result_disposition || "legacy").trim().toLocaleLowerCase()
+      : "";
+    const resultDispositionLabel: Record<string, string> = {
+      conclusion: "形成结论",
+      issue: "产生问题",
+      mixed: "结论 + 问题",
+      pending: "待解释",
+      legacy: "历史未分类"
+    };
+    const activateRelations = () => {
+      if (threadID) setRelationFocus({ threadID, nodeID: node.id });
+    };
+    const clearRelations = () => setRelationFocus((current) => (
+      current?.threadID === threadID && current.nodeID === node.id ? null : current
+    ));
+    return (
+      <button
+        type="button"
+        className={[
+          "evidence-thread-card",
+          node.data.projectionOnly === "interpretation" ? "is-interpretation" : "",
+          isRelationOrigin ? "is-relation-origin" : "",
+          isRelationDirectPeer ? "is-relation-peer" : "",
+          isRelationContextPeer ? "is-relation-context" : "",
+          isRelationMuted ? "is-relation-muted" : ""
+        ].filter(Boolean).join(" ")}
+        key={node.id}
+        data-evidence-node-id={node.id}
+        onClick={() => node.data.projectionOnly === "interpretation"
+          ? node.data.interpretationEdgeId
+            ? onOpenEdge(String(node.data.interpretationEdgeId))
+            : onOpenNode(String(node.data.interpretationSourceNodeId || node.id))
+          : onOpenNode(node.id)}
+        onDoubleClick={() => onFocusNode(String(node.data.interpretationSourceNodeId || node.id))}
+        onPointerEnter={activateRelations}
+        onPointerDown={activateRelations}
+        onPointerLeave={clearRelations}
+        onFocus={activateRelations}
+        onBlur={clearRelations}
+        aria-label={`${node.data.title || nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}${relationSummary ? `。相邻关系：${relationSummary}` : ""}`}
+        title="单击查看详情，双击打开焦点"
+        style={{ "--evidence-accent": evidenceColor(node.data.type) } as CSSProperties}
+      >
+        <span className="evidence-thread-card-top">
+          <span>{node.data.projectionOnly === "interpretation" ? "解释判断" : nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}</span>
+          {resultDisposition ? <b className={`evidence-result-disposition is-${resultDisposition}`}>{resultDispositionLabel[resultDisposition] || resultDisposition}</b> : null}
+          <small className={visibleRelations.length ? "is-direct-relation" : ""}>
+            {isRelationOrigin && focusState?.disconnected
+              ? "无直接关系"
+              : isRelationOrigin && focusState?.hiddenRelationCount
+                ? `${focusState.hiddenRelationCount} 个关系被搜索隐藏`
+                : visibleRelations.length
+              ? isRelationOrigin
+                ? `${visibleRelations.length} 个直接关系`
+                : `${primaryVisibleRelation?.direction === "incoming" ? "前因" : "后果"} · ${primaryRelationLabel}`
+              : `${relationCount} 关系`}
+          </small>
+        </span>
+        <strong>{node.data.title || nodeTypeLabel(node.data.type, node.data.claimKind || node.data.claim_kind)}</strong>
+        {node.data.body || node.data.summary ? <p>{String(node.data.body || node.data.summary)}</p> : null}
+        {node.data.unassignedReason ? <span className="evidence-unassigned-reason">待整理原因 · {String(node.data.unassignedReason)}</span> : null}
+        {primaryVisibleRelation ? (
+          <span
+            className="evidence-thread-card-open is-relation"
+            title={relationSummary}
+            style={{ "--relation-accent": evidenceColor(primaryRelationType) } as CSSProperties}
+          >
+            <b>{primaryVisibleRelation.direction === "outgoing" ? "→" : "←"} {primaryRelationLabel}</b>
+            <small>{primaryVisibleRelation.otherNode.data.title || nodeTypeLabel(primaryVisibleRelation.otherNode.data.type, primaryVisibleRelation.otherNode.data.claimKind || primaryVisibleRelation.otherNode.data.claim_kind)}</small>
+            {visibleRelations.length > 1 ? <em>+{visibleRelations.length - 1}</em> : null}
+          </span>
+        ) : isRelationOrigin && focusState && (focusState.disconnected || focusState.hiddenRelationCount > 0) ? (
+          <EvidenceThreadRelationHint focus={focusState} />
+        ) : (
+          <span className="evidence-thread-card-open">查看前因后果 <ChevronRight size={14} /></span>
+        )}
+      </button>
+    );
+  };
+  return (
+    <motion.section
+      className="evidence-reader evidence-thread-view"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      aria-label="假设链"
+    >
+      <header className="evidence-reader-head">
+        <div className="evidence-reader-title">
+          <h2>假设链</h2>
+          <span>{projection.threads.length} 条 Research Thread · 5 个 Stage Column</span>
+        </div>
+        <label className="evidence-reader-search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="搜索标题、正文、类型或 Run ID"
+          />
+          <span>{query ? `${visibleCount}/${totalCount}` : totalCount}</span>
+        </label>
+      </header>
+      {structuralHealth ? (
+        <details className="evidence-research-health">
+          <summary>
+            <span><b>可读性</b>{readabilityLabel[audit?.readability_status || structuralHealth.readability_status] || "未知状态"}</span>
+            <span><b>契约</b>{complianceLabel[audit?.v2_compliance_status || structuralHealth.compatibility_status] || "未知状态"}</span>
+            <span className={audit?.publication_status === "publication_blocked" ? "is-blocked" : ""}><b>发布</b>{publicationLabel[audit?.publication_status || "not_applicable"] || "未知状态"}</span>
+            <small>Topic · {lifecycleLabel[structuralHealth.topic_lifecycle] || structuralHealth.topic_lifecycle} · {phaseLabel[structuralHealth.derived_topic_phase] || structuralHealth.derived_topic_phase}</small>
+            <ChevronDown size={14} />
+          </summary>
+          <div>
+            <span>{structuralHealth.assigned_count} 项已归属 · {structuralHealth.unassigned_count} 项待整理 · provenance 与结果去向按假设链检查</span>
+            {capacity && capacity.status !== "healthy" ? <span>{capacityLabel} · {capacity.reasons.join("、")}</span> : null}
+            {audit?.blockers?.length ? <span>{audit.blockers.length} 个发布门禁 · {audit.blockers.slice(0, 3).map((item) => item.code).join("、")}</span> : null}
+          </div>
+        </details>
+      ) : null}
+      {visibleThreads.length || visibleUnassigned.length ? (
+        <div className="evidence-thread-scroll">
+          {visibleThreads.length ? (
+            <>
+              <div className="evidence-thread-stage-heads">
+                {evidenceResearchStages.map((stage, index) => (
+                  <div key={stage.id} title={stage.description}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{stage.label}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="evidence-thread-list">
+                {visibleThreads.map((thread, index) => (
+                  <section
+                    className={thread.parentThreadId ? "evidence-thread is-child" : "evidence-thread"}
+                    id={threadDOMID(thread.id)}
+                    key={thread.id}
+                    tabIndex={-1}
+                  >
+                    <div className="evidence-thread-rail" aria-hidden="true">
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <i />
+                    </div>
+                    <div className="evidence-thread-lane">
+                      <header>
+                        <span>{thread.parentThreadId ? <GitBranch size={14} /> : null}{thread.parentThreadId ? "子假设链" : "假设链"}</span>
+                        <strong>{thread.title}</strong>
+                        {threadHealthByID.get(thread.id) ? (
+                          <em className={`evidence-thread-health is-${threadHealthByID.get(thread.id)?.complexity_level}`}>
+                            {phaseLabel[threadHealthByID.get(thread.id)?.derived_phase || ""] || threadHealthByID.get(thread.id)?.derived_phase}
+                            {threadHealthByID.get(thread.id)?.complexity_level !== "normal" ? ` · ${threadHealthByID.get(thread.id)?.semantic_node_count} 节点` : ""}
+                          </em>
+                        ) : null}
+                        <small>{threadOutcomeSummary(thread)}</small>
+                      </header>
+                      {(relationsByThread.get(thread.id) || []).length ? (
+                        <div className="evidence-thread-bridges" aria-label="跨泳道关系">
+                          {(relationsByThread.get(thread.id) || []).slice(0, 4).map((relation, relationIndex) => (
+                            <button
+                              type="button"
+                              className={relation.kind === "branch" ? "is-branch" : ""}
+                              key={`${relation.direction}:${relation.otherThreadId}:${relation.label}:${relationIndex}`}
+                              onClick={() => jumpToThread(relation.otherThreadId)}
+                              aria-label={`${relation.direction === "in" ? "返回" : "前往"}${threadTitles.get(relation.otherThreadId) || relation.otherThreadId}：${relation.label}`}
+                            >
+                              {relation.direction === "in" ? "←" : "→"} {relation.label}
+                              <small>{threadTitles.get(relation.otherThreadId) || relation.otherThreadId}</small>
+                              <ChevronRight size={12} />
+                            </button>
+                          ))}
+                          {(relationsByThread.get(thread.id) || []).length > 4 ? <em>+{(relationsByThread.get(thread.id) || []).length - 4}</em> : null}
+                        </div>
+                      ) : null}
+                      <div className={`evidence-thread-grid${relationFocus?.threadID === thread.id ? " has-relation-focus" : ""}`}>
+                        {relationFocus?.threadID === thread.id && activeRibbonRelations.length ? (
+                          <EvidenceThreadRelationOverlay relations={activeRibbonRelations} reducedMotion={Boolean(prefersReducedMotion)} />
+                        ) : null}
+                        {evidenceResearchStages.map((stage) => (
+                          <div className={`evidence-thread-stage evidence-thread-stage--${stage.id}`} key={stage.id}>
+                            {thread.stages[stage.id].length
+                              ? thread.stages[stage.id].map((node) => renderCard(node, thread.id, stage.id))
+                              : <span className="evidence-thread-gap" aria-label={`${stage.label}暂无内容`} />}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="evidence-thread-legacy-empty">
+              <GitBranch size={18} />
+              <div>
+                <strong>这张历史图还没有显式假设链</strong>
+                <span>原有节点保持可读并进入待整理；从明确假设开始后，才会进入五个阶段列。</span>
+              </div>
+            </div>
+          )}
+          {visibleUnassigned.length ? (
+            <details className="evidence-thread-triage">
+              <summary><span>待整理</span><small>{visibleUnassigned.length} 项尚未归入假设链；这里只是临时收件箱</small><ChevronDown size={15} /></summary>
+              <div>{visibleUnassigned.map((node) => renderCard(node))}</div>
+            </details>
+          ) : null}
+        </div>
+      ) : (
+        <div className="evidence-reader-empty">
+          <Search size={20} />
+          <strong>{totalCount ? "没有可显示的假设链" : "这张专题图还没有研究上下文"}</strong>
+          <span>{totalCount ? "换一个关键词，或展开待整理内容。" : "请从明确假设开始起草 research-thread-v2；Stage Column 只是展示列。"}</span>
+          {query ? <button type="button" onClick={() => onQueryChange("")}>清空搜索</button> : null}
+        </div>
+      )}
+    </motion.section>
+  );
+}
+
+function EvidenceFocusView({
+  neighborhood,
+  depth,
+  selected,
+  onOpenNode,
+  onFocusNode,
+  onOpenEdge,
+  onDepthChange,
+  onBack
+}: {
+  neighborhood: EvidenceNeighborhood;
+  depth: EvidenceFocusDepth;
+  selected: { kind: "node" | "edge"; id: string } | null;
+  onOpenNode: (nodeID: string) => void;
+  onFocusNode: (nodeID: string) => void;
+  onOpenEdge: (edgeID: string) => void;
+  onDepthChange: (depth: EvidenceFocusDepth) => void;
+  onBack: () => void;
+}) {
+  const center = neighborhood.center;
+  const graph = useMemo(() => layoutEvidenceNeighborhood(neighborhood), [neighborhood]);
+  const focusNodes = useMemo(
+    () => graph.nodes.map((node) => ({ ...node, selected: selected?.kind === "node" && selected.id === node.id })),
+    [graph.nodes, selected]
+  );
+  const focusEdges = useMemo(
+    () => graph.edges.map((edge) => ({ ...edge, selected: selected?.kind === "edge" && selected.id === edge.id })),
+    [graph.edges, selected]
+  );
+  const focusGraphRef = useRef<HTMLDivElement | null>(null);
+  const focusNodeTypes = useMemo(() => ({ evidence: EvidenceNode }), []);
+  const focusEdgeTypes = useMemo(() => ({ evidence: EvidenceFocusEdge }), []);
+  if (!center) {
+    return (
+      <section className="evidence-focus-empty">
+        <Focus size={22} />
+        <strong>先从清单选择一个节点</strong>
+        <button type="button" onClick={onBack}>返回清单</button>
+      </section>
+    );
+  }
+  return (
+    <motion.section
+      key={center.id}
+      className="evidence-focus-view"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      aria-label={`${center.data.title} 的局部关系`}
+    >
+      <header className="evidence-focus-head">
+        <button type="button" onClick={onBack}><ChevronLeft size={15} />返回清单</button>
+        <div className="evidence-focus-summary">
+          <span>局部前因后果</span>
+          <strong>{neighborhood.upstream.length} 上游 · {neighborhood.downstream.length} 下游 · {neighborhood.related.length} 关联</strong>
+        </div>
+        <div className="evidence-focus-depth" role="group" aria-label="显示关系层数">
+          <span>层数</span>
+          {([1, 2, 3, "all"] as EvidenceFocusDepth[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={depth === value ? "is-active" : ""}
+              aria-pressed={depth === value}
+              onClick={() => onDepthChange(value)}
+            >
+              {value === "all" ? "全部" : value}
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="evidence-focus-legend" aria-hidden="true">
+        <span><i className="upstream" />前因 / 依据</span>
+        <span><i className="current" />当前节点</span>
+        <span><i className="downstream" />后果 / 下一步</span>
+        <span><i className="related" />背景（上 → 中）</span>
+      </div>
+      <div ref={focusGraphRef} className="evidence-focus-graph" aria-label={`${center.data.title} 的${depth === "all" ? "完整" : `${depth}层`}前因后果图`}>
+        <ReactFlow
+          nodes={focusNodes}
+          edges={focusEdges}
+          nodeTypes={focusNodeTypes}
+          edgeTypes={focusEdgeTypes}
+          key={`${center.id}-${depth}`}
+          onInit={(instance) => {
+            const shell = focusGraphRef.current;
+            if (!graph.nodes.length || !shell) return;
+            const minX = Math.min(...graph.nodes.map((node) => node.position.x));
+            const maxX = Math.max(...graph.nodes.map((node) => node.position.x + (node.width || compactEvidenceNodeSize.width)));
+            const minY = Math.min(...graph.nodes.map((node) => node.position.y));
+            const maxY = Math.max(...graph.nodes.map((node) => node.position.y + (node.height || compactEvidenceNodeSize.height)));
+            const graphWidth = Math.max(1, maxX - minX);
+            const graphHeight = Math.max(1, maxY - minY);
+            const focusZoom = Math.max(0.28, Math.min(
+              0.84,
+              (shell.clientWidth - 72) / graphWidth,
+              (shell.clientHeight - 64) / graphHeight
+            ));
+            const graphCenterX = minX + graphWidth / 2;
+            const graphCenterY = minY + graphHeight / 2;
+            void instance.setViewport({
+              x: shell.clientWidth / 2 - graphCenterX * focusZoom,
+              y: shell.clientHeight / 2 - graphCenterY * focusZoom,
+              zoom: focusZoom
+            });
+          }}
+          minZoom={0.28}
+          maxZoom={1.35}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable
+          onNodeClick={(_event, node) => onOpenNode(node.id)}
+          onNodeDoubleClick={(_event, node) => onFocusNode(node.id)}
+          onEdgeClick={(_event, edge) => onOpenEdge(edge.id)}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={24} color="#dce2e8" />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+    </motion.section>
   );
 }
 
@@ -2140,20 +3288,22 @@ function EvidenceGroupFrame({
 function EvidenceNodeInspector({
   node,
   groups,
-  memberCount,
+  members,
   protocolMigration,
   migrationMembers,
   onClose,
   onUpdate,
+  onOpenMember,
   onConvertProtocol
 }: {
   node: EvidenceFlowNode;
   groups: EvidenceFlowNode[];
-  memberCount: number;
+  members: EvidenceFlowNode[];
   protocolMigration: ReturnType<typeof inspectProtocolFrameMigration> | null;
   migrationMembers: EvidenceFlowNode[];
   onClose: () => void;
   onUpdate: (nodeId: string, patch: Partial<EvidenceNodeData>) => void;
+  onOpenMember: (nodeId: string) => void;
   onConvertProtocol: () => void;
 }) {
   const data = node.data;
@@ -2176,9 +3326,9 @@ function EvidenceNodeInspector({
         <div>
           <span className="evidence-inspector-kind" style={{ "--evidence-color": evidenceColor(data.type) } as CSSProperties}>
             {data.draft ? <Bot size={13} /> : <Network size={13} />}
-            {nodeTypeLabel(data.type)}
+            {nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}
           </span>
-          <h2>{data.title || nodeTypeLabel(data.type)}</h2>
+          <h2>{data.title || nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}</h2>
           <code>{node.id}</code>
         </div>
         <button className="icon-button" type="button" aria-label="关闭详情" title="关闭详情" onClick={onClose}>
@@ -2206,21 +3356,39 @@ function EvidenceNodeInspector({
         </label>
         {data.type === "group" ? (
           <>
+            <section className="evidence-inspector-section compact">
+              <span>历史协议集合</span>
+              <p>仅为旧图兼容保留。新证据请使用“实验设计”，Run 与数据身份放在 provenance。</p>
+            </section>
             <div className="evidence-inspector-grid">
               <label>
                 <span>协议版本</span>
                 <input
                   value={data.version || ""}
-                  readOnly={readOnly}
+                  readOnly
                   placeholder="例如 v3 / clean810"
                   onChange={(event) => onUpdate(node.id, { version: event.target.value })}
                 />
               </label>
               <section className="evidence-inspector-section compact">
                 <span>协议成员</span>
-                <p>{memberCount} 个节点</p>
+                <p>{members.length} 个节点；关系保留在成员之间或成员与集合外节点之间。</p>
               </section>
             </div>
+            {members.length ? (
+              <section className="evidence-inspector-members">
+                <span>集合内容</span>
+                <div>
+                  {members.map((member, index) => (
+                    <button type="button" key={member.id} onClick={() => onOpenMember(member.id)}>
+                      <small>{String(index + 1).padStart(2, "0")} · {nodeTypeLabel(member.data.type, member.data.claimKind || member.data.claim_kind)}</small>
+                      <strong>{member.data.title || member.id}</strong>
+                      <ChevronRight size={13} />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             <label>
               <span>来源摘要</span>
               <input
@@ -2235,59 +3403,12 @@ function EvidenceNodeInspector({
               <p>数据版本、实验记录、计划、实验设计</p>
             </section>
           </>
-        ) : data.type === "protocol" && protocolMigration ? (
-          <section className="evidence-protocol-conversion">
-            <div>
-              <span>视觉结构</span>
-              <strong>整理为协议容器</strong>
-              <p>协议会成为永久展开的大框；以下执行结构节点会保持协议归属并可自由排列。</p>
-            </div>
-            {migrationMembers.length ? (
-              <ul>
-                {migrationMembers.map((member) => <li key={member.id}>{member.data.title || member.id}</li>)}
-              </ul>
-            ) : null}
-            {protocolMigration.blockers.length ? (
-              <div className="evidence-protocol-conversion-blockers">
-                {protocolMigration.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
-              </div>
-            ) : (
-              <p className="evidence-protocol-conversion-note">
-                {protocolMigration.removableEdgeIds.length} 条旧归属线会改为范围成员关系；正式图仍需通过现有审批。
-              </p>
-            )}
-            <button
-              type="button"
-              className="evidence-group-toggle"
-              disabled={readOnly || !protocolMigration.eligible}
-              onClick={onConvertProtocol}
-            >
-              <Network size={14} />
-              转换为协议容器
-            </button>
-          </section>
-        ) : groups.length && isProtocolGroupMemberType(data.type) ? (
-          <label>
-            <span>所属实验协议</span>
-            <select
-              disabled={readOnly}
-              value={data.groupId || ""}
-              onChange={(event) => onUpdate(node.id, { groupId: event.target.value || undefined })}
-            >
-              <option value="">尚未加入实验协议</option>
-              {groups.map((group) => (
-                <option key={group.id} value={group.id}>
-                  {group.data.title || "实验协议"}{group.data.version ? ` · ${group.data.version}` : ""}
-                </option>
-              ))}
-            </select>
-            <small>
-              {data.groupId
-                ? "拖动只改变位置；选择“尚未加入”可明确移出协议。"
-                : "空间位置不会自动改变协议归属，请在这里明确加入。"}
-            </small>
-          </label>
-        ) : null}
+		) : data.groupId ? (
+		  <section className="evidence-inspector-section compact">
+			<span>历史协议归属</span>
+			<p>{groups.find((group) => group.id === data.groupId)?.data.title || data.groupId}（只读兼容）</p>
+		  </section>
+		) : null}
         <label className="evidence-inspector-body-field">
           <span>完整内容</span>
           <textarea
@@ -2310,6 +3431,27 @@ function EvidenceNodeInspector({
             <span><strong>类型</strong>{data.runKind || "—"}</span>
             {data.evidenceLevel ? <span><strong>证据级别</strong>L{data.evidenceLevel}</span> : null}
             {gitLabel ? <span><strong>Git</strong>{gitLabel}</span> : null}
+          </section>
+        ) : null}
+        {data.sourceRunIds?.length || data.sourceSnapshotIds?.length ? (
+          <section className="evidence-inspector-section evidence-node-provenance">
+            <span>结果来源</span>
+            {data.sourceRunIds?.length ? (
+              <div className="evidence-provenance-links">
+                {data.sourceRunIds.map((runId) => (
+                  <button type="button" key={runId} onClick={() => data.onOpenRun?.(runId)}>
+                    <Network size={13} />
+                    <code>{runId}</code>
+                    <ArrowUpRight size={12} />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {data.sourceSnapshotIds?.length ? (
+              <div className="evidence-provenance-snapshots">
+                {data.sourceSnapshotIds.map((snapshotId) => <code key={snapshotId}>{snapshotId}</code>)}
+              </div>
+            ) : null}
           </section>
         ) : null}
         {data.type === "map_ref" ? (
@@ -2431,22 +3573,24 @@ function EvidenceNode({ data, selected }: NodeProps<EvidenceFlowNode>) {
       {!data.draft && !data.readOnly ? <EvidenceNodeHandles /> : null}
       <div className="evidence-node-category">
         {data.draft ? (
-          <span className="evidence-node-draft-label"><Bot size={12} />Agent 草稿 · {nodeTypeLabel(data.type)}</span>
+          <span className="evidence-node-draft-label"><Bot size={12} />Agent 草稿 · {nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}</span>
         ) : data.type === "map_ref" ? (
-          <span className="evidence-node-draft-label"><Network size={12} />{nodeTypeLabel(data.type)}</span>
+          <span className="evidence-node-draft-label"><Network size={12} />{nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}</span>
         ) : (
-          <span>{nodeTypeLabel(data.type)}</span>
+          <span>{nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}</span>
         )}
         {data.evidenceLevel ? <span>L{data.evidenceLevel}</span> : null}
       </div>
       <div className="evidence-color-line" />
-      <h3 className="evidence-node-title">{data.title || nodeTypeLabel(data.type)}</h3>
+      <h3 className="evidence-node-title">{data.title || nodeTypeLabel(data.type, data.claimKind || data.claim_kind)}</h3>
       <p className={summary ? "evidence-node-summary" : "evidence-node-summary muted"}>
         {summary || "点击查看并补充完整内容"}
       </p>
       <footer className="evidence-node-meta">
         {status ? <span>{status}</span> : <span>查看详情</span>}
         {data.type === "run" && data.runId ? <code>{data.runId}</code> : null}
+        {data.sourceRunIds?.length ? <code>{data.sourceRunIds.length} Runs</code> : null}
+        {data.sourceSnapshotIds?.length ? <code>{data.sourceSnapshotIds.length} Snapshots</code> : null}
         {data.type === "map_ref" && data.target_revision ? <code>r{data.target_revision}</code> : null}
       </footer>
     </div>
@@ -2517,7 +3661,7 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const labelY = data?.routeLabelPoint?.y ?? fallbackLabelY;
   const labelSafe = data?.routeSafe === true && Boolean(data.routeLabelPoint);
   const displayLabel = text(label) || edgeTypeLabel(type);
-  const labelVisible = selected || hovered || isDraft;
+  const labelVisible = selected || hovered || isDraft || data?.focusVisible === true;
   const baseStyle = edgeStyle(type);
   const emphasizedStyle = selected || hovered
     ? {
@@ -2564,6 +3708,81 @@ function EvidenceEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
             title={isDraft ? `${edgeTypeLabel(type)} · Agent 草稿` : `${edgeTypeLabel(type)} · 点击查看详情`}
           >
             {isDraft ? `草稿 · ${displayLabel}` : displayLabel}
+          </button>
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+
+function EvidenceFocusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, label, selected }: EdgeProps<EvidenceFlowEdge>) {
+  const type = data?.type || "next_step";
+  const [hovered, setHovered] = useState(false);
+  const adjustedSourceX = sourceX + (data?.focusSourceOffsetX || 0);
+  const adjustedSourceY = sourceY + (data?.focusSourceOffsetY || 0);
+  const adjustedTargetX = targetX + (data?.focusTargetOffsetX || 0);
+  const adjustedTargetY = targetY + (data?.focusTargetOffsetY || 0);
+  const [edgePath, defaultLabelX, defaultLabelY] = getBezierPath({
+    sourceX: adjustedSourceX,
+    sourceY: adjustedSourceY,
+    targetX: adjustedTargetX,
+    targetY: adjustedTargetY,
+    sourcePosition,
+    targetPosition,
+    curvature: data?.focusContext ? 0.22 : 0.16
+  });
+  const labelX = data?.focusContext
+    ? adjustedSourceX + (adjustedTargetX - adjustedSourceX) * 0.28
+    : defaultLabelX;
+  const labelY = data?.focusContext
+    ? adjustedSourceY + Math.min(34, Math.max(24, (adjustedTargetY - adjustedSourceY) * 0.18))
+    : defaultLabelY - 18;
+  const displayLabel = text(label) || edgeTypeLabel(type);
+  const baseStyle = edgeStyle(type);
+  const idleStyle = data?.focusContext
+    ? { ...baseStyle, strokeWidth: 1.8, strokeOpacity: 0.66 }
+    : { ...baseStyle, strokeWidth: Math.max(2.6, Number(baseStyle.strokeWidth || 2.4)), strokeOpacity: 0.94 };
+  const emphasizedStyle = selected || hovered
+    ? {
+        ...baseStyle,
+        strokeWidth: Number(baseStyle.strokeWidth || 2.4) + 0.8,
+        strokeOpacity: 1,
+        filter: `drop-shadow(0 1px 2px ${String(baseStyle.stroke)}44)`
+      }
+    : idleStyle;
+
+  return (
+    <>
+      <BaseEdge path={edgePath} markerEnd={markerEnd} style={emphasizedStyle} />
+      <path
+        className="evidence-edge-hitarea"
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={18}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        onClick={(event) => {
+          event.stopPropagation();
+          data?.onSelectEdge?.(id);
+        }}
+      />
+      <EdgeLabelRenderer>
+        <div
+          className={`evidence-edge-label ${data?.focusContext ? "is-context" : "is-causal is-visible"} ${selected || hovered ? "is-visible" : ""} nodrag nopan`}
+          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, "--evidence-color": evidenceColor(type) } as CSSProperties}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+        >
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              data?.onSelectEdge?.(id);
+            }}
+            title={`${edgeTypeLabel(type)} · 点击查看详情`}
+          >
+            {displayLabel}
           </button>
         </div>
       </EdgeLabelRenderer>

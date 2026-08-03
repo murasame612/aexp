@@ -18,7 +18,7 @@ const queryClient = new QueryClient({
 
 try {
   const root = document.getElementById("root");
-  if (!root) throw new Error("aexp UI root element is missing");
+  if (!root) throw new Error("ResearchOS root element is missing");
   ReactDOM.createRoot(root).render(
     <React.StrictMode>
       <AppErrorBoundary>
@@ -30,5 +30,5 @@ try {
   );
 } catch (cause) {
   const message = cause instanceof Error ? cause.message : String(cause);
-  document.body.innerHTML = `<main style="font:16px system-ui;padding:32px;color:#3b1d1d"><h1>aexp UI failed to start</h1><p>${message.replace(/[<>&]/g, "")}</p><p>Reload after restarting the aexp backend. Your experiment process is unaffected.</p></main>`;
+  document.body.innerHTML = `<main style="font:16px system-ui;padding:32px;color:#3b1d1d"><h1>ResearchOS failed to start</h1><p>${message.replace(/[<>&]/g, "")}</p><p>Reload after restarting the aexp backend. Your experiment process is unaffected.</p></main>`;
 }

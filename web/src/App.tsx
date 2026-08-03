@@ -401,9 +401,9 @@ export function App() {
     <div className={projectWorkspace ? "app-shell project-app-shell" : "app-shell global-app-shell"}>
       {!projectWorkspace ? <aside className="side-nav">
         <div className="brand">
-          <img src="/aexp-icon.svg" alt="" />
+          <img src="/ui-v2/researchos-icon.png" alt="" />
           <div>
-            <strong>aexp</strong>
+            <strong>ResearchOS</strong>
             <span>{t("uiV2")}</span>
           </div>
         </div>
@@ -417,10 +417,6 @@ export function App() {
             onClick={() => setActiveTab("settings")}
           />
         </nav>
-        <a className="legacy-link" href="/">
-          <ExternalLink size={15} />
-          {t("legacy")}
-        </a>
       </aside> : null}
 
       <main className={projectWorkspace ? "workspace project-workspace" : "workspace global-workspace"}>

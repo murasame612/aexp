@@ -10,7 +10,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("aexp UI render failed", error, info.componentStack);
+    console.error("ResearchOS render failed", error, info.componentStack);
   }
 
   render() {
@@ -18,7 +18,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
     return (
       <main className="app-crash-screen" role="alert">
         <div>
-          <span>aexp UI v2</span>
+          <span>ResearchOS</span>
           <h1>页面遇到异常，但服务仍在运行</h1>
           <p>{this.state.error.message || "Unknown UI error"}</p>
           <button type="button" onClick={() => window.location.reload()}>重新加载</button>
