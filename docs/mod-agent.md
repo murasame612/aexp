@@ -111,8 +111,8 @@ aexp mcp uninstall --target all
 - 每个结果节点必须用节点级 `source_run_ids` / `source_snapshot_ids` 绑定实际来源。只有一个结果节点时可自动继承 proposal 的来源；一个 proposal 包含多个结果时必须逐个明确映射，不能让 proposal 总来源替代结果 provenance；
 - 优先延续已有 Topic 中匹配的线程；只有问题确实改变研究问题时才建立子线程；
 - `related_to` 只是背景关系，不能用来伪装一条已经形成的研究主线；
-- proposal plan 会返回 `warnings` 与 `blockers`：warning 提醒缺假设、孤立节点、Run 无结论、问题无下一步等写作缺口，不阻止审核；blocker 才阻止接受；
-- 接受前调用 `aexp_plan_evidence_graph_proposal` 检查候选 patch；用户接受后再调用 `aexp_audit_evidence_map` 检查 accepted graph。新 Result 的缺失/失效 Run 或 Snapshot 引用属于 blocker；legacy Run 节点和历史分支旁路只产生兼容性 warning。Audit 只读，不替 Agent 自动修图；
+- proposal plan 会返回 `warnings`、`blockers` 与候选叠加后的 `projected_research`。warning 提醒缺假设、孤立节点、Run 无结论、问题无下一步等写作缺口，不阻止审核；blocker 才阻止接受；
+- 接受前调用 `aexp_plan_evidence_graph_proposal` 检查候选 patch，并同时确认：`eligible=true`、本次触碰的语义节点没有进入 `projected_research.unassigned`、目标假设 Thread 中出现预期 Result（例如 `result_count=1`）。用户接受后再调用 `aexp_audit_evidence_map` 检查 accepted graph。新 Result 缺少 `Design --next_step--> Result`、缺失/失效 Run 或 Snapshot 引用都属于 blocker；legacy Run 节点和历史分支旁路只产生兼容性 warning。Audit 只读，不替 Agent 自动修图；
 - 从已接受的 Conclusion 或 Issue 开启后续研究时，优先调用 `aexp_branch_from_outcome`。它会在同一 pending proposal 中生成 `Conclusion/Issue --next_step--> child Hypothesis`，并可选生成该假设的实验设计；它不会接受 proposal，也不会直接修改 accepted graph；
 - UI 的五个 Stage Column 是 accepted graph 的只读投影，不写入坐标、revision 或 graph hash。无法可靠归入假设链的旧节点进入“待整理”，不做破坏性迁移。
 - 普通会话先读 `aexp_get_project_research_context`；只有明确进入 Evidence 策展/治理时才切换 `advanced` profile 并调用 `aexp_get_evidence_thread_map`。修改时仍以服务端返回的 Stage Column、Research Thread 归属、跨 Thread 关系、`structural_health` 和 `unassigned.reason` 为准；UI 与 Agent 不再各自猜一次。
@@ -121,7 +121,7 @@ aexp mcp uninstall --target all
 - 分开读取三种状态：`legacy_readable` 表示历史可读，`v2_compliant` 表示当前语义契约合规，`publication_ready` 表示正式 Result 的 provenance/release 门禁通过。结构健康是 advisory，只有 audit blocker 是硬门禁。
 - 分叉不是“新 Run 自动开一条线”。稳定负面结果仍形成正式 Conclusion，使用 `result → weakens/does_not_prove → conclusion`；只有数据、设置、实现或证据强度使稳定判断暂不可得时，才使用 `result → reveals_issue → issue`。Conclusion 与 Issue 都能通过 `next_step` 产生新的研究假设；只有 conclusion/issue 指向 hypothesis 的最后一条 `next_step` 建立父子线程。改变任务、协议或独立报告问题时应新建 Topic，而不是无限向原 Topic 分叉。
 - Research Thread 的执行脊柱使用 `hypothesis → next_step → experiment design → next_step → result`。不要用 `related_to` 代替设计到结果的正式关系；`related_to/custom` 只保留非因果背景，不参与 Thread 归属。
-- Result 不得直接连接 Hypothesis、实验设计或另一个 Result。中性的 `related_to/custom` 只提供背景，不参与研究主干；旧图中的跳级边保持可读，但 audit 会标记为 `LEGACY_RESULT_BYPASS`，新 proposal 则由 `RESULT_OUTCOME_BYPASS` 阻止。
+- 这里的限制有方向：每个新建或触碰的 Result **必须接收**一条 `Experiment Design --next_step--> Result` 入边；Result **不得发出**回到 Hypothesis、实验设计或另一个 Result 的语义出边。中性的 `related_to/custom` 只提供背景，不参与研究主干；旧图中的跳级边保持可读，但 audit 会标记为 `LEGACY_RESULT_BYPASS`，新 proposal 则由 `RESULT_OUTCOME_BYPASS` 阻止。
 - 整理历史噪声时，每次只触碰约 8–12 个语义节点作为 reviewability budget，而不是数据模型容量：`aexp_plan_evidence_reorganization` → 检查 before/after 与 blocker → `aexp_create_evidence_reorganization_proposal`。涉及 Result 归属、provenance 或结论含义时应触碰更少。整理仍需用户审核，不能直接写 accepted graph。
 - revision 仅因无关修改前进时使用 `aexp_rebase_evidence_proposal`；只有 touched node/edge 未变化才允许安全重基。旧 Topic 只通过 `aexp_archive_evidence_map` 软归档，不由 Agent 永久删除。
 

@@ -929,6 +929,7 @@ export interface EvidenceGraphProposalPlan {
   blockers: EvidenceGraphBlocker[];
   warnings?: EvidenceGraphWarning[];
   routing_reason?: string;
+  projected_research?: EvidenceResearchProjectionDTO;
 }
 
 export interface EvidenceProposal {

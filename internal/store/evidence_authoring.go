@@ -114,6 +114,81 @@ func appendEvidenceAuthoringWarnings(merged EvidenceChainGraph, patch EvidenceGr
 	})
 }
 
+// appendEvidenceThreadContractBlockers validates the authored execution spine
+// against the same read projection used by the UI and MCP. Metadata such as a
+// caller-supplied threadRootId is intentionally ignored: visible typed edges
+// are the only source of Research Thread ownership.
+func appendEvidenceThreadContractBlockers(chain EvidenceChain, current *EvidenceChainGraph, merged EvidenceChainGraph, patch EvidenceGraphPatch, plan *EvidenceGraphProposalPlan) {
+	if plan == nil {
+		return
+	}
+	previewChain := chain
+	previewChain.Revision++
+	if strings.TrimSpace(plan.ResultGraphHash) != "" {
+		previewChain.GraphHash = plan.ResultGraphHash
+	}
+	plan.ProjectedResearch = ptrEvidenceResearchProjection(BuildEvidenceResearchProjection(previewChain, merged))
+
+	nodes := make(map[string]EvidenceChainNode, len(merged.Nodes))
+	for _, node := range merged.Nodes {
+		nodes[node.ID] = node
+	}
+	touched := make(map[string]bool)
+	for _, node := range append(append([]EvidenceChainNode(nil), patch.Nodes...), patch.UpsertNodes...) {
+		touched[node.ID] = true
+	}
+	for _, edge := range append(append([]EvidenceChainEdge(nil), patch.Edges...), patch.UpsertEdges...) {
+		if edge.Type == EvidenceEdgeRelatedTo || edge.Type == EvidenceEdgeCustom {
+			continue
+		}
+		touched[edge.SourceNodeID] = true
+		touched[edge.TargetNodeID] = true
+	}
+	if current != nil && len(patch.DeleteEdgeIDs) > 0 {
+		deleted := make(map[string]bool, len(patch.DeleteEdgeIDs))
+		for _, id := range patch.DeleteEdgeIDs {
+			deleted[strings.TrimSpace(id)] = true
+		}
+		for _, edge := range current.Edges {
+			if deleted[edge.ID] {
+				touched[edge.SourceNodeID] = true
+				touched[edge.TargetNodeID] = true
+			}
+		}
+	}
+
+	designInput := make(map[string]bool)
+	for _, edge := range merged.Edges {
+		if edge.Type == EvidenceEdgeNextStep && evidenceResearchNodeStage(nodes[edge.SourceNodeID]) == EvidenceResearchStageDesign && evidenceResearchNodeStage(nodes[edge.TargetNodeID]) == EvidenceResearchStageResult {
+			designInput[edge.TargetNodeID] = true
+		}
+	}
+	owner := plan.ProjectedResearch.OwnerByNode
+	ids := make([]string, 0, len(touched))
+	for id := range touched {
+		if nodes[id].Type == EvidenceNodeClaim && evidenceAuthoringClaimKind(nodes[id]) == "result" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if !designInput[id] {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_DESIGN_LINK_MISSING", Message: "a new or touched Result must have an incoming experiment design --next_step--> Result edge", NodeID: id,
+			})
+		}
+		if owner[id] == "" {
+			plan.Blockers = append(plan.Blockers, EvidenceGraphBlocker{
+				Code: "RESULT_THREAD_UNASSIGNED", Message: "the projected Result is not owned by any hypothesis-led Research Thread; connect Hypothesis --next_step--> Design --next_step--> Result", NodeID: id,
+			})
+		}
+	}
+}
+
+func ptrEvidenceResearchProjection(value EvidenceResearchProjection) *EvidenceResearchProjection {
+	return &value
+}
+
 func evidenceAuthoringDurableType(nodeType string) bool {
 	switch nodeType {
 	case EvidenceNodeClaim, EvidenceNodeIssue, EvidenceNodePlan, EvidenceNodeRun, EvidenceNodeHypothesis, EvidenceNodeConclusion, EvidenceNodeExperiment:

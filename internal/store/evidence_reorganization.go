@@ -56,6 +56,7 @@ func (s *SQLite) PlanEvidenceReorganization(ctx context.Context, mapID string, p
 	if err := s.appendEvidenceEligibilityBlockers(ctx, chain.ProjectID, current, &merged, patch, readiness); err != nil {
 		return nil, err
 	}
+	appendEvidenceThreadContractBlockers(*chain, current, merged, patch, readiness)
 	plan.Blockers = append(plan.Blockers, readiness.Blockers...)
 	if err := s.ValidateEvidenceMapReferences(ctx, chain, &merged); err != nil {
 		plan.Blockers = append(plan.Blockers, blockerFromError(err))

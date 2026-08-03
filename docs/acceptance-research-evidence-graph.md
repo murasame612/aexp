@@ -94,7 +94,9 @@ A dataset reference is eligible only when its immutable ID, `dataset@version`, a
 
 Every newly added `claim` declares `claimKind=hypothesis|result`. Every touched Result declares `resultDisposition=conclusion|issue|mixed|pending`, provides immutable provenance, and has outgoing edges consistent with that disposition. Removing or replacing an outcome edge revalidates the final merged graph. Historical untyped Claims remain readable but cannot be copied or upserted to bypass this rule.
 
-Stable negative evidence routes to a negative Conclusion with `weakens`/`does_not_prove`. A setting, data, implementation, or interpretation limitation routes to Issue with a rationale. A pending Result supplies a reason. Direct Result → Hypothesis/Experiment/Result semantic edges are blocked.
+Stable negative evidence routes to a negative Conclusion with `weakens`/`does_not_prove`. A setting, data, implementation, or interpretation limitation routes to Issue with a rationale. A pending Result supplies a reason. Every new or touched Result has an incoming Experiment Design `next_step` edge; missing it yields `RESULT_DESIGN_LINK_MISSING`, and failure to appear in the shared hypothesis-led projection yields `RESULT_THREAD_UNASSIGNED`. Outgoing Result → Hypothesis/Experiment/Result semantic edges are blocked.
+
+Proposal-plan returns the merged candidate `projected_research`. A canonical Hypothesis → Design → Result proposal is acceptable only when there are no blockers, the touched nodes are absent from `unassigned`, and the intended Thread reports the expected Result count. `threadRootId`-style metadata alone never establishes ownership.
 
 ### SEM-06 Evidence compatibility
 

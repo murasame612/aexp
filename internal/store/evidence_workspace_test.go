@@ -434,10 +434,18 @@ func TestEvidenceWorkspaceSingleResultInheritsProposalRunProvenance(t *testing.T
 		SourceRunIDs: []string{"run_result_seed_42", "run_result_seed_41"},
 	}, &EvidenceGraphPatch{
 		ChainID: topic.ID,
-		Nodes: []EvidenceChainNode{{
-			ID: "result_multi_seed", Type: EvidenceNodeClaim, Title: "Observed result",
-			DataJSON: `{"claimKind":"result","resultDisposition":"pending","dispositionReason":"awaiting cross-seed interpretation"}`,
-		}},
+		Nodes: []EvidenceChainNode{
+			{ID: "result_hypothesis", Type: EvidenceNodeClaim, Title: "Result hypothesis", DataJSON: `{"claimKind":"hypothesis"}`},
+			{ID: "result_design", Type: EvidenceNodeExperiment, Title: "Cross-seed design"},
+			{
+				ID: "result_multi_seed", Type: EvidenceNodeClaim, Title: "Observed result",
+				DataJSON: `{"claimKind":"result","resultDisposition":"pending","dispositionReason":"awaiting cross-seed interpretation"}`,
+			},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "result_hypothesis_design", Type: EvidenceEdgeNextStep, SourceNodeID: "result_hypothesis", TargetNodeID: "result_design"},
+			{ID: "result_design_result", Type: EvidenceEdgeNextStep, SourceNodeID: "result_design", TargetNodeID: "result_multi_seed"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -446,21 +454,36 @@ func TestEvidenceWorkspaceSingleResultInheritsProposalRunProvenance(t *testing.T
 	if err := json.Unmarshal([]byte(created.PatchJSON), &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if got := persisted.Nodes[0].SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
+	var persistedResult EvidenceChainNode
+	for _, node := range persisted.Nodes {
+		if node.ID == "result_multi_seed" {
+			persistedResult = node
+		}
+	}
+	if got := persistedResult.SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
 		t.Fatalf("result provenance = %#v", got)
 	}
 	plan, err := s.PlanEvidenceProposal(ctx, created.ID)
 	if err != nil || !plan.Eligible || hasEvidenceBlocker(plan.Blockers, "RESULT_PROVENANCE_REQUIRED") {
 		t.Fatalf("plan = %#v, err = %v", plan, err)
 	}
+	if plan.ProjectedResearch == nil || len(plan.ProjectedResearch.Unassigned) != 0 || len(plan.ProjectedResearch.Threads) != 1 || len(plan.ProjectedResearch.Threads[0].Stages[EvidenceResearchStageResult]) != 1 {
+		t.Fatalf("projected research did not confirm one assigned Result: %#v", plan.ProjectedResearch)
+	}
 	if _, err := s.ReviewEvidenceProposal(ctx, created.ID, "accept", "user"); err != nil {
 		t.Fatal(err)
 	}
 	graph, err := s.GetEvidenceChainGraph(ctx, topic.ID)
-	if err != nil || len(graph.Nodes) != 1 {
+	if err != nil || len(graph.Nodes) != 3 {
 		t.Fatalf("graph = %#v, err = %v", graph, err)
 	}
-	if got := graph.Nodes[0].SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
+	var storedResult EvidenceChainNode
+	for _, node := range graph.Nodes {
+		if node.ID == "result_multi_seed" {
+			storedResult = node
+		}
+	}
+	if got := storedResult.SourceRunIDs; len(got) != 2 || got[0] != "run_result_seed_41" || got[1] != "run_result_seed_42" {
 		t.Fatalf("stored result provenance = %#v", got)
 	}
 }

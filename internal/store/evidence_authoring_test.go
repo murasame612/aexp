@@ -165,3 +165,42 @@ func TestEvidenceEligibilityRequiresClaimKindForAuthoredResultOutcome(t *testing
 		t.Fatalf("untyped authored Result outcome bypassed claimKind validation: %#v", plan.Blockers)
 	}
 }
+
+func TestEvidenceThreadContractRequiresDesignSpineForTouchedResult(t *testing.T) {
+	graph := EvidenceChainGraph{
+		Nodes: []EvidenceChainNode{
+			{ID: "hypothesis", Type: EvidenceNodeClaim, DataJSON: `{"claimKind":"hypothesis"}`},
+			{ID: "design", Type: EvidenceNodeExperiment},
+			{ID: "result", Type: EvidenceNodeClaim, SourceSnapshotIDs: []string{"snapshot"}, DataJSON: `{"claimKind":"result","resultDisposition":"pending","dispositionReason":"awaiting interpretation"}`},
+		},
+		Edges: []EvidenceChainEdge{
+			{ID: "hypothesis-design", Type: EvidenceEdgeNextStep, SourceNodeID: "hypothesis", TargetNodeID: "design"},
+		},
+	}
+	patch := EvidenceGraphPatch{Nodes: append([]EvidenceChainNode(nil), graph.Nodes...), Edges: append([]EvidenceChainEdge(nil), graph.Edges...)}
+	plan := &EvidenceGraphProposalPlan{}
+	appendEvidenceThreadContractBlockers(EvidenceChain{ID: "chain"}, nil, graph, patch, plan)
+	if !hasEvidenceBlocker(plan.Blockers, "RESULT_DESIGN_LINK_MISSING") {
+		t.Fatalf("result without design spine should be blocked: %#v", plan.Blockers)
+	}
+	if plan.ProjectedResearch == nil {
+		t.Fatal("proposal plan did not expose projected research threads")
+	}
+	if got := len(plan.ProjectedResearch.Unassigned); got != 1 || plan.ProjectedResearch.Unassigned[0].Card.Node.ID != "result" {
+		t.Fatalf("projected unassigned = %#v, want result", plan.ProjectedResearch.Unassigned)
+	}
+
+	graph.Edges = append(graph.Edges, EvidenceChainEdge{ID: "design-result", Type: EvidenceEdgeNextStep, SourceNodeID: "design", TargetNodeID: "result"})
+	patch.Edges = append([]EvidenceChainEdge(nil), graph.Edges...)
+	plan = &EvidenceGraphProposalPlan{}
+	appendEvidenceThreadContractBlockers(EvidenceChain{ID: "chain"}, nil, graph, patch, plan)
+	if hasEvidenceBlocker(plan.Blockers, "RESULT_DESIGN_LINK_MISSING") || hasEvidenceBlocker(plan.Blockers, "RESULT_THREAD_UNASSIGNED") {
+		t.Fatalf("canonical design -> result spine was blocked: %#v", plan.Blockers)
+	}
+	if got := len(plan.ProjectedResearch.Unassigned); got != 0 {
+		t.Fatalf("canonical thread has %d unassigned nodes", got)
+	}
+	if got := len(plan.ProjectedResearch.Threads); got != 1 || len(plan.ProjectedResearch.Threads[0].Stages[EvidenceResearchStageResult]) != 1 {
+		t.Fatalf("projected threads = %#v, want one thread with result_count=1", plan.ProjectedResearch.Threads)
+	}
+}

@@ -1439,25 +1439,26 @@ type EvidenceGraphWarning struct {
 
 // EvidenceGraphProposalPlan is a side-effect-free acceptance preview.
 type EvidenceGraphProposalPlan struct {
-	ProposalID           string                 `json:"proposal_id,omitempty"`
-	ProjectID            string                 `json:"project_id,omitempty"`
-	RunID                string                 `json:"run_id"`
-	ProjectCardID        string                 `json:"project_card_id"`
-	ChainID              string                 `json:"chain_id"`
-	RoutingReason        string                 `json:"routing_reason,omitempty"`
-	ProposalHash         string                 `json:"proposal_hash"`
-	Status               string                 `json:"status"`
-	BaseGraphRevision    int64                  `json:"base_graph_revision"`
-	CurrentGraphRevision int64                  `json:"current_graph_revision"`
-	AppliedGraphRevision int64                  `json:"applied_graph_revision"`
-	AutoRebased          bool                   `json:"auto_rebased,omitempty"`
-	CurrentGraphHash     string                 `json:"current_graph_hash"`
-	ResultGraphHash      string                 `json:"result_graph_hash,omitempty"`
-	NodesAdded           int                    `json:"nodes_added"`
-	EdgesAdded           int                    `json:"edges_added"`
-	Eligible             bool                   `json:"eligible"`
-	Blockers             []EvidenceGraphBlocker `json:"blockers"`
-	Warnings             []EvidenceGraphWarning `json:"warnings"`
+	ProposalID           string                      `json:"proposal_id,omitempty"`
+	ProjectID            string                      `json:"project_id,omitempty"`
+	RunID                string                      `json:"run_id"`
+	ProjectCardID        string                      `json:"project_card_id"`
+	ChainID              string                      `json:"chain_id"`
+	RoutingReason        string                      `json:"routing_reason,omitempty"`
+	ProposalHash         string                      `json:"proposal_hash"`
+	Status               string                      `json:"status"`
+	BaseGraphRevision    int64                       `json:"base_graph_revision"`
+	CurrentGraphRevision int64                       `json:"current_graph_revision"`
+	AppliedGraphRevision int64                       `json:"applied_graph_revision"`
+	AutoRebased          bool                        `json:"auto_rebased,omitempty"`
+	CurrentGraphHash     string                      `json:"current_graph_hash"`
+	ResultGraphHash      string                      `json:"result_graph_hash,omitempty"`
+	NodesAdded           int                         `json:"nodes_added"`
+	EdgesAdded           int                         `json:"edges_added"`
+	Eligible             bool                        `json:"eligible"`
+	Blockers             []EvidenceGraphBlocker      `json:"blockers"`
+	Warnings             []EvidenceGraphWarning      `json:"warnings"`
+	ProjectedResearch    *EvidenceResearchProjection `json:"projected_research,omitempty"`
 }
 
 // EvidenceProposal is the Project-scoped, Run-optional proposal envelope used

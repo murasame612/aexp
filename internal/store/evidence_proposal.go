@@ -515,6 +515,7 @@ func (s *SQLite) PlanEvidenceGraphProposal(ctx context.Context, runID string) (*
 	if err := s.appendEvidenceEligibilityBlockers(ctx, chain.ProjectID, current, &merged, patch, plan); err != nil {
 		return nil, err
 	}
+	appendEvidenceThreadContractBlockers(*chain, current, merged, patch, plan)
 	appendEvidenceAuthoringWarnings(merged, patch, plan)
 	plan.Eligible = len(plan.Blockers) == 0
 	return plan, nil

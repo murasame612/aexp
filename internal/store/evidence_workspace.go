@@ -425,6 +425,7 @@ func (s *SQLite) PlanEvidenceProposal(ctx context.Context, id string) (*Evidence
 	for _, blocker := range readinessPlan.Blockers {
 		plan.Blockers = append(plan.Blockers, blocker)
 	}
+	appendEvidenceThreadContractBlockers(*chain, current, merged, patch, plan)
 	if err := s.ValidateEvidenceMapReferences(ctx, chain, &merged); err != nil {
 		plan.Blockers = append(plan.Blockers, blockerFromError(err))
 	}
