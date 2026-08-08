@@ -20,6 +20,7 @@ import (
 	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/filespace"
+	"github.com/ziwu/aexp/internal/literature"
 	"github.com/ziwu/aexp/internal/store"
 	"github.com/ziwu/aexp/internal/transfer"
 )
@@ -31,6 +32,63 @@ func (apiFakeRemoteFS) Stat(_ context.Context, location filespace.RemoteLocation
 		return filespace.RemoteEntry{Path: location.PhysicalPath, Exists: false}, nil
 	}
 	return filespace.RemoteEntry{Path: location.PhysicalPath, Exists: true, Type: "directory", Size: 4096}, nil
+}
+
+type fakeLiteratureService struct{}
+
+func (fakeLiteratureService) Catalog(context.Context) (*literature.Catalog, error) {
+	return &literature.Catalog{
+		Collections: []literature.Collection{{Key: "COLLECTION", Name: "Methods", Path: "Methods"}},
+		Profiles:    []literature.ProfileStatus{{Name: "paperqa", Status: "ready", CollectionKey: "COLLECTION", CorpusRevision: "corpus_test", Documents: 12, Chunks: 34}},
+	}, nil
+}
+
+func (fakeLiteratureService) Status(_ context.Context, project *store.ProjectDefinition, _ time.Duration) (map[string]interface{}, error) {
+	return map[string]interface{}{"status": "ready", "project_id": project.ID, "zotero_collection_key": project.ZoteroCollectionKey}, nil
+}
+
+func (fakeLiteratureService) Query(_ context.Context, project *store.ProjectDefinition, request literature.QueryRequest, _ time.Duration) (map[string]interface{}, error) {
+	return map[string]interface{}{"answer": "Pinned answer", "query": request.Query, "project_id": project.ID}, nil
+}
+
+func TestProjectLiteratureEndpoints(t *testing.T) {
+	if literatureQueryTimeout < 3*time.Minute {
+		t.Fatalf("literature query timeout = %s, want at least 3m for PaperQA synthesis", literatureQueryTimeout)
+	}
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	project := &store.ProjectDefinition{ID: "literature-project", Name: "Literature", ZoteroCollectionKey: "COLLECTION", LiteratureServiceProfile: "paperqa"}
+	if err := db.CreateProjectDefinition(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(db, nil, nil, slog.Default(), "", true, WithLiteratureService(fakeLiteratureService{})).Handler()
+
+	for _, path := range []string{
+		"/api/v1/project-definitions/literature-project/literature/catalog",
+		"/api/v1/project-definitions/literature-project/literature/status",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "COLLECTION") {
+			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/project-definitions/literature-project/literature/query", bytes.NewBufferString(`{"query":"What transfers?"}`))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Pinned answer") {
+		t.Fatalf("query status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	notFound := httptest.NewRecorder()
+	handler.ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/api/v1/project-definitions/missing/literature/status", nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", notFound.Code, notFound.Body.String())
+	}
 }
 
 func TestUnknownAPIRouteReturnsJSON404InsteadOfSPA(t *testing.T) {
@@ -674,7 +732,7 @@ func TestExecutableProjectDefinitionAndTargetAPI(t *testing.T) {
 	}
 	srv := NewServer(db, nil, nil, slog.Default(), "", true)
 
-	projectReq := httptest.NewRequest(http.MethodPost, "/api/v1/project-definitions/", bytes.NewBufferString(`{"id":"project_launch","name":"Launch project","config_hash":"sha256:one","default_recipe":"train"}`))
+	projectReq := httptest.NewRequest(http.MethodPost, "/api/v1/project-definitions/", bytes.NewBufferString(`{"id":"project_launch","name":"Launch project","config_hash":"sha256:one","default_recipe":"train","zotero_collection_key":"SHUMTSPS","literature_service_profile":"mu-paperqa"}`))
 	projectReq.Header.Set("Content-Type", "application/json")
 	projectResp := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(projectResp, projectReq)
@@ -723,7 +781,7 @@ func TestExecutableProjectDefinitionAndTargetAPI(t *testing.T) {
 	if err := json.NewDecoder(detailResp.Body).Decode(&detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.ID != "project_launch" || len(detail.Targets) != 1 || detail.Targets[0].PrepareCommand != "uv sync" {
+	if detail.ID != "project_launch" || detail.ZoteroCollectionKey != "SHUMTSPS" || detail.LiteratureServiceProfile != "mu-paperqa" || len(detail.Targets) != 1 || detail.Targets[0].PrepareCommand != "uv sync" {
 		t.Fatalf("unexpected project detail: %#v", detail)
 	}
 

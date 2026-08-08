@@ -695,7 +695,7 @@ func TestProjectDefinitionAndTargetsRoundTrip(t *testing.T) {
 	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_target", Name: "target-resource", Type: "ssh", Host: "localhost", RootDir: "/workspace", Status: ResourceStatusIdle}); err != nil {
 		t.Fatalf("CreateResource: %v", err)
 	}
-	project := &ProjectDefinition{ID: "project_dam", Name: "Dam", LocalRoot: "/src/dam", ConfigPath: "/src/dam/.aexp.yaml", ConfigHash: "sha256:config", DefaultRecipe: "train"}
+	project := &ProjectDefinition{ID: "project_dam", Name: "Dam", LocalRoot: "/src/dam", ConfigPath: "/src/dam/.aexp.yaml", ConfigHash: "sha256:config", DefaultRecipe: "train", ZoteroCollectionKey: "SHUMTSPS", LiteratureServiceProfile: "mu-paperqa"}
 	if err := s.SaveProjectDefinition(ctx, project); err != nil {
 		t.Fatalf("SaveProjectDefinition: %v", err)
 	}
@@ -710,6 +710,9 @@ func TestProjectDefinitionAndTargetsRoundTrip(t *testing.T) {
 	}
 	if gotProject.ConfigHash != "sha256:config" || gotProject.DefaultRecipe != "train" {
 		t.Fatalf("project fields lost: %#v", gotProject)
+	}
+	if gotProject.ZoteroCollectionKey != "SHUMTSPS" || gotProject.LiteratureServiceProfile != "mu-paperqa" {
+		t.Fatalf("literature binding lost: %#v", gotProject)
 	}
 	targets, err := s.ListProjectTargets(ctx, project.ID)
 	if err != nil || len(targets) != 1 {

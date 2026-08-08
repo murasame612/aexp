@@ -72,7 +72,7 @@ func (p LogicalPath) String() string {
 func (p LogicalPath) RelativeTo(prefix string) (string, bool) {
 	prefix = strings.Trim(path.Clean("/"+prefix), "/")
 	if prefix == "" || prefix == "." {
-		return "", false
+		return p.Path, true
 	}
 	if p.Path == prefix {
 		return "", true

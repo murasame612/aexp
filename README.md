@@ -73,6 +73,12 @@ simple: one local binary, one SQLite database, remote machines with SSH + tmux.
   without downloading large checkpoints automatically.
 - Check run comparability, aggregate structured metrics by seed, and generate a
   provenance-bounded Markdown comparison report.
+- Bind a Project to one Zotero collection and query a read-only PaperQA2
+  projection without storing PDFs, chunks, embeddings, or service secrets in
+  the aexp database. The binding is the reproducible project-first default,
+  not a boundary on read-only Zotero discovery; live references are pinned by
+  Zotero item/library version when written to the Journal. Literature remains
+  background evidence and cannot satisfy experiment provenance gates.
 - Store resources, projects, targets, runs, events, marks, and history in local SQLite.
 
 ## Install
@@ -91,7 +97,7 @@ installs `aexp` plus the legacy/debug `aexp-event` compatibility entrypoint into
 To install a specific version or directory:
 
 ```bash
-AEXP_VERSION=v0.1.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
+AEXP_VERSION=v0.2.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 

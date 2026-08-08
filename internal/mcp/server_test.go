@@ -47,14 +47,15 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &listResp); err != nil {
 		t.Fatalf("decode tools/list response: %v", err)
 	}
-	if len(listResp.Result.Tools) != 12 {
-		t.Fatalf("default research profile should expose 12 intent-level tools, got %d: %#v", len(listResp.Result.Tools), listResp.Result.Tools)
+	if len(listResp.Result.Tools) != 14 {
+		t.Fatalf("default research profile should expose 14 intent-level tools, got %d: %#v", len(listResp.Result.Tools), listResp.Result.Tools)
 	}
 	if listResp.Result.Tools[0].Name != "aexp_agent_card" {
 		t.Fatalf("unexpected first tool %q", listResp.Result.Tools[0].Name)
 	}
 	for _, name := range []string{
 		"aexp_agent_card", "aexp_project_list", "aexp_get_project_research_context",
+		"aexp_literature_status", "aexp_literature_query",
 		"aexp_create_project_journal_entry", "aexp_get_project_journal_entry",
 		"aexp_list_resources", "aexp_submit_run", "aexp_list_runs", "aexp_get_run_snapshot",
 		"aexp_tail_run_logs", "aexp_create_evidence_proposal", "aexp_plan_evidence_graph_proposal",
@@ -64,15 +65,36 @@ func TestServerInitializeAndListTools(t *testing.T) {
 		}
 	}
 	var contextDescription string
+	var literatureDescription string
+	var journalDefinition map[string]interface{}
 	for _, tool := range listResp.Result.Tools {
 		if tool.Name == "aexp_get_project_research_context" {
 			contextDescription = tool.Description
 		}
+		if tool.Name == "aexp_literature_query" {
+			literatureDescription = tool.Description
+		}
 	}
-	for _, phrase := range []string{"project-research-context-v1", "next_reads", "omits", "aexp_list_runs"} {
+	for _, phrase := range []string{"project-research-context-v2", "literature binding", "next_reads", "omits", "aexp_list_runs"} {
 		if !strings.Contains(contextDescription, phrase) {
 			t.Fatalf("project context description missing %q: %q", phrase, contextDescription)
 		}
+	}
+	if !strings.Contains(literatureDescription, "existing Zotero MCP") || !strings.Contains(literatureDescription, "not a restriction") {
+		t.Fatalf("literature query should advertise open live discovery and MCP reuse: %q", literatureDescription)
+	}
+	for _, definition := range toolDefinitions() {
+		if definition["name"] == "aexp_create_project_journal_entry" {
+			journalDefinition = definition
+			break
+		}
+	}
+	journalSchema, _ := journalDefinition["inputSchema"].(map[string]interface{})
+	journalProperties, _ := journalSchema["properties"].(map[string]interface{})
+	refsSchema, _ := journalProperties["literature_refs"].(map[string]interface{})
+	refsDescription, _ := refsSchema["description"].(string)
+	if !strings.Contains(refsDescription, "zotero_live") || !strings.Contains(refsDescription, "Zotero MCP") {
+		t.Fatalf("journal literature refs should document pinned live Zotero references: %q", refsDescription)
 	}
 
 	t.Setenv("AEXP_MCP_TOOL_PROFILE", "advanced")
@@ -101,6 +123,7 @@ func TestServerInitializeAndListTools(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
+		"aexp_literature_catalog", "aexp_bind_project_literature",
 		"aexp_get_evidence_thread_map", "aexp_rebase_evidence_proposal", "aexp_cancel_run",
 		"aexp_mark_run", "aexp_list_run_marks",
 		"aexp_project_card", "aexp_project_runs", "aexp_project_digest",

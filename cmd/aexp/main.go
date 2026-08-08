@@ -87,6 +87,7 @@ research workflow.`,
 		eventCmd(),
 		matrixCmd(),
 		mcpCmd(),
+		literatureCmd(),
 		projectCmd(),
 		printerCmd(),
 		storageCmd(),
@@ -1356,13 +1357,14 @@ func agentCardContent() ([]string, []string) {
 	steps := []string{
 		"Check resources: aexp resource list --verbose",
 		"Orient from one compact entry: aexp project context <project_id> --json; follow next_reads only when the current decision needs more detail",
+		"Discover literature: use the Project-bound PaperQA2 corpus first for pinned results; when it is insufficient, freely search and close-read the live Zotero library with the existing Zotero MCP. The Project Collection is a reproducible default, not a search boundary",
 		"Inspect remote: aexp exec --resource <name> --cwd <path> --project-env auto -- 'pwd; python -V; nvidia-smi'",
 		"Instrument training code: import metric/progress/param/note from aexp_events before submitting; telemetry is written during the run, not reconstructed afterward",
 		"Submit formal run: aexp run submit --resource <name> --project <project-id> --kind formal --name <run-name> --cwd <project> --conda-env <env> --gpu-index 0 --metric-paths <metrics.json> --log-paths '<logs/**/*>' -- python train.py ...",
 		"Submit setup task: aexp run submit --resource <name> --project <project-id> --kind setup --no-gpu --cwd <project> --shell -- 'python -m pip install -r requirements.txt'",
 		"Monitor run: aexp run snapshot <run_id> --json; use aexp run events <run_id> --tail 50 --json for raw structured events",
 		"Debug failures: aexp run status <run_id> --short; aexp run logs <run_id> --tail 100 --no-follow",
-		"Preserve reasoning: aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...",
+		"Preserve reasoning: aexp project journal create <project_id> --title ... --body-md-file notes.md --run <run_id> --next-action ...; add --literature-refs-json with pinned frozen_corpus or Zotero-live citations",
 		"Route and propose research evidence: use project context to choose a Topic; in an advanced curation session read its Research Thread projection, structural_health and capacity, then create one bounded research-thread-v2 proposal and run proposal-plan. To open a follow-up, prefer evidence branch-from-outcome so Conclusion/Issue --next_step--> child Hypothesis is generated safely",
 		"Review and verify: require an eligible proposal plan, no touched semantic nodes in projected_research.unassigned, and the expected Result in its intended hypothesis Thread; never accept on the user's behalf. After acceptance, audit the accepted Map",
 	}
@@ -1379,6 +1381,7 @@ func agentCardContent() ([]string, []string) {
 		"After interpreting logs/metrics/artifacts, append a Project journal entry. Linking the Run is optional; use Run marks only for legacy compatibility.",
 		"For project-organized work, use .aexp.yaml project.id. Do not create new Run marks or Project cards for research reasoning.",
 		"Start from project context. Before proposing evidence, use its active Topic summaries; only an advanced curation session needs the full target thread map. Continue a clearly matching Topic, create a focused Topic, or keep an unrouted draft. Never use Primary as a fallback; it is only a concise project-level index.",
+		"Treat literature retrieval as read-only background evidence. Search Project frozen corpus first, then Zotero live when needed. Preserve corpus revision/chunk hash or Zotero item/library versions at write time; literature cannot prove private project metrics or satisfy Run/Dataset/Snapshot/Freeze provenance.",
 		"Use the terms consistently: Topic is one decision question; Research Thread is one hypothesis-led causal chain; Stage Column is one of the five read-only presentation columns. Stage Columns are not nodes or containers.",
 		"Treat structural_health as advisory, capacity as presentation load, and evidence audit blockers as the hard gate. legacy_readable, v2_compliant, and publication_ready answer different questions and must not be collapsed into one eligible flag.",
 		"Author one bounded evidence thread at a time: hypothesis -> experiment design -> result -> interpretation -> conclusion and/or issue. Continue a matching thread before creating a new one.",
@@ -2133,7 +2136,7 @@ and may carry one explicit next action.`,
 }
 
 func projectJournalCreateCmd() *cobra.Command {
-	var actor, title, bodyMD, bodyMDFile, nextAction string
+	var actor, title, bodyMD, bodyMDFile, nextAction, literatureRefsJSON string
 	var runIDs []string
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -2148,16 +2151,23 @@ func projectJournalCreateCmd() *cobra.Command {
 				}
 				bodyMD = string(data)
 			}
+			var literatureRefs []store.LiteratureReference
+			if strings.TrimSpace(literatureRefsJSON) != "" {
+				if err := json.Unmarshal([]byte(literatureRefsJSON), &literatureRefs); err != nil {
+					return fmt.Errorf("decode literature refs: %w", err)
+				}
+			}
 			db := openDB()
 			defer db.Close()
 			entry := store.ProjectJournalEntry{
-				ID:         genID("journal_"),
-				ProjectID:  args[0],
-				Actor:      actor,
-				Title:      title,
-				BodyMD:     bodyMD,
-				NextAction: nextAction,
-				RunIDs:     runIDs,
+				ID:             genID("journal_"),
+				ProjectID:      args[0],
+				Actor:          actor,
+				Title:          title,
+				BodyMD:         bodyMD,
+				NextAction:     nextAction,
+				RunIDs:         runIDs,
+				LiteratureRefs: literatureRefs,
 			}
 			if err := db.CreateProjectJournalEntry(cmd.Context(), &entry); err != nil {
 				return err
@@ -2175,6 +2185,7 @@ func projectJournalCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bodyMDFile, "body-md-file", "", "Read Markdown body from a file")
 	cmd.Flags().StringVar(&nextAction, "next-action", "", "One concrete next action")
 	cmd.Flags().StringSliceVar(&runIDs, "run", nil, "Related Run id; repeatable")
+	cmd.Flags().StringVar(&literatureRefsJSON, "literature-refs-json", "", "JSON array of frozen_corpus or zotero_live references")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }

@@ -5,6 +5,7 @@ describe("parseProjectRoute", () => {
   it("recognizes every project workspace section", () => {
     expect(parseProjectRoute("/ui-v2/projects/project-a")).toEqual({ projectId: "project-a", section: "journal" });
     expect(parseProjectRoute("/ui-v2/projects/project-a/journal")).toEqual({ projectId: "project-a", section: "journal" });
+    expect(parseProjectRoute("/ui-v2/projects/project-a/literature")).toEqual({ projectId: "project-a", section: "literature" });
     expect(parseProjectRoute("/ui-v2/projects/project-a/runs")).toEqual({ projectId: "project-a", section: "runs" });
     expect(parseProjectRoute("/ui-v2/projects/project-a/assets/")).toEqual({ projectId: "project-a", section: "assets" });
     expect(parseProjectRoute("/ui-v2/projects/project-a/research-graph")).toEqual({ projectId: "project-a", section: "research-graph" });

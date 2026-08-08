@@ -3,25 +3,34 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-const projectJournalColumns = `id, project_id, actor, title, body_md, next_action, next_action_status, created_at, updated_at`
+const projectJournalColumns = `id, project_id, actor, title, body_md, literature_refs_json, next_action, next_action_status, created_at, updated_at`
 
 func scanProjectJournalEntry(row rowScanner, entry *ProjectJournalEntry) error {
-	return row.Scan(
+	var literatureRefsJSON string
+	if err := row.Scan(
 		&entry.ID,
 		&entry.ProjectID,
 		&entry.Actor,
 		&entry.Title,
 		&entry.BodyMD,
+		&literatureRefsJSON,
 		&entry.NextAction,
 		&entry.NextActionStatus,
 		&entry.CreatedAt,
 		&entry.UpdatedAt,
-	)
+	); err != nil {
+		return err
+	}
+	if strings.TrimSpace(literatureRefsJSON) == "" {
+		literatureRefsJSON = "[]"
+	}
+	return json.Unmarshal([]byte(literatureRefsJSON), &entry.LiteratureRefs)
 }
 
 func normalizeProjectJournalEntry(entry *ProjectJournalEntry) error {
@@ -57,6 +66,30 @@ func normalizeProjectJournalEntry(entry *ProjectJournalEntry) error {
 		return graphValidationError("JOURNAL_NEXT_ACTION_STATUS_INVALID", fmt.Sprintf("invalid next action status %q", entry.NextActionStatus))
 	}
 	entry.RunIDs = uniqueNonEmptyStrings(entry.RunIDs)
+	for index := range entry.LiteratureRefs {
+		ref := &entry.LiteratureRefs[index]
+		ref.SourceKind = strings.TrimSpace(ref.SourceKind)
+		ref.ZoteroItemKey = strings.TrimSpace(ref.ZoteroItemKey)
+		ref.ZoteroURI = strings.TrimSpace(ref.ZoteroURI)
+		ref.PageLabel = strings.TrimSpace(ref.PageLabel)
+		ref.CorpusRevision = strings.TrimSpace(ref.CorpusRevision)
+		ref.ChunkSHA256 = strings.TrimSpace(ref.ChunkSHA256)
+		if ref.ZoteroItemKey == "" || ref.ZoteroURI == "" {
+			return graphValidationError("LITERATURE_REFERENCE_INVALID", "literature reference requires zotero_item_key and zotero_uri")
+		}
+		switch ref.SourceKind {
+		case "frozen_corpus":
+			if ref.CorpusRevision == "" || ref.ChunkSHA256 == "" {
+				return graphValidationError("LITERATURE_REFERENCE_INVALID", "frozen_corpus reference requires corpus_revision and chunk_sha256")
+			}
+		case "zotero_live":
+			if ref.ItemVersion <= 0 || ref.LibraryVersion <= 0 {
+				return graphValidationError("LITERATURE_REFERENCE_INVALID", "zotero_live reference requires positive item_version and library_version")
+			}
+		default:
+			return graphValidationError("LITERATURE_REFERENCE_INVALID", fmt.Sprintf("unsupported source_kind %q", ref.SourceKind))
+		}
+	}
 	return nil
 }
 
@@ -84,6 +117,10 @@ func (s *SQLite) CreateProjectJournalEntry(ctx context.Context, entry *ProjectJo
 	now := time.Now().UTC()
 	entry.CreatedAt = now
 	entry.UpdatedAt = now
+	literatureRefsJSON, err := json.Marshal(entry.LiteratureRefs)
+	if err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -112,13 +149,14 @@ func (s *SQLite) CreateProjectJournalEntry(ctx context.Context, entry *ProjectJo
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO project_journal_entries (
-		id, project_id, actor, title, body_md, next_action, next_action_status, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, project_id, actor, title, body_md, literature_refs_json, next_action, next_action_status, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
 		entry.ProjectID,
 		entry.Actor,
 		entry.Title,
 		entry.BodyMD,
+		string(literatureRefsJSON),
 		entry.NextAction,
 		entry.NextActionStatus,
 		entry.CreatedAt,

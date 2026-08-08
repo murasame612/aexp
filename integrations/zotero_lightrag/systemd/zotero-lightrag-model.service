@@ -1,0 +1,14 @@
+[Unit]
+Description=ResearchOS pinned BGE embedding and reranker
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/murasame/services/zotero-lightrag-v1/app
+EnvironmentFile=/home/murasame/services/zotero-lightrag-v1/service.env
+ExecStart=/home/murasame/services/zotero-lightrag-v1/.venv-model/bin/uvicorn model_service:app --host 127.0.0.1 --port 8001 --workers 1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

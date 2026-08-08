@@ -1,0 +1,15 @@
+[Unit]
+Description=Official LightRAG v1.5.5 shadow backend
+After=network-online.target zotero-lightrag-model.service
+Requires=zotero-lightrag-model.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/murasame/services/zotero-lightrag-v1
+EnvironmentFile=/home/murasame/services/zotero-lightrag-v1/service.env
+ExecStart=/home/murasame/services/zotero-lightrag-v1/.venv/bin/lightrag-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

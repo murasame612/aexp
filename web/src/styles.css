@@ -7145,6 +7145,23 @@ select {
 .launch-project-card h3 { margin: 0 0 2px; }
 .config-fingerprint { color: var(--ink-muted); font-size: 12px; }
 .config-fingerprint code { margin-left: 6px; }
+.project-literature-binding { display: grid; gap: 10px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in oklab, var(--surface-soft) 58%, var(--surface)); }
+.project-literature-heading, .project-literature-heading > div, .project-literature-heading span { display: flex; align-items: center; gap: 8px; }
+.project-literature-heading { justify-content: space-between; }
+.project-literature-heading > div { min-width: 0; align-items: flex-start; }
+.project-literature-heading span { display: grid; gap: 2px; }
+.project-literature-heading strong { color: var(--ink); font-size: 13px; }
+.project-literature-heading small { color: var(--ink-muted); font-size: 11px; line-height: 1.45; }
+.project-literature-heading button { min-height: 30px; }
+.project-literature-value { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink-muted); font-size: 12px; }
+.project-literature-value code { color: var(--ink); }
+.project-literature-value em { padding: 3px 7px; border-radius: 999px; background: var(--good-tint); color: var(--good); font-size: 10px; font-style: normal; font-weight: 720; text-transform: uppercase; }
+.project-literature-empty { color: var(--ink-muted); font-size: 12px; }
+.project-literature-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.project-literature-form label { display: grid; gap: 5px; color: var(--ink-muted); font-size: 11px; }
+.project-literature-form p, .project-literature-form > .action-error, .project-literature-form > div { grid-column: 1 / -1; }
+.project-literature-form p { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--warn); font-size: 11px; }
+.project-literature-form > div { display: flex; justify-content: flex-end; gap: 7px; }
 .target-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 .target-card { border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 13px; padding: 14px; display: grid; gap: 12px; background: var(--surface); }
 .target-card.readiness-ready { border-left-color: #2e9b62; }
@@ -7172,6 +7189,7 @@ select {
   .launchpad-create-panel, .target-create-grid { grid-template-columns: 1fr; }
   .target-create-grid .wide { grid-column: auto; }
   .launchpad-heading { align-items: stretch; flex-direction: column; }
+  .project-literature-form { grid-template-columns: 1fr; }
 }
 
 /* Project-scoped Research Graph: one canonical workspace with edge-attached drawers. */

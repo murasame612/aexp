@@ -35,6 +35,13 @@ func TestLogicalRootAndPlacementObservationCAS(t *testing.T) {
 	if err := s.SaveLogicalRoot(ctx, &LogicalRoot{ID: "root_overlap", Workspace: "project", Prefix: "data/raw", StorageTargetID: "fs_storage", PhysicalRoot: "raw"}); err == nil {
 		t.Fatal("overlapping logical root must be rejected")
 	}
+	workspaceRoot := &LogicalRoot{ID: "root_workspace", Workspace: "project", Prefix: "", StorageTargetID: "fs_storage", PhysicalRoot: "projects/project/outputs"}
+	if err := s.SaveLogicalRoot(ctx, workspaceRoot); err != nil {
+		t.Fatalf("workspace fallback root: %v", err)
+	}
+	if err := s.SaveLogicalRoot(ctx, &LogicalRoot{ID: "root_workspace_duplicate", Workspace: "project", Prefix: "", StorageTargetID: "fs_storage", PhysicalRoot: "duplicate"}); err == nil {
+		t.Fatal("duplicate workspace fallback root must be rejected")
+	}
 
 	placement := &PathPlacement{
 		ID: "placement_nas", LogicalURI: "aexp://project/data/raw", ResourceID: "fs_nas",

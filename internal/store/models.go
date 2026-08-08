@@ -315,22 +315,24 @@ type ProjectProfile struct {
 // ProjectDefinition is the durable identity of an executable project. It is
 // deliberately separate from the legacy /projects evidence aggregation view.
 type ProjectDefinition struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Description      string    `json:"description,omitempty"`
-	LocalRoot        string    `json:"local_root,omitempty"`
-	ConfigPath       string    `json:"config_path,omitempty"`
-	ConfigHash       string    `json:"config_hash,omitempty"`
-	SourceRepo       string    `json:"source_repo,omitempty"`
-	DefaultRecipe    string    `json:"default_recipe,omitempty"`
-	Vault            string    `json:"vault,omitempty"`
-	RunCardIndex     string    `json:"run_card_index,omitempty"`
-	ProposalDir      string    `json:"proposal_dir,omitempty"`
-	PromotionDefault string    `json:"promotion_default,omitempty"`
-	AggregateCommand string    `json:"aggregate_command,omitempty"`
-	GateCommand      string    `json:"gate_command,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                       string    `json:"id"`
+	Name                     string    `json:"name"`
+	Description              string    `json:"description,omitempty"`
+	LocalRoot                string    `json:"local_root,omitempty"`
+	ConfigPath               string    `json:"config_path,omitempty"`
+	ConfigHash               string    `json:"config_hash,omitempty"`
+	SourceRepo               string    `json:"source_repo,omitempty"`
+	DefaultRecipe            string    `json:"default_recipe,omitempty"`
+	Vault                    string    `json:"vault,omitempty"`
+	RunCardIndex             string    `json:"run_card_index,omitempty"`
+	ProposalDir              string    `json:"proposal_dir,omitempty"`
+	PromotionDefault         string    `json:"promotion_default,omitempty"`
+	AggregateCommand         string    `json:"aggregate_command,omitempty"`
+	GateCommand              string    `json:"gate_command,omitempty"`
+	ZoteroCollectionKey      string    `json:"zotero_collection_key,omitempty"`
+	LiteratureServiceProfile string    `json:"literature_service_profile,omitempty"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 const (
@@ -343,16 +345,31 @@ const (
 // execution records and curated Evidence Maps. An entry may stand on its own or
 // cite one or more Runs from the same Project.
 type ProjectJournalEntry struct {
-	ID               string    `json:"id"`
-	ProjectID        string    `json:"project_id"`
-	Actor            string    `json:"actor"`
-	Title            string    `json:"title"`
-	BodyMD           string    `json:"body_md,omitempty"`
-	NextAction       string    `json:"next_action,omitempty"`
-	NextActionStatus string    `json:"next_action_status"`
-	RunIDs           []string  `json:"run_ids"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string                `json:"id"`
+	ProjectID        string                `json:"project_id"`
+	Actor            string                `json:"actor"`
+	Title            string                `json:"title"`
+	BodyMD           string                `json:"body_md,omitempty"`
+	NextAction       string                `json:"next_action,omitempty"`
+	NextActionStatus string                `json:"next_action_status"`
+	RunIDs           []string              `json:"run_ids"`
+	LiteratureRefs   []LiteratureReference `json:"literature_refs,omitempty"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+}
+
+// LiteratureReference anchors Project reasoning to either an immutable corpus
+// chunk or a live Zotero item. It is background provenance and never upgrades
+// a Journal entry into experiment evidence.
+type LiteratureReference struct {
+	SourceKind     string `json:"source_kind"`
+	ZoteroItemKey  string `json:"zotero_item_key"`
+	ZoteroURI      string `json:"zotero_uri"`
+	PageLabel      string `json:"page_label,omitempty"`
+	CorpusRevision string `json:"corpus_revision,omitempty"`
+	ChunkSHA256    string `json:"chunk_sha256,omitempty"`
+	ItemVersion    int64  `json:"item_version,omitempty"`
+	LibraryVersion int64  `json:"library_version,omitempty"`
 }
 
 type ProjectJournalFilter struct {

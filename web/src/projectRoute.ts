@@ -1,4 +1,4 @@
-export type ProjectSection = "journal" | "runs" | "assets" | "research-graph";
+export type ProjectSection = "journal" | "literature" | "runs" | "assets" | "research-graph";
 
 export interface ProjectRoute {
   projectId: string;
@@ -6,7 +6,7 @@ export interface ProjectRoute {
 }
 
 export function parseProjectRoute(pathname: string): ProjectRoute | null {
-  const match = pathname.match(/^\/ui-v2\/projects\/([^/]+)(?:\/(journal|runs|assets|research-graph))?\/?$/);
+  const match = pathname.match(/^\/ui-v2\/projects\/([^/]+)(?:\/(journal|literature|runs|assets|research-graph))?\/?$/);
   if (!match) return null;
   return {
     projectId: decodeURIComponent(match[1]),

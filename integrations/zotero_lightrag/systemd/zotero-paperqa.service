@@ -1,0 +1,15 @@
+[Unit]
+Description=ResearchOS PaperQA2 literature retrieval backend
+After=network-online.target zotero-lightrag-model.service
+Requires=zotero-lightrag-model.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/murasame/services/zotero-lightrag-v1/app
+EnvironmentFile=/home/murasame/services/zotero-lightrag-v1/service.env
+ExecStart=/home/murasame/services/zotero-lightrag-v1/.venv-paperqa/bin/python paperqa_service.py --host 127.0.0.1 --port 9631 --state-root /home/murasame/services/zotero-lightrag-v1/state
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

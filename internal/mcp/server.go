@@ -1199,6 +1199,13 @@ func (s *Server) toolCreateProjectJournalEntry(ctx context.Context, args map[str
 	for _, runID := range stringSliceArg(args, "run_ids") {
 		cli = append(cli, "--run", runID)
 	}
+	if refs, ok := args["literature_refs"]; ok && refs != nil {
+		encoded, err := json.Marshal(refs)
+		if err != nil {
+			return "", fmt.Errorf("encode literature_refs: %w", err)
+		}
+		cli = append(cli, "--literature-refs-json", string(encoded))
+	}
 	return s.runAexp(ctx, timeoutFromArgs(args, 20), cli...)
 }
 
@@ -2062,6 +2069,7 @@ func defaultResearchTool(name string) bool {
 	switch name {
 	case "aexp_agent_card",
 		"aexp_project_list", "aexp_get_project_research_context",
+		"aexp_literature_status", "aexp_literature_query",
 		"aexp_create_project_journal_entry", "aexp_get_project_journal_entry",
 		"aexp_list_resources", "aexp_submit_run", "aexp_list_runs", "aexp_get_run_snapshot", "aexp_tail_run_logs",
 		"aexp_create_evidence_proposal", "aexp_plan_evidence_graph_proposal":
@@ -2152,7 +2160,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_get_project_research_context",
-			Description: "Default Agent entry for one Project. Returns a compact project-research-context-v1 summary of Topic routing, Research Threads, recent Journal decisions, paged Run discovery hints, pending Evidence proposals, warnings, and explicit next_reads. It deliberately omits full graph bodies, Journal Markdown, logs, artifact manifests, and Run provenance; use aexp_list_runs for paged history and follow next_reads only when relevant.",
+			Description: "Default Agent entry for one Project. Returns a compact project-research-context-v2 summary of Topic routing, Research Threads, the Project literature binding, recent Journal decisions, paged Run discovery hints, pending Evidence proposals, warnings, and explicit next_reads. The literature binding is a project-first frozen-corpus default, not a boundary on read-only Zotero discovery. It deliberately omits full graph bodies, Journal Markdown, logs, artifact manifests, and Run provenance; use aexp_list_runs for paged history and follow next_reads only when relevant.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"project_id":    stringSchema("Canonical Project id."),
 				"map_limit":     numberSchema("Maximum active Maps summarized; default 8, maximum 20."),
@@ -2163,6 +2171,85 @@ func toolRegistry() []toolSpec {
 			}, []string{"project_id"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolProjectResearchContext(ctx, args)
+			},
+		},
+		{
+			Name:        "aexp_literature_catalog",
+			Description: "List human-readable local Zotero collections and the frozen PaperQA2 profiles currently ready for reproducible Project queries. Use this before binding; live discovery remains available through the existing Zotero MCP.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"timeout": numberSchema("Tool timeout in seconds."),
+			}, nil),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				return s.runAexp(ctx, timeoutFromArgs(args, 25), "literature", "catalog", "--json")
+			},
+		},
+		{
+			Name:        "aexp_bind_project_literature",
+			Description: "Bind a Project to one ready frozen-corpus profile after choosing it from aexp_literature_catalog. This changes only Project literature defaults; it does not constrain read-only Zotero discovery or alter Run provenance.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"project_id":            stringSchema("Canonical Project id."),
+				"zotero_collection_key": stringSchema("Collection key returned by aexp_literature_catalog."),
+				"service_profile":       stringSchema("Ready profile name returned by aexp_literature_catalog."),
+				"timeout":               numberSchema("Tool timeout in seconds."),
+			}, []string{"project_id", "zotero_collection_key", "service_profile"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				projectID, err := requiredString(args, "project_id")
+				if err != nil {
+					return "", err
+				}
+				collectionKey, err := requiredString(args, "zotero_collection_key")
+				if err != nil {
+					return "", err
+				}
+				profile, err := requiredString(args, "service_profile")
+				if err != nil {
+					return "", err
+				}
+				return s.runAexp(ctx, timeoutFromArgs(args, 30), "literature", "bind", projectID, "--zotero-collection", collectionKey, "--service-profile", profile, "--json")
+			},
+		},
+		{
+			Name:        "aexp_literature_status",
+			Description: "Check the Project's Zotero collection binding and active PaperQA2 corpus revision. This is read-only literature background and cannot satisfy experiment provenance.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"project_id": stringSchema("Canonical Project id."),
+				"timeout":    numberSchema("Tool timeout in seconds."),
+			}, []string{"project_id"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				projectID, err := requiredString(args, "project_id")
+				if err != nil {
+					return "", err
+				}
+				return s.runAexp(ctx, timeoutFromArgs(args, 25), "literature", "status", projectID, "--json")
+			},
+		},
+		{
+			Name:        "aexp_literature_query",
+			Description: "Query the Project-bound PaperQA2 frozen corpus and return revision-bound Zotero citations. This is the reproducible project-first path, not a restriction on read-only discovery: use the existing Zotero MCP to search the live library or close-read papers when needed. Results are literature background only and must never be presented as Run facts or accepted experimental Evidence.",
+			InputSchema: objectSchema(map[string]interface{}{
+				"project_id":         stringSchema("Canonical Project id."),
+				"query":              stringSchema("Literature question."),
+				"evidence_k":         numberSchema("Candidate evidence count; default 10."),
+				"answer_max_sources": numberSchema("Maximum cited sources; default 6."),
+				"timeout":            numberSchema("Tool timeout in seconds."),
+			}, []string{"project_id", "query"}),
+			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
+				projectID, err := requiredString(args, "project_id")
+				if err != nil {
+					return "", err
+				}
+				query, err := requiredString(args, "query")
+				if err != nil {
+					return "", err
+				}
+				cli := []string{"literature", "query", projectID, "--query", query, "--json"}
+				if value, ok := optionalIntArg(args, "evidence_k"); ok {
+					cli = append(cli, "--evidence-k", strconv.Itoa(value))
+				}
+				if value, ok := optionalIntArg(args, "answer_max_sources"); ok {
+					cli = append(cli, "--answer-max-sources", strconv.Itoa(value))
+				}
+				return s.runAexp(ctx, timeoutFromArgs(args, 300), cli...)
 			},
 		},
 		{
@@ -2814,7 +2901,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_create_project_journal_entry",
-			Description: "Append a low-friction Markdown work-log entry to a Project. It may cite zero or more Runs and one concrete next action. Use this for day-to-day reasoning; promote only durable claims to an Evidence Map.",
+			Description: "Append a low-friction Markdown work-log entry to a Project. It may cite zero or more Runs, pinned frozen-corpus or Zotero-live literature references, and one concrete next action. Use this for day-to-day reasoning; promote only durable claims to an Evidence Map.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"project_id":  stringSchema("Canonical Project id."),
 				"actor":       stringSchema("Actor writing the entry; defaults to agent."),
@@ -2822,7 +2909,25 @@ func toolRegistry() []toolSpec {
 				"body_md":     stringSchema("Markdown body with reasoning, observations, or decisions."),
 				"next_action": stringSchema("Optional single concrete next action."),
 				"run_ids":     arrayStringSchema("Optional related Run ids. Every Run must belong to this Project."),
-				"timeout":     numberSchema("Tool timeout in seconds."),
+				"literature_refs": map[string]interface{}{
+					"type":        "array",
+					"description": "Optional pinned Zotero citations: frozen_corpus refs returned by aexp_literature_query, or zotero_live refs obtained through the existing Zotero MCP with item and library versions.",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"source_kind":     stringSchema("frozen_corpus or zotero_live."),
+							"zotero_item_key": stringSchema("Stable Zotero item key."),
+							"zotero_uri":      stringSchema("Zotero deep link."),
+							"page_label":      stringSchema("Optional page label."),
+							"corpus_revision": stringSchema("Required for frozen_corpus."),
+							"chunk_sha256":    stringSchema("Required for frozen_corpus."),
+							"item_version":    numberSchema("Required for zotero_live."),
+							"library_version": numberSchema("Required for zotero_live."),
+						},
+						"required": []string{"source_kind", "zotero_item_key", "zotero_uri"},
+					},
+				},
+				"timeout": numberSchema("Tool timeout in seconds."),
 			}, []string{"project_id", "title"}),
 			Handler: func(s *Server, ctx context.Context, args map[string]interface{}) (string, error) {
 				return s.toolCreateProjectJournalEntry(ctx, args)
@@ -2845,7 +2950,7 @@ func toolRegistry() []toolSpec {
 		},
 		{
 			Name:        "aexp_get_project_journal_entry",
-			Description: "Read one full Project journal entry including Markdown body, related Runs, and next action.",
+			Description: "Read one full Project journal entry including Markdown body, related Runs, literature references, and next action.",
 			InputSchema: objectSchema(map[string]interface{}{
 				"entry_id": stringSchema("Project journal entry id."),
 				"timeout":  numberSchema("Tool timeout in seconds."),

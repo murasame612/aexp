@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const ProjectResearchContextVersion = "project-research-context-v1"
+const ProjectResearchContextVersion = "project-research-context-v2"
 
 type ProjectResearchContextOptions struct {
 	MapLimit     int
@@ -19,6 +19,17 @@ type ProjectResearchProjectSummary struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+}
+
+type ProjectResearchLiteratureContext struct {
+	Configured          bool   `json:"configured"`
+	ZoteroCollectionKey string `json:"zotero_collection_key,omitempty"`
+	ServiceProfile      string `json:"service_profile,omitempty"`
+	DiscoveryPolicy     string `json:"discovery_policy"`
+	ZoteroLiveAllowed   bool   `json:"zotero_live_allowed"`
+	BindingLimitsSearch bool   `json:"binding_limits_search"`
+	EvidenceDomain      string `json:"evidence_domain"`
+	ClaimScope          string `json:"claim_scope"`
 }
 
 type ProjectResearchThreadSummary struct {
@@ -43,13 +54,14 @@ type ProjectResearchMapSummary struct {
 }
 
 type ProjectResearchJournalSummary struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	Actor            string   `json:"actor"`
-	NextAction       string   `json:"next_action,omitempty"`
-	NextActionStatus string   `json:"next_action_status"`
-	RunIDs           []string `json:"run_ids,omitempty"`
-	CreatedAt        string   `json:"created_at"`
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Actor              string   `json:"actor"`
+	NextAction         string   `json:"next_action,omitempty"`
+	NextActionStatus   string   `json:"next_action_status"`
+	RunIDs             []string `json:"run_ids,omitempty"`
+	LiteratureRefCount int      `json:"literature_ref_count,omitempty"`
+	CreatedAt          string   `json:"created_at"`
 }
 
 type ProjectResearchProposalSummary struct {
@@ -93,6 +105,7 @@ type ProjectResearchNextRead struct {
 type ProjectResearchContext struct {
 	ContractVersion  string                           `json:"contract_version"`
 	Project          ProjectResearchProjectSummary    `json:"project"`
+	Literature       ProjectResearchLiteratureContext `json:"literature"`
 	PrimaryMap       *ProjectResearchMapSummary       `json:"primary_map,omitempty"`
 	Topics           []ProjectResearchMapSummary      `json:"topics"`
 	Journal          []ProjectResearchJournalSummary  `json:"recent_journal"`
@@ -200,9 +213,25 @@ func (s *SQLite) GetProjectResearchContext(ctx context.Context, projectID string
 		Project: ProjectResearchProjectSummary{
 			ID: project.ID, Name: compactResearchText(project.Name, 100), Description: compactResearchText(project.Description, 140),
 		},
+		Literature: ProjectResearchLiteratureContext{
+			Configured:          strings.TrimSpace(project.ZoteroCollectionKey) != "" && strings.TrimSpace(project.LiteratureServiceProfile) != "",
+			ZoteroCollectionKey: project.ZoteroCollectionKey,
+			ServiceProfile:      project.LiteratureServiceProfile,
+			DiscoveryPolicy:     "project_first",
+			ZoteroLiveAllowed:   true,
+			BindingLimitsSearch: false,
+			EvidenceDomain:      "literature",
+			ClaimScope:          "background_only",
+		},
 		Topics: []ProjectResearchMapSummary{}, Journal: []ProjectResearchJournalSummary{},
 		PendingProposals: []ProjectResearchProposalSummary{}, Warnings: []ProjectResearchContextWarning{},
 		NextReads: []ProjectResearchNextRead{},
+	}
+	if result.Literature.Configured {
+		result.NextReads = append(result.NextReads, ProjectResearchNextRead{
+			Tool: "aexp_literature_status", Args: map[string]interface{}{"project_id": projectID},
+			Reason: "Check the bound literature corpus before a literature-dependent decision.",
+		})
 	}
 
 	primaryMaps, err := s.ListEvidenceChains(ctx, EvidenceChainFilter{ProjectID: projectID, Role: "primary", Status: "active", Limit: 1})
@@ -251,6 +280,7 @@ func (s *SQLite) GetProjectResearchContext(ctx context.Context, projectID string
 			ID: entry.ID, Title: compactResearchText(entry.Title, 120), Actor: entry.Actor,
 			NextAction: compactResearchText(entry.NextAction, 180), NextActionStatus: entry.NextActionStatus,
 			RunIDs: append([]string(nil), entry.RunIDs...), CreatedAt: entry.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			LiteratureRefCount: len(entry.LiteratureRefs),
 		})
 		if entry.NextActionStatus == JournalNextActionOpen {
 			result.NextReads = append(result.NextReads, ProjectResearchNextRead{Tool: "aexp_get_project_journal_entry", Args: map[string]interface{}{"entry_id": entry.ID}, Reason: "Read before acting on this open next action."})

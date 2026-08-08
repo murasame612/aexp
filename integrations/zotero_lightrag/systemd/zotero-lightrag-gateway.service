@@ -1,0 +1,15 @@
+[Unit]
+Description=ResearchOS literature provenance gateway
+After=network-online.target zotero-paperqa.service
+Requires=zotero-paperqa.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/murasame/services/zotero-lightrag-v1/app
+EnvironmentFile=/home/murasame/services/zotero-lightrag-v1/service.env
+ExecStart=/home/murasame/services/zotero-lightrag-v1/.venv-paperqa/bin/python gateway.py --host 100.90.101.9 --port 8766 --state-root /home/murasame/services/zotero-lightrag-v1/state
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

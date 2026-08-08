@@ -279,6 +279,8 @@ CREATE TABLE IF NOT EXISTS project_definitions (
     promotion_default TEXT DEFAULT '',
     aggregate_command TEXT DEFAULT '',
     gate_command      TEXT DEFAULT '',
+    zotero_collection_key      TEXT DEFAULT '',
+    literature_service_profile TEXT DEFAULT '',
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -465,6 +467,7 @@ CREATE TABLE IF NOT EXISTS project_journal_entries (
     actor              TEXT NOT NULL DEFAULT 'agent',
     title              TEXT NOT NULL,
     body_md            TEXT DEFAULT '',
+    literature_refs_json TEXT NOT NULL DEFAULT '[]',
     next_action        TEXT DEFAULT '',
     next_action_status TEXT NOT NULL DEFAULT 'none'
         CHECK(next_action_status IN ('none', 'open', 'done')),

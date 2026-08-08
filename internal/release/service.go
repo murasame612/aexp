@@ -74,16 +74,20 @@ func (s Service) Evaluate(ctx context.Context, snapshotID string) (*store.Eviden
 		}
 		return release, nil
 	}
+	aggregateCommand := strings.TrimSpace(project.AggregateCommand)
+	gateCommand := strings.TrimSpace(project.GateCommand)
 	root := filepath.Clean(strings.TrimSpace(project.LocalRoot))
-	if root == "" || !filepath.IsAbs(root) {
-		return nil, &BlockedError{Code: "project_root_missing", Message: "Project local_root must be an absolute directory before Release"}
-	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return nil, &BlockedError{Code: "project_root_unavailable", Message: "Project local_root is not an accessible directory"}
-	}
-	if strings.TrimSpace(project.GateCommand) == "" {
-		return nil, &BlockedError{Code: "release_gate_missing", Message: "Project does not define its single release gate command"}
+	// Formal provenance, final RunManifest, and verified published outputs are
+	// the built-in Release gate. A Project local root is only needed when the
+	// Project opts into additional aggregate or gate hooks.
+	if aggregateCommand != "" || gateCommand != "" {
+		if root == "" || !filepath.IsAbs(root) {
+			return nil, &BlockedError{Code: "project_root_missing", Message: "Project local_root must be an absolute directory before running Release hooks"}
+		}
+		info, statErr := os.Stat(root)
+		if statErr != nil || !info.IsDir() {
+			return nil, &BlockedError{Code: "project_root_unavailable", Message: "Project local_root is not an accessible directory"}
+		}
 	}
 
 	env := append(os.Environ(),
@@ -97,8 +101,8 @@ func (s Service) Evaluate(ctx context.Context, snapshotID string) (*store.Eviden
 	state := store.EvidenceReleaseReleased
 	errorCode := ""
 	lastError := ""
-	if command := strings.TrimSpace(project.AggregateCommand); command != "" {
-		aggregate = executeCommand(ctx, root, env, command)
+	if aggregateCommand != "" {
+		aggregate = executeCommand(ctx, root, env, aggregateCommand)
 		if aggregate.ExitCode != 0 {
 			state = store.EvidenceReleaseFailed
 			errorCode = "aggregate_failed"
@@ -107,8 +111,8 @@ func (s Service) Evaluate(ctx context.Context, snapshotID string) (*store.Eviden
 	}
 
 	gate := commandResult{Skipped: true}
-	if state != store.EvidenceReleaseFailed {
-		gate = executeCommand(ctx, root, env, strings.TrimSpace(project.GateCommand))
+	if state != store.EvidenceReleaseFailed && gateCommand != "" {
+		gate = executeCommand(ctx, root, env, gateCommand)
 		if gate.ExitCode != 0 {
 			if ctx.Err() != nil {
 				state = store.EvidenceReleaseFailed

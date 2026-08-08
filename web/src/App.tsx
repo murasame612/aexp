@@ -113,6 +113,7 @@ import { replaceRunInPage } from "./runCache";
 import { ProjectLaunchpadPage } from "./ProjectLaunchpadPage";
 import { ProjectAssetsPage } from "./ProjectAssetsPage";
 import { ProjectJournalPage } from "./ProjectJournalPage";
+import { ProjectLiteraturePage } from "./ProjectLiteraturePage";
 import { useLiveLog } from "./useLiveLog";
 import { Modal } from "./Modal";
 import { metricSeriesColor } from "./metricColors";
@@ -125,7 +126,7 @@ import { projectEvidencePreview } from "./projectPreview";
 import { projectRunFilterOptions, projectScopeFromFilterValue } from "./projectFilters";
 import { parseProjectRoute } from "./projectRoute";
 
-type Tab = "dashboard" | "resources" | "dataCenter" | "launchpad" | "projects" | "journal" | "projectAssets" | "matrices" | "evidence" | "runs" | "favorites" | "execs" | "settings";
+type Tab = "dashboard" | "resources" | "dataCenter" | "launchpad" | "projects" | "journal" | "literature" | "projectAssets" | "matrices" | "evidence" | "runs" | "favorites" | "execs" | "settings";
 
 const MetricChart = lazy(() => import("./MetricChart").then((module) => ({ default: module.MetricChart })));
 const CompareModal = lazy(() => import("./CompareModal").then((module) => ({ default: module.CompareModal })));
@@ -179,7 +180,7 @@ export function App() {
   const runProjectScope = projectScopeFromFilterValue(runProject);
 
 	const needsRuns = runListEnabledForTab(tab);
-	const needsProjects = tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites" || Boolean(detailRunId);
+	const needsProjects = tab === "projects" || tab === "journal" || tab === "literature" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites" || Boolean(detailRunId);
 	const needsResources = tab === "dashboard" || tab === "resources" || tab === "dataCenter" || tab === "launchpad" || Boolean(detailRunId);
 	const needsExecs = tab === "dashboard" || tab === "execs";
   const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), enabled: tab === "dashboard", refetchInterval: 5000 });
@@ -297,6 +298,12 @@ export function App() {
     history.replaceState(null, "", projectRunsPath(projectID));
   };
 
+  const openProjectLiterature = (projectID: string) => {
+    setProjectDetailID(projectID);
+    setTab("literature");
+    history.replaceState(null, "", projectLiteraturePath(projectID));
+  };
+
   const openProjectAssets = (projectID: string) => {
     setProjectDetailID(projectID);
     setTab("projectAssets");
@@ -408,7 +415,7 @@ export function App() {
           </div>
         </div>
         <nav>
-          <NavButton active={tab === "projects" || tab === "journal" || tab === "projectAssets" || tab === "evidence" || (tab === "runs" && Boolean(projectDetailID))} icon={<Database />} label={t("projects")} onClick={() => setActiveTab("projects")} />
+          <NavButton active={tab === "projects" || tab === "journal" || tab === "literature" || tab === "projectAssets" || tab === "evidence" || (tab === "runs" && Boolean(projectDetailID))} icon={<Database />} label={t("projects")} onClick={() => setActiveTab("projects")} />
           <NavButton active={(tab === "runs" || tab === "favorites") && !projectDetailID} icon={<PlayCircle />} label={t("activeRuns")} onClick={() => setActiveTab("runs")} />
           <NavButton
             active={["settings", "resources", "dataCenter", "launchpad", "execs"].includes(tab)}
@@ -465,6 +472,7 @@ export function App() {
             <strong className="project-header-name" title={projectWorkspaceName}>{projectWorkspaceName}</strong>
             <nav className="project-header-tabs" aria-label={`${projectWorkspaceName} Project`}>
             <button className={tab === "journal" ? "active" : ""} onClick={() => openProjectJournal(projectDetailID)}>{t("journal")}</button>
+            <button className={tab === "literature" ? "active" : ""} onClick={() => openProjectLiterature(projectDetailID)}>{t("literature")}</button>
             <button className={tab === "runs" ? "active" : ""} onClick={() => openProjectRuns(projectDetailID)}>{t("runs")}</button>
             <button className={tab === "projectAssets" ? "active" : ""} onClick={() => openProjectAssets(projectDetailID)}>{t("assets")}</button>
             <button className={tab === "evidence" ? "active" : ""} onClick={() => openProjectResearchGraph(projectDetailID)}>{t("evidenceChains")}</button>
@@ -603,6 +611,14 @@ export function App() {
                   tone={projects.isPending ? undefined : "bad"}
                 />
               </div>
+            ) : null}
+            {tab === "literature" && selectedProject ? (
+              <ProjectLiteraturePage
+                token={token}
+                locale={locale}
+                project={selectedProject}
+                onOpenJournal={(entryID) => openProjectJournal(selectedProject.id, { entryID })}
+              />
             ) : null}
             {tab === "projectAssets" && projectDetailID ? <ProjectAssetsPage token={token} projectId={projectDetailID} /> : null}
 			{tab === "dataCenter" && <DataCenterPage token={token} locale={locale} resources={resourceList} />}
@@ -2788,7 +2804,7 @@ function statusTone(status?: string): "good" | "bad" | "warn" | "neutral" | "acc
 }
 
 function labelForTab(tab: Tab, t: T) {
-  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", dataCenter: "dataCenter", launchpad: "launchpad", projects: "projects", journal: "journal", projectAssets: "assets", matrices: "matrices", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs", settings: "settings" };
+  const map: Record<Tab, I18nKey> = { dashboard: "dashboard", resources: "resources", dataCenter: "dataCenter", launchpad: "launchpad", projects: "projects", journal: "journal", literature: "literature", projectAssets: "assets", matrices: "matrices", evidence: "evidenceChains", runs: "runs", favorites: "favorites", execs: "execs", settings: "settings" };
   return t(map[tab]);
 }
 
@@ -2838,6 +2854,7 @@ function readInitialTab(): Tab {
   const path = window.location.pathname;
   if (readEvidenceProjectFromPath()) return "evidence";
   if (/^\/ui-v2\/projects\/[^/]+\/assets\/?$/.test(path)) return "projectAssets";
+  if (/^\/ui-v2\/projects\/[^/]+\/literature\/?$/.test(path)) return "literature";
   if (/^\/ui-v2\/projects\/[^/]+\/runs\/?$/.test(path)) return "runs";
   if (/^\/ui-v2\/projects\/[^/]+(?:\/journal)?\/?$/.test(path)) return "journal";
   if (path.startsWith("/ui-v2/resources")) return "resources";
@@ -2874,6 +2891,10 @@ function projectRunsPath(projectID: string) {
   return `${projectOverviewPath(projectID)}/runs`;
 }
 
+function projectLiteraturePath(projectID: string) {
+  return `${projectOverviewPath(projectID)}/literature`;
+}
+
 function projectAssetsPath(projectID: string) {
   return `${projectOverviewPath(projectID)}/assets`;
 }
@@ -2890,6 +2911,7 @@ function pathForTab(tab: Tab, evidenceProjectID = "", projectID = "") {
     launchpad: "/ui-v2/launchpad",
     projects: "/ui-v2/projects",
     journal: projectID ? projectJournalPath(projectID) : "/ui-v2/projects",
+    literature: projectID ? projectLiteraturePath(projectID) : "/ui-v2/projects",
     projectAssets: "/ui-v2/projects",
     matrices: "/ui-v2/matrices",
     evidence: evidenceProjectID ? projectResearchGraphPath(evidenceProjectID) : "/ui-v2/projects",

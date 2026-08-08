@@ -54,6 +54,31 @@ func TestResolveRootAndPhysicalPath(t *testing.T) {
 	}
 }
 
+func TestResolveRootPrefersSpecificChildOverWorkspaceFallback(t *testing.T) {
+	roots := []store.LogicalRoot{
+		{ID: "workspace", Workspace: "project", Prefix: "", PhysicalRoot: "projects/project/outputs"},
+		{ID: "datasets", Workspace: "project", Prefix: "datasets", PhysicalRoot: "projects/project/datasets"},
+	}
+
+	output, err := Parse("aexp://project/official-run-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, suffix, err := ResolveRoot(output, roots)
+	if err != nil || root.ID != "workspace" || suffix != "official-run-v1" {
+		t.Fatalf("output root=%#v suffix=%q err=%v", root, suffix, err)
+	}
+
+	dataset, err := Parse("aexp://project/datasets/cohort-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, suffix, err = ResolveRoot(dataset, roots)
+	if err != nil || root.ID != "datasets" || suffix != "cohort-v1" {
+		t.Fatalf("dataset root=%#v suffix=%q err=%v", root, suffix, err)
+	}
+}
+
 func TestPhysicalPathRejectsEscape(t *testing.T) {
 	root := store.LogicalRoot{PhysicalRoot: "projects/p/data"}
 	for _, suffix := range []string{"../secret", "/absolute", "ok/../../secret", "bad\\path"} {

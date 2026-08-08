@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, FolderGit2, LoaderCircle, PlayCircle, Plus, RefreshCcw, Server } from "lucide-react";
+import { AlertTriangle, BookOpen, CheckCircle2, FolderGit2, LoaderCircle, PlayCircle, Plus, RefreshCcw, Server } from "lucide-react";
 import {
   getProjectDefinitions,
   getProjectTargetPreparePlan,
@@ -84,6 +84,22 @@ function LaunchProjectCard({ token, locale, project, resources, onOpenRun }: { t
         <button onClick={() => setAdding((value) => !value)}><Plus size={14} /> {zh ? "运行环境" : "Environment"}</button>
       </header>
       {project.config_hash ? <div className="config-fingerprint">{zh ? "配置" : "config"} <code>{project.config_hash}</code></div> : <div className="launch-warning"><AlertTriangle size={14} /> {zh ? "未记录配置指纹，无法完整检测配置漂移。" : "No config fingerprint; drift detection is limited."}</div>}
+      <section className="project-literature-binding">
+        <div className="project-literature-heading">
+          <div>
+            <BookOpen size={16} />
+            <span>
+              <strong>{zh ? "项目冻结语料" : "Frozen project corpus"}</strong>
+              <small>{zh ? "这是可复现检索的默认范围，不限制 Agent 搜索 Zotero 全库。" : "The reproducible default; it does not limit Agent searches of the live Zotero library."}</small>
+            </span>
+          </div>
+        </div>
+        {project.zotero_collection_key && project.literature_service_profile ? (
+          <div className="project-literature-value"><code>{project.zotero_collection_key}</code><span>{project.literature_service_profile}</span><em>{zh ? "已绑定" : "bound"}</em></div>
+        ) : (
+          <div className="project-literature-empty">{zh ? "进入项目后，在“文献”页按名称选择 collection；无需手填 Key。" : "Open the Project and choose a collection by name in Literature; no keys to type."}</div>
+        )}
+      </section>
       {adding ? (
         <form className="target-create-grid" onSubmit={(event) => { event.preventDefault(); createTarget.mutate(); }}>
           <label>{zh ? "名称" : "Name"}<input required value={draft.name || ""} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="mu" /></label>

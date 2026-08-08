@@ -33,6 +33,9 @@ import type {
   ProjectTargetPreparePlan,
   ProjectTargetPrepareResponse,
   ProjectJournalEntry,
+  LiteratureCatalogResponse,
+  LiteratureQueryResponse,
+  ProjectLiteratureStatus,
   Resource,
   PrinterStatus, PrinterJob,
   Run,
@@ -389,6 +392,40 @@ export function getProjectDefinitions(token: string) {
   return apiFetch<ProjectDefinition[]>("/project-definitions", { token });
 }
 
+export function getProjectLiteratureCatalog(token: string, projectId: string) {
+  return apiFetch<LiteratureCatalogResponse>(
+    `/project-definitions/${encodeURIComponent(projectId)}/literature/catalog`,
+    { token }
+  );
+}
+
+export function getProjectLiteratureStatus(token: string, projectId: string) {
+  return apiFetch<ProjectLiteratureStatus>(
+    `/project-definitions/${encodeURIComponent(projectId)}/literature/status`,
+    { token }
+  );
+}
+
+export function queryProjectLiterature(
+  token: string,
+  projectId: string,
+  query: string,
+  options: { evidenceK?: number; answerMaxSources?: number } = {}
+) {
+  return apiFetch<LiteratureQueryResponse>(
+    `/project-definitions/${encodeURIComponent(projectId)}/literature/query`,
+    {
+      method: "POST",
+      token,
+      body: JSON.stringify({
+        query,
+        evidence_k: options.evidenceK || 10,
+        answer_max_sources: options.answerMaxSources || 6
+      })
+    }
+  );
+}
+
 export function getProjectJournal(
   token: string,
   projectId: string,
@@ -408,7 +445,7 @@ export function getProjectJournal(
 export function createProjectJournalEntry(
   token: string,
   projectId: string,
-  entry: Pick<ProjectJournalEntry, "title"> & Partial<Pick<ProjectJournalEntry, "actor" | "body_md" | "next_action" | "run_ids">>
+  entry: Pick<ProjectJournalEntry, "title"> & Partial<Pick<ProjectJournalEntry, "actor" | "body_md" | "next_action" | "run_ids" | "literature_refs">>
 ) {
   return apiFetch<ProjectJournalEntry>(
     `/project-definitions/${encodeURIComponent(projectId)}/journal`,

@@ -314,6 +314,7 @@ export function JournalEntryRow({
           <span className="journal-entry-meta">
             <span>{entry.actor}</span>
             {entry.run_ids.length ? <span><Link2 size={12} />{entry.run_ids.length} {zh ? "个实验" : entry.run_ids.length === 1 ? "run" : "runs"}</span> : null}
+            {entry.literature_refs?.length ? <span><BookOpen size={12} />{entry.literature_refs.length} {zh ? "条文献" : entry.literature_refs.length === 1 ? "reference" : "references"}</span> : null}
           </span>
           {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
         </button>
@@ -338,6 +339,27 @@ export function JournalEntryRow({
                     <button type="button" key={runID} onClick={() => onOpenRun(runID)}>
                       {runByID.get(runID)?.name || runID}
                     </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {entry.literature_refs?.length ? (
+              <div className="journal-entry-literature">
+                <span>{zh ? "文献来源" : "Literature sources"}</span>
+                <div>
+                  {entry.literature_refs.map((reference, index) => (
+                    <a href={reference.zotero_uri} key={`${reference.source_kind}-${reference.zotero_item_key}-${index}`}>
+                      <span className={`literature-source-kind ${reference.source_kind}`}>
+                        {reference.source_kind === "frozen_corpus" ? (zh ? "冻结语料" : "Frozen corpus") : (zh ? "Zotero 实时" : "Zotero live")}
+                      </span>
+                      <strong>{reference.zotero_item_key}</strong>
+                      {reference.page_label ? <small>{zh ? "页" : "p."} {reference.page_label}</small> : null}
+                      <code>
+                        {reference.source_kind === "frozen_corpus"
+                          ? `${reference.corpus_revision} · ${reference.chunk_sha256?.slice(0, 18)}…`
+                          : `item v${reference.item_version} · library v${reference.library_version}`}
+                      </code>
+                    </a>
                   ))}
                 </div>
               </div>

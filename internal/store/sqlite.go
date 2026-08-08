@@ -96,12 +96,13 @@ func (s *SQLite) reconcileLegacyProjects() error {
 INSERT OR IGNORE INTO project_definitions (
 	id, name, description, local_root, config_path, config_hash, source_repo, default_recipe,
 	vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command,
+	zotero_collection_key, literature_service_profile,
 	created_at, updated_at
 )
 SELECT project_id,
        COALESCE(NULLIF(MAX(project_name), ''), project_id),
        'Imported from the legacy evidence-card project index.',
-       '', '', '', '', '', '', '', '', '', '', '',
+       '', '', '', '', '', '', '', '', '', '', '', '', '',
        MIN(created_at), MAX(updated_at)
 FROM project_run_cards
 WHERE TRIM(project_id) <> '' AND project_id <> 'unassigned'
@@ -334,6 +335,9 @@ func (s *SQLite) migrateColumns() error {
 	addColumn("run_freezes", "workspace_transfer_id", "TEXT", "''")
 	addColumn("project_definitions", "aggregate_command", "TEXT", "''")
 	addColumn("project_definitions", "gate_command", "TEXT", "''")
+	addColumn("project_definitions", "zotero_collection_key", "TEXT", "''")
+	addColumn("project_definitions", "literature_service_profile", "TEXT", "''")
+	addColumn("project_journal_entries", "literature_refs_json", "TEXT NOT NULL", "'[]'")
 
 	return nil
 }
@@ -1087,10 +1091,12 @@ func (s *SQLite) CreateProjectDefinition(ctx context.Context, p *ProjectDefiniti
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO project_definitions (
 		id, name, description, local_root, config_path, config_hash, source_repo, default_recipe,
-		vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command,
+		zotero_collection_key, literature_service_profile, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Description, p.LocalRoot, p.ConfigPath, p.ConfigHash, p.SourceRepo, p.DefaultRecipe,
-		p.Vault, p.RunCardIndex, p.ProposalDir, p.PromotionDefault, p.AggregateCommand, p.GateCommand, p.CreatedAt, p.UpdatedAt); err != nil {
+		p.Vault, p.RunCardIndex, p.ProposalDir, p.PromotionDefault, p.AggregateCommand, p.GateCommand,
+		p.ZoteroCollectionKey, p.LiteratureServiceProfile, p.CreatedAt, p.UpdatedAt); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return graphValidationError("PROJECT_EXISTS", fmt.Sprintf("project %q already exists", p.ID))
 		}
@@ -1113,23 +1119,27 @@ func (s *SQLite) SaveProjectDefinition(ctx context.Context, p *ProjectDefinition
 	p.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO project_definitions (
 		id, name, description, local_root, config_path, config_hash, source_repo, default_recipe,
-		vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command,
+		zotero_collection_key, literature_service_profile, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		name=excluded.name, description=excluded.description, local_root=excluded.local_root,
 		config_path=excluded.config_path, config_hash=excluded.config_hash, source_repo=excluded.source_repo,
 		default_recipe=excluded.default_recipe, vault=excluded.vault, run_card_index=excluded.run_card_index,
 		proposal_dir=excluded.proposal_dir, promotion_default=excluded.promotion_default,
-		aggregate_command=excluded.aggregate_command, gate_command=excluded.gate_command, updated_at=excluded.updated_at`,
+		aggregate_command=excluded.aggregate_command, gate_command=excluded.gate_command,
+		zotero_collection_key=excluded.zotero_collection_key,
+		literature_service_profile=excluded.literature_service_profile, updated_at=excluded.updated_at`,
 		p.ID, p.Name, p.Description, p.LocalRoot, p.ConfigPath, p.ConfigHash, p.SourceRepo, p.DefaultRecipe,
-		p.Vault, p.RunCardIndex, p.ProposalDir, p.PromotionDefault, p.AggregateCommand, p.GateCommand, p.CreatedAt, p.UpdatedAt)
+		p.Vault, p.RunCardIndex, p.ProposalDir, p.PromotionDefault, p.AggregateCommand, p.GateCommand,
+		p.ZoteroCollectionKey, p.LiteratureServiceProfile, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
-const projectDefinitionColumns = `id, name, description, local_root, config_path, config_hash, source_repo, default_recipe, vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command, created_at, updated_at`
+const projectDefinitionColumns = `id, name, description, local_root, config_path, config_hash, source_repo, default_recipe, vault, run_card_index, proposal_dir, promotion_default, aggregate_command, gate_command, zotero_collection_key, literature_service_profile, created_at, updated_at`
 
 func scanProjectDefinition(row rowScanner, p *ProjectDefinition) error {
-	return row.Scan(&p.ID, &p.Name, &p.Description, &p.LocalRoot, &p.ConfigPath, &p.ConfigHash, &p.SourceRepo, &p.DefaultRecipe, &p.Vault, &p.RunCardIndex, &p.ProposalDir, &p.PromotionDefault, &p.AggregateCommand, &p.GateCommand, &p.CreatedAt, &p.UpdatedAt)
+	return row.Scan(&p.ID, &p.Name, &p.Description, &p.LocalRoot, &p.ConfigPath, &p.ConfigHash, &p.SourceRepo, &p.DefaultRecipe, &p.Vault, &p.RunCardIndex, &p.ProposalDir, &p.PromotionDefault, &p.AggregateCommand, &p.GateCommand, &p.ZoteroCollectionKey, &p.LiteratureServiceProfile, &p.CreatedAt, &p.UpdatedAt)
 }
 
 func (s *SQLite) GetProjectDefinition(ctx context.Context, id string) (*ProjectDefinition, error) {

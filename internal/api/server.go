@@ -32,6 +32,7 @@ import (
 	"github.com/ziwu/aexp/internal/eventcache"
 	"github.com/ziwu/aexp/internal/executor"
 	"github.com/ziwu/aexp/internal/filespace"
+	"github.com/ziwu/aexp/internal/literature"
 	"github.com/ziwu/aexp/internal/monitor"
 	printerservice "github.com/ziwu/aexp/internal/printer"
 	releaseservice "github.com/ziwu/aexp/internal/release"
@@ -55,7 +56,16 @@ type Server struct {
 	transferPlanner     *transfer.Planner
 	transfers           *transfer.Service
 	printer             *printerservice.Manager
+	literature          literatureService
 }
+
+type literatureService interface {
+	Catalog(context.Context) (*literature.Catalog, error)
+	Status(context.Context, *store.ProjectDefinition, time.Duration) (map[string]interface{}, error)
+	Query(context.Context, *store.ProjectDefinition, literature.QueryRequest, time.Duration) (map[string]interface{}, error)
+}
+
+const literatureQueryTimeout = 5 * time.Minute
 
 type ServerOption func(*Server)
 
@@ -72,6 +82,10 @@ func WithTransferServices(planner *transfer.Planner, service *transfer.Service) 
 
 func WithPrinterManager(manager *printerservice.Manager) ServerOption {
 	return func(server *Server) { server.printer = manager }
+}
+
+func WithLiteratureService(service literatureService) ServerOption {
+	return func(server *Server) { server.literature = service }
 }
 
 type paginatedResponse[T any] struct {
@@ -104,6 +118,7 @@ func NewServer(s store.Store, exec *executor.Executor, mon *monitor.Manager, log
 		hub:                 NewWSHub(),
 		apiToken:            apiToken,
 		allowLoopbackNoAuth: allowLoopbackNoAuth,
+		literature:          literature.NewClient(),
 	}
 	for _, option := range options {
 		option(server)
@@ -257,6 +272,9 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/{id}/evidence-proposals", s.handleCreateProjectEvidenceProposal)
 			r.Get("/{id}/journal", s.handleListProjectJournal)
 			r.Post("/{id}/journal", s.handleCreateProjectJournalEntry)
+			r.Get("/{id}/literature/catalog", s.handleProjectLiteratureCatalog)
+			r.Get("/{id}/literature/status", s.handleProjectLiteratureStatus)
+			r.Post("/{id}/literature/query", s.handleProjectLiteratureQuery)
 			r.Get("/{id}/assets", s.handleListProjectAssets)
 			r.Get("/{id}/targets", s.handleListProjectTargets)
 			r.Post("/{id}/targets", s.handleSaveProjectTarget)
@@ -2610,6 +2628,72 @@ func (s *Server) handleGetProjectDefinition(w http.ResponseWriter, r *http.Reque
 		targets = []store.ProjectTarget{}
 	}
 	writeJSON(w, http.StatusOK, projectDefinitionDetail{ProjectDefinition: *project, Targets: targets})
+}
+
+func (s *Server) projectDefinitionFromRoute(w http.ResponseWriter, r *http.Request) *store.ProjectDefinition {
+	project, err := s.store.GetProjectDefinition(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return nil
+	}
+	if project == nil {
+		writeError(w, http.StatusNotFound, "PROJECT_NOT_FOUND", "project definition not found")
+		return nil
+	}
+	return project
+}
+
+func (s *Server) handleProjectLiteratureCatalog(w http.ResponseWriter, r *http.Request) {
+	project := s.projectDefinitionFromRoute(w, r)
+	if project == nil {
+		return
+	}
+	catalog, err := s.literature.Catalog(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "LITERATURE_CATALOG_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"project_id": project.ID, "catalog": catalog})
+}
+
+func (s *Server) handleProjectLiteratureStatus(w http.ResponseWriter, r *http.Request) {
+	project := s.projectDefinitionFromRoute(w, r)
+	if project == nil {
+		return
+	}
+	status, err := s.literature.Status(r.Context(), project, 6*time.Second)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "LITERATURE_STATUS_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleProjectLiteratureQuery(w http.ResponseWriter, r *http.Request) {
+	project := s.projectDefinitionFromRoute(w, r)
+	if project == nil {
+		return
+	}
+	var input literature.QueryRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	result, err := s.literature.Query(r.Context(), project, input, literatureQueryTimeout)
+	if err != nil {
+		message := err.Error()
+		switch {
+		case strings.HasPrefix(message, "QUERY_TOO_SHORT"):
+			writeError(w, http.StatusBadRequest, "QUERY_TOO_SHORT", message)
+		case strings.HasPrefix(message, "LITERATURE_"):
+			code := strings.SplitN(message, ":", 2)[0]
+			writeError(w, http.StatusConflict, code, message)
+		default:
+			writeError(w, http.StatusBadGateway, "LITERATURE_QUERY_FAILED", message)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListProjectAssets(w http.ResponseWriter, r *http.Request) {

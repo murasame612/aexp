@@ -172,7 +172,7 @@ List tools default to compact summaries with bounded result counts. Full graph/r
 
 ### CTX-01 Compact default research entry
 
-Store, CLI, and typed MCP expose `project-research-context-v1` as a side-effect-free Project orientation read. It includes project identity, bounded active Map/Thread summaries, recent Journal headings and open next actions, total/active Run counts plus bounded compact recent Runs, pending proposal summaries, warnings, and typed `next_reads`. Unknown Projects return a typed not-found error.
+Store, CLI, and typed MCP expose `project-research-context-v2` as a side-effect-free Project orientation read. It includes project identity, bounded active Map/Thread summaries, recent Journal headings and open next actions, total/active Run counts plus bounded compact recent Runs, pending proposal summaries, the optional read-only literature binding, warnings, and typed `next_reads`. Unknown Projects return a typed not-found error.
 
 ### CTX-02 Bounded payload and honest omissions
 

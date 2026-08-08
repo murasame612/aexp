@@ -451,8 +451,85 @@ export interface ProjectJournalEntry {
   next_action?: string;
   next_action_status: "none" | "open" | "done";
   run_ids: string[];
+  literature_refs?: LiteratureReference[];
   created_at: string;
   updated_at: string;
+}
+
+export interface LiteratureReference {
+  source_kind: "frozen_corpus" | "zotero_live";
+  zotero_item_key: string;
+  zotero_uri: string;
+  page_label?: string;
+  corpus_revision?: string;
+  chunk_sha256?: string;
+  item_version?: number;
+  library_version?: number;
+}
+
+export interface LiteratureCollection {
+  key: string;
+  name: string;
+  parent_key?: string;
+  path: string;
+  depth: number;
+  uri: string;
+}
+
+export interface LiteratureProfileStatus {
+  name: string;
+  status: string;
+  zotero_collection_key?: string;
+  corpus_revision?: string;
+  documents?: number;
+  chunks?: number;
+  freshness?: string;
+  error?: string;
+}
+
+export interface LiteratureCatalogResponse {
+  project_id: string;
+  catalog: {
+    collections: LiteratureCollection[];
+    profiles: LiteratureProfileStatus[];
+    library_version?: number;
+  };
+}
+
+export interface ProjectLiteratureStatus {
+  status: string;
+  code?: string;
+  detail?: string;
+  project_id: string;
+  zotero_collection_key?: string;
+  service_profile?: string;
+  evidence_domain?: "literature";
+  claim_scope?: "background_only";
+  service?: Record<string, unknown>;
+}
+
+export interface LiteratureEvidence {
+  zotero_item_key: string;
+  zotero_uri: string;
+  title?: string;
+  page?: number | string;
+  page_label?: string;
+  chunk_sha256: string;
+  text?: string;
+  score?: number;
+  creators?: string | string[];
+  collection_names?: string[];
+}
+
+export interface LiteratureQueryResponse {
+  answer: string;
+  answerability?: string;
+  corpus_revision: string;
+  zotero_collection_key: string;
+  project_id: string;
+  evidence_domain: "literature";
+  claim_scope: "background_only";
+  evidence: LiteratureEvidence[];
 }
 
 export interface RunBookmark {
@@ -514,6 +591,8 @@ export interface ProjectDefinition {
   default_recipe?: string;
   aggregate_command?: string;
   gate_command?: string;
+  zotero_collection_key?: string;
+  literature_service_profile?: string;
   created_at?: string;
   updated_at?: string;
 }

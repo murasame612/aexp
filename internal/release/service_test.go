@@ -100,8 +100,18 @@ func TestEvaluateAppendsBlockedReleasedAndFailedWithoutMutatingSnapshot(t *testi
 	if err != nil || failed.State != store.EvidenceReleaseFailed || failed.Sequence != 3 {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
+	project.LocalRoot = ""
+	project.AggregateCommand = ""
+	project.GateCommand = ""
+	if err := db.SaveProjectDefinition(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	builtIn, err := service.Evaluate(ctx, snapshot.ID)
+	if err != nil || builtIn.State != store.EvidenceReleaseReleased || builtIn.Sequence != 4 {
+		t.Fatalf("built-in=%#v err=%v", builtIn, err)
+	}
 	releases, err := db.ListEvidenceReleases(ctx, snapshot.ID)
-	if err != nil || len(releases) != 3 || releases[0].Sequence != 3 {
+	if err != nil || len(releases) != 4 || releases[0].Sequence != 4 {
 		t.Fatalf("releases=%#v err=%v", releases, err)
 	}
 	after, err := db.GetEvidenceSnapshot(ctx, snapshot.ID)

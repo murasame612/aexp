@@ -21,7 +21,7 @@ func (s *SQLite) SaveLogicalRoot(ctx context.Context, root *LogicalRoot) error {
 	if root == nil || root.ID == "" || root.Workspace == "" {
 		return fmt.Errorf("logical root id and workspace are required")
 	}
-	if !safeRelativePath(root.Prefix) || !safeRelativePath(root.PhysicalRoot) {
+	if !safeLogicalRootPrefix(root.Prefix) || !safeRelativePath(root.PhysicalRoot) {
 		return fmt.Errorf("logical root prefix and physical root must be safe relative paths")
 	}
 	root.Prefix = cleanRelativePath(root.Prefix)
@@ -52,7 +52,11 @@ func (s *SQLite) SaveLogicalRoot(ctx context.Context, root *LogicalRoot) error {
 			rows.Close()
 			return err
 		}
-		if pathsOverlap(root.Prefix, prefix) {
+		// A workspace root is the fallback for logical paths that do not belong
+		// to a more specific child root (for example datasets). ResolveRoot uses
+		// longest-prefix matching, so this one intentional overlap is safe.
+		// Non-empty roots remain non-overlapping to avoid ambiguous ownership.
+		if root.Prefix == prefix || (root.Prefix != "" && prefix != "" && pathsOverlap(root.Prefix, prefix)) {
 			rows.Close()
 			return fmt.Errorf("logical root %s overlaps root %s at %s", root.Prefix, id, prefix)
 		}
@@ -514,6 +518,13 @@ func safeRelativePath(value string) bool {
 		}
 	}
 	return true
+}
+
+func safeLogicalRootPrefix(value string) bool {
+	if value == "" {
+		return true
+	}
+	return safeRelativePath(value)
 }
 
 func pathsOverlap(a, b string) bool {

@@ -11,6 +11,15 @@ func TestProjectResearchContextIsCompactAndDrillDownOriented(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	createTestProject(t, s, "project_context", "Context Project")
+	project, err := s.GetProjectDefinition(ctx, "project_context")
+	if err != nil || project == nil {
+		t.Fatal(err)
+	}
+	project.ZoteroCollectionKey = "SHUMTSPS"
+	project.LiteratureServiceProfile = "mu-paperqa"
+	if err := s.SaveProjectDefinition(ctx, project); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.CreateResource(ctx, &Resource{ID: "rsrc_context", Name: "context", Type: "ssh", Host: "localhost", RootDir: "/workspace"}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +60,12 @@ func TestProjectResearchContextIsCompactAndDrillDownOriented(t *testing.T) {
 	if got.ContractVersion != ProjectResearchContextVersion || got.Project.ID != "project_context" {
 		t.Fatalf("context identity = %#v", got)
 	}
+	if !got.Literature.Configured || got.Literature.ZoteroCollectionKey != "SHUMTSPS" || got.Literature.ClaimScope != "background_only" {
+		t.Fatalf("literature context = %#v", got.Literature)
+	}
+	if got.Literature.DiscoveryPolicy != "project_first" || !got.Literature.ZoteroLiveAllowed || got.Literature.BindingLimitsSearch {
+		t.Fatalf("literature discovery contract = %#v", got.Literature)
+	}
 	if len(got.Topics) != 1 || got.Topics[0].ID != topic.ID || got.Topics[0].ThreadCount != 1 {
 		t.Fatalf("topic summaries = %#v", got.Topics)
 	}
@@ -70,7 +85,7 @@ func TestProjectResearchContextIsCompactAndDrillDownOriented(t *testing.T) {
 	if strings.Contains(string(encoded), "full working reasoning") || strings.Contains(string(encoded), "python train.py") {
 		t.Fatalf("compact context leaked Journal body or full command: %s", encoded)
 	}
-	if !strings.Contains(string(encoded), "aexp_get_evidence_thread_map") || !strings.Contains(string(encoded), "aexp_get_project_journal_entry") {
+	if !strings.Contains(string(encoded), "aexp_get_evidence_thread_map") || !strings.Contains(string(encoded), "aexp_get_project_journal_entry") || !strings.Contains(string(encoded), "aexp_literature_status") {
 		t.Fatalf("context is missing explicit next reads: %s", encoded)
 	}
 }
