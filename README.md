@@ -97,7 +97,7 @@ installs `aexp` plus the legacy/debug `aexp-event` compatibility entrypoint into
 To install a specific version or directory:
 
 ```bash
-AEXP_VERSION=v0.3.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
+AEXP_VERSION=v0.3.1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 

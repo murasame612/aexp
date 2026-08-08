@@ -1372,8 +1372,7 @@ func TestResolveProjectProfileUsesCachedProfile(t *testing.T) {
 }
 
 func TestResolveProjectProfileRefreshBypassesCache(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+	setupCtx := context.Background()
 	db := newExecutorTestStore(t)
 	res := &store.Resource{
 		ID:      "rsrc_refresh",
@@ -1385,10 +1384,10 @@ func TestResolveProjectProfileRefreshBypassesCache(t *testing.T) {
 		RootDir: "/workspace",
 		Status:  store.ResourceStatusIdle,
 	}
-	if err := db.CreateResource(ctx, res); err != nil {
+	if err := db.CreateResource(setupCtx, res); err != nil {
 		t.Fatalf("CreateResource: %v", err)
 	}
-	if err := db.SaveProjectProfile(ctx, &store.ProjectProfile{
+	if err := db.SaveProjectProfile(setupCtx, &store.ProjectProfile{
 		ResourceID:   res.ID,
 		ResourceName: res.Name,
 		Cwd:          "/workspace/project",
@@ -1402,6 +1401,8 @@ func TestResolveProjectProfileRefreshBypassesCache(t *testing.T) {
 	}
 
 	exec := NewExecutor(NewSSHPool(1*time.Millisecond), db)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	_, err := exec.ResolveProjectProfile(ctx, res, "/workspace/project", ProjectEnvAuto, "", true)
 	if err == nil {
 		t.Fatal("expected refresh to bypass cache and attempt remote detection")
