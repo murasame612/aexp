@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +58,95 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 	}
 
 	return s, nil
+}
+
+// OpenSQLiteReadOnly opens an existing database without running migrations or
+// reconciliation writes. It is intended for offline audit and recovery
+// preflight paths that must never mutate the source control-plane database.
+func OpenSQLiteReadOnly(dbPath string) (*SQLite, error) {
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat database: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("database path is a directory: %s", absPath)
+	}
+
+	query := url.Values{}
+	query.Set("mode", "ro")
+	query.Add("_pragma", "query_only(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath), RawQuery: query.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only db: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping read-only db: %w", err)
+	}
+	var queryOnly int
+	if err := db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("verify read-only db: %w", err)
+	}
+	if queryOnly != 1 {
+		db.Close()
+		return nil, fmt.Errorf("read-only database did not enable query_only")
+	}
+	return &SQLite{db: db}, nil
+}
+
+// SnapshotSQLite creates a transactionally consistent standalone copy of an
+// existing SQLite database. The source is opened read-only and is never
+// migrated, checkpointed, or otherwise modified.
+func SnapshotSQLite(sourcePath, destinationPath string) error {
+	sourceAbs, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return fmt.Errorf("resolve source database path: %w", err)
+	}
+	destinationAbs, err := filepath.Abs(destinationPath)
+	if err != nil {
+		return fmt.Errorf("resolve destination database path: %w", err)
+	}
+	if sourceAbs == destinationAbs {
+		return fmt.Errorf("snapshot destination must differ from source database")
+	}
+	if _, err := os.Stat(sourceAbs); err != nil {
+		return fmt.Errorf("stat source database: %w", err)
+	}
+	if _, err := os.Stat(destinationAbs); err == nil {
+		return fmt.Errorf("snapshot destination already exists: %s", destinationAbs)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat snapshot destination: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationAbs), 0o700); err != nil {
+		return fmt.Errorf("create snapshot directory: %w", err)
+	}
+
+	query := url.Values{}
+	query.Set("mode", "ro")
+	query.Add("_pragma", "busy_timeout(5000)")
+	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(sourceAbs), RawQuery: query.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open snapshot source: %w", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("ping snapshot source: %w", err)
+	}
+	if _, err := db.Exec("VACUUM INTO ?", destinationAbs); err != nil {
+		return fmt.Errorf("create SQLite snapshot: %w", err)
+	}
+	if err := os.Chmod(destinationAbs, 0o600); err != nil {
+		return fmt.Errorf("secure SQLite snapshot: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLite) migrate() error {

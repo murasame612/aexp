@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1174,6 +1175,91 @@ func TestRunMarks(t *testing.T) {
 	}
 	if len(keyResults) != 1 || keyResults[0].ID != "mark_test001" {
 		t.Errorf("key result filter = %#v, want mark_test001", keyResults)
+	}
+}
+
+func TestOpenSQLiteReadOnlyDoesNotCreateOrMutateDatabase(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "aexp.db")
+	writable, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	if err := writable.CreateResource(ctx, &Resource{ID: "readonly_resource", Name: "readonly", Type: ResourceTypeSSH, Host: "example", RootDir: "/workspace"}); err != nil {
+		writable.Close()
+		t.Fatalf("seed resource: %v", err)
+	}
+	if err := writable.Close(); err != nil {
+		t.Fatalf("close writable database: %v", err)
+	}
+
+	readonly, err := OpenSQLiteReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteReadOnly: %v", err)
+	}
+	defer readonly.Close()
+	resources, err := readonly.ListResources(ctx)
+	if err != nil || len(resources) != 1 {
+		t.Fatalf("ListResources: len=%d err=%v", len(resources), err)
+	}
+	if err := readonly.CreateResource(ctx, &Resource{ID: "must_not_write", Name: "blocked", Type: ResourceTypeSSH}); err == nil {
+		t.Fatal("read-only database unexpectedly accepted a write")
+	}
+
+	missingPath := filepath.Join(t.TempDir(), "missing.db")
+	if _, err := OpenSQLiteReadOnly(missingPath); err == nil {
+		t.Fatal("missing database must be rejected")
+	}
+	if _, err := os.Stat(missingPath); !os.IsNotExist(err) {
+		t.Fatalf("read-only open created missing database: %v", err)
+	}
+}
+
+func TestSnapshotSQLiteCreatesStandaloneConsistentCopy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.db")
+	snapshotPath := filepath.Join(dir, "snapshot", "aexp.db")
+	source, err := NewSQLite(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.CreateResource(ctx, &Resource{ID: "snapshot_resource", Name: "snapshot", Type: ResourceTypeSSH, Host: "example", RootDir: "/workspace"}); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if err := SnapshotSQLite(sourcePath, snapshotPath); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if err := source.CreateResource(ctx, &Resource{ID: "after_snapshot", Name: "after", Type: ResourceTypeSSH, Host: "example", RootDir: "/workspace"}); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := OpenSQLiteReadOnly(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	resources, err := snapshot.ListResources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 || resources[0].ID != "snapshot_resource" {
+		t.Fatalf("snapshot resources = %#v", resources)
+	}
+	info, err := os.Stat(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("snapshot permissions are too broad: %o", info.Mode().Perm())
 	}
 }
 

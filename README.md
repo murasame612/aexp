@@ -97,7 +97,7 @@ installs `aexp` plus the legacy/debug `aexp-event` compatibility entrypoint into
 To install a specific version or directory:
 
 ```bash
-AEXP_VERSION=v0.2.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
+AEXP_VERSION=v0.3.0 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```
 
@@ -588,6 +588,37 @@ correctly, but the generic CLI path is intentionally not read-only.
 ```text
 ~/.aexp/aexp.db
 ```
+
+Before moving that control plane to another machine, run the offline portability
+preflight:
+
+```bash
+aexp portability audit
+aexp portability audit --json --strict
+aexp portability export --output control-plane.tar.gz
+aexp portability validate control-plane.tar.gz \
+  --map-path /Users/old/research=/home/new/research
+aexp portability import control-plane.tar.gz \
+  --to /home/new/aexp-restored \
+  --map-path /Users/old/research=/home/new/research
+```
+
+The audit opens the existing database read-only, inventories machine-bound and
+logical paths, checks controller-local durable files such as attachments, and
+lists SSH resources that must be rebound. It does not contact remote resources,
+move data, rewrite paths, expose credentials, or resume Runs. The target model,
+implementation boundary, and acceptance criteria are documented in
+[`docs/prd-portability-foundation-v1.md`](docs/prd-portability-foundation-v1.md),
+[`docs/implementation-portability-foundation-v1.md`](docs/implementation-portability-foundation-v1.md),
+and [`docs/acceptance-portability-foundation-v1.md`](docs/acceptance-portability-foundation-v1.md).
+The latest verification record is
+[`docs/verification-portability-foundation-v1-2026-08-09.md`](docs/verification-portability-foundation-v1-2026-08-09.md).
+The recovery bundle target, implementation, and acceptance contract are in
+[`docs/prd-portability-recovery-v1.md`](docs/prd-portability-recovery-v1.md),
+[`docs/implementation-portability-recovery-v1.md`](docs/implementation-portability-recovery-v1.md),
+and [`docs/acceptance-portability-recovery-v1.md`](docs/acceptance-portability-recovery-v1.md).
+The current end-to-end verification is recorded in
+[`docs/verification-portability-recovery-v1-2026-08-09.md`](docs/verification-portability-recovery-v1-2026-08-09.md).
 
 Remote run files live under the registered resource root:
 

@@ -88,6 +88,7 @@ research workflow.`,
 		matrixCmd(),
 		mcpCmd(),
 		literatureCmd(),
+		portabilityCmd(),
 		projectCmd(),
 		printerCmd(),
 		storageCmd(),
@@ -1131,10 +1132,11 @@ func verifyReleaseChecksum(ctx context.Context, checksumsURL, archivePath, asset
 	if expected == "" {
 		return fmt.Errorf("checksums.txt did not contain %s", asset)
 	}
-	actual, err := sha256File(archivePath)
+	actualWithPrefix, err := fileSHA256(archivePath)
 	if err != nil {
 		return err
 	}
+	actual := strings.TrimPrefix(actualWithPrefix, "sha256:")
 	if !strings.EqualFold(expected, actual) {
 		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset, expected, actual)
 	}
@@ -1150,19 +1152,6 @@ func checksumForAsset(checksums, asset string) string {
 		}
 	}
 	return ""
-}
-
-func sha256File(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("hash %s: %w", path, err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func extractBinaryFromTarGz(archivePath, memberName, dest string) error {
@@ -6395,12 +6384,12 @@ func runDatasetInputFromVersion(dataset *store.DatasetVersion) (store.RunDataset
 func fileSHA256(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("open %s: %w", path, err)
 	}
 	defer file.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, file); err != nil {
-		return "", err
+		return "", fmt.Errorf("hash %s: %w", path, err)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
