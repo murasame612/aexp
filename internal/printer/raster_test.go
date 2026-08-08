@@ -25,6 +25,7 @@ func TestBinaryDeviceKRemovesAntialiasingGray(t *testing.T) {
 }
 
 func TestNativeRasterMediaMatchesExactPixelHeight(t *testing.T) {
+	requireNativeCUPSRaster(t)
 	_, document, err := renderReceiptCUPSRaster("AEXP RUN STARTED\n")
 	if err != nil {
 		t.Fatal(err)

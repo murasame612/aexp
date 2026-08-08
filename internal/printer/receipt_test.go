@@ -97,10 +97,8 @@ func TestReceiptRemovesControlCharacters(t *testing.T) {
 func TestReceiptTimeIsNeverTruncated(t *testing.T) {
 	now := time.Date(2026, 7, 24, 0, 33, 24, 0, time.FixedZone("SGT", 8*60*60))
 	_, receipt := BuildTestReceipt(now)
-	if !strings.Contains(receipt, "2026-07-24 00:33:24") {
+	want := now.In(time.Local).Format("2006-01-02 15:04:05")
+	if !strings.Contains(receipt, "time:      "+want+"\n") {
 		t.Fatalf("full timestamp missing:\n%s", receipt)
-	}
-	if strings.Contains(receipt, "00:33:2...") {
-		t.Fatalf("timestamp was truncated:\n%s", receipt)
 	}
 }

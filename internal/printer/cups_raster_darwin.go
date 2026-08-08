@@ -94,6 +94,8 @@ import (
 	"unsafe"
 )
 
+const nativeCUPSRasterSupported = true
+
 func encodeNativeCUPSRaster(bitmap *image.Gray, media string) ([]byte, error) {
 	bounds := bitmap.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()

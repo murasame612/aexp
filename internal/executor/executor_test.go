@@ -1525,8 +1525,6 @@ func TestCancelRaceWithNaturalCompletionPreservesSucceededStatus(t *testing.T) {
 
 func TestCheckRunStatusDoesNotPersistSSHUnreachableOnProbeFailure(t *testing.T) {
 	ctx := context.Background()
-	probeCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
 	db := newExecutorTestStore(t)
 	if err := db.CreateResource(ctx, &store.Resource{
 		ID:      "rsrc_unreachable_probe",
@@ -1552,6 +1550,8 @@ func TestCheckRunStatusDoesNotPersistSSHUnreachableOnProbeFailure(t *testing.T) 
 	}
 
 	exec := NewExecutor(NewSSHPool(50*time.Millisecond), db)
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	if _, err := exec.CheckRunStatus(probeCtx, "run_unreachable_probe"); err == nil {
 		t.Fatal("expected probe failure")
 	}

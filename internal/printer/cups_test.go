@@ -19,12 +19,20 @@ type fakeRunner struct {
 	err  error
 }
 
+func requireNativeCUPSRaster(t *testing.T) {
+	t.Helper()
+	if !nativeCUPSRasterSupported {
+		t.Skip("native CUPS raster requires macOS with cgo enabled")
+	}
+}
+
 func (f *fakeRunner) Run(_ context.Context, name string, args []string, stdin string) (string, error) {
 	f.call = runnerCall{name: name, args: append([]string(nil), args...), stdin: stdin}
 	return f.out, f.err
 }
 
 func TestCUPSPrintUsesPOS80CutOptionsAndParsesJobID(t *testing.T) {
+	requireNativeCUPSRaster(t)
 	runner := &fakeRunner{out: "request id is Printer_POS_80-42 (1 file(s))"}
 	cups := &CUPS{runner: runner}
 	jobID, err := cups.Print(t.Context(), "Printer_POS_80", "AEXP RUN", "receipt\n")
@@ -65,6 +73,7 @@ func TestCUPSPrintUsesPOS80CutOptionsAndParsesJobID(t *testing.T) {
 }
 
 func TestCUPSPrintReportsSubmissionFailure(t *testing.T) {
+	requireNativeCUPSRaster(t)
 	runner := &fakeRunner{out: "printer offline", err: errors.New("exit status 1")}
 	_, err := (&CUPS{runner: runner}).Print(t.Context(), "q", "t", "body")
 	if err == nil {
@@ -73,6 +82,7 @@ func TestCUPSPrintReportsSubmissionFailure(t *testing.T) {
 }
 
 func TestCUPSPrintParsesLocalizedMacOSOutput(t *testing.T) {
+	requireNativeCUPSRaster(t)
 	runner := &fakeRunner{out: "请求id是Printer_POS_80-21（0个文件）"}
 	jobID, err := (&CUPS{runner: runner}).Print(t.Context(), "Printer_POS_80", "test", "body")
 	if err != nil || jobID != "Printer_POS_80-21" {
