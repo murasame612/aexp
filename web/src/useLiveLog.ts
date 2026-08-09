@@ -94,5 +94,5 @@ export function useLiveLog(token: string, runId: string, query: LiveLogQuery | n
     };
   }, [token, runId, query?.source, query?.path, live]);
 
-  return { lines: machine.lines, state: machine.phase, error: machine.error };
+  return { lines: machine.lines, state: machine.phase, cursor: machine.cursor, error: machine.error };
 }

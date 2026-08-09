@@ -239,6 +239,47 @@ func TestExecToolRejectsLongTimeout(t *testing.T) {
 	}
 }
 
+func TestToolErrorPreservesPartialRunResult(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "aexp-stub")
+	script := `#!/bin/sh
+printf 'created run_PARTIAL\n'
+printf 'remote launch timed out\n' >&2
+exit 1
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aexp_submit_run","arguments":{"resource":"mu","project_id":"project-a","name":"partial","command":"python train.py"}}}` + "\n"
+	var out bytes.Buffer
+	if err := NewServer(stub).Serve(t.Context(), strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, out.String())
+	}
+	if !resp.Result.IsError || len(resp.Result.Content) != 1 {
+		t.Fatalf("expected structured tool error: %s", out.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.Result.Content[0].Text), &payload); err != nil {
+		t.Fatalf("decode tool payload: %v text=%s", err, resp.Result.Content[0].Text)
+	}
+	partial, ok := payload["partial_result"].(map[string]interface{})
+	stdout, _ := partial["stdout"].(string)
+	if payload["schema_version"] != "aexp-mcp-tool-error-v1" || payload["run_id"] != "run_PARTIAL" || !ok || partial["run_id"] != "run_PARTIAL" || !strings.Contains(stdout, "created run_PARTIAL") || payload["next_action"] == nil {
+		t.Fatalf("partial result was not preserved: %#v", payload)
+	}
+}
+
 func TestSubmitRunToolPassesSafetyMetadata(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args.txt")

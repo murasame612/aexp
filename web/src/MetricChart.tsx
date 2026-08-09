@@ -1,8 +1,13 @@
 import { useEffect, useRef } from "react";
-import * as echarts from "echarts";
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 import type { MetricSeriesSummary } from "./events";
 import type { MetricPoint } from "./types";
 import { metricSeriesColor } from "./metricColors";
+
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 /* Canvas charts cannot resolve CSS variables, so the chrome colours below
    mirror the console theme tokens from styles.css (muted/faint/border). */

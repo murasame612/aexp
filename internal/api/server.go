@@ -336,6 +336,7 @@ func (s *Server) Handler() http.Handler {
 	uiV2Content, uiV2Err := fs.Sub(staticFS, "static/ui-v2")
 	if uiV2Err == nil {
 		uiV2Server := http.StripPrefix("/ui-v2", http.FileServer(http.FS(uiV2Content)))
+		compressedUIV2Server := middleware.Compress(5)(uiV2Server)
 		r.Get("/ui-v2", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui-v2/", http.StatusMovedPermanently)
 		})
@@ -345,7 +346,7 @@ func (s *Server) Handler() http.Handler {
 			if name != "" {
 				if f, err := uiV2Content.Open(name); err == nil {
 					f.Close()
-					uiV2Server.ServeHTTP(w, req)
+					compressedUIV2Server.ServeHTTP(w, req)
 					return
 				}
 			}
@@ -399,21 +400,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resources, _ := s.store.ListResources(ctx)
-	runs, _ := s.store.ListRuns(ctx, store.RunFilter{})
+	totalRuns, _ := s.store.CountRuns(ctx, store.RunFilter{})
 	if parseBoolQuery(r.URL.Query().Get("refresh")) {
+		runs, _ := s.store.ListRuns(ctx, store.RunFilter{})
 		runs, _, _ = s.executor.RefreshRuns(ctx, runs, 2*time.Second)
+		totalRuns = len(runs)
 	}
-
-	running := 0
-	for _, run := range runs {
-		if store.IsRunActiveLifecycleStatus(run.Status) {
-			running++
-		}
-	}
+	running, _ := s.store.CountRuns(ctx, store.RunFilter{Active: true})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"total_resources": len(resources),
-		"total_runs":      len(runs),
+		"total_runs":      totalRuns,
 		"active_runs":     running,
 	})
 }
@@ -2006,6 +2003,9 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "DB_ERROR", err.Error())
 		return
 	}
+	if limit := parseIntQuery(r.URL.Query().Get("limit"), 0); limit > 0 && len(artifacts) > limit {
+		artifacts = artifacts[:limit]
+	}
 	writeJSON(w, http.StatusOK, artifacts)
 }
 
@@ -2067,6 +2067,18 @@ func (s *Server) handleGetRunManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	if manifest == nil {
 		writeError(w, http.StatusNotFound, "MANIFEST_UNAVAILABLE", "this legacy run has no captured manifest")
+		return
+	}
+	if parseBoolQuery(r.URL.Query().Get("summary")) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"run_id":         manifest.RunID,
+			"schema_version": manifest.SchemaVersion,
+			"state":          manifest.State,
+			"sha256":         manifest.SHA256,
+			"completeness":   manifest.Completeness,
+			"created_at":     manifest.CreatedAt,
+			"finalized_at":   manifest.FinalizedAt,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, manifest)

@@ -17,6 +17,7 @@ import type {
   ExperimentMatrixCell,
   Artifact,
   ArtifactCollection,
+  HealthStatus,
   EvidenceSnapshot,
   EvidenceRelease,
   RunManifest,
@@ -27,7 +28,6 @@ import type {
   Paginated,
   ProjectRunCard,
   ProjectAsset,
-  ProjectView,
   ProjectDefinition,
   ProjectTarget,
   ProjectTargetPreparePlan,
@@ -62,6 +62,10 @@ export class ApiError extends Error {
     this.details = details;
     this.code = code;
   }
+}
+
+export function getHealth() {
+  return apiFetch<HealthStatus>("/health");
 }
 
 export interface RequestOptions extends RequestInit {
@@ -310,8 +314,9 @@ export function getLogs(token: string, id: string, query: { source?: string; pat
   return apiFetch<LogsResponse>(`/runs/${encodeURIComponent(id)}/logs?${params}`, { token });
 }
 
-export function getArtifacts(token: string, id: string) {
-  return apiFetch<Artifact[]>(`/runs/${encodeURIComponent(id)}/artifacts`, { token });
+export function getArtifacts(token: string, id: string, limit = 0) {
+  const query = limit > 0 ? `?limit=${limit}` : "";
+  return apiFetch<Artifact[]>(`/runs/${encodeURIComponent(id)}/artifacts${query}`, { token });
 }
 
 export function getArtifactCollection(token: string, id: string) {
@@ -323,7 +328,7 @@ export function collectArtifacts(token: string, id: string) {
 }
 
 export function getRunManifest(token: string, id: string) {
-  return apiFetch<RunManifest>(`/runs/${encodeURIComponent(id)}/manifest`, { token });
+  return apiFetch<RunManifest>(`/runs/${encodeURIComponent(id)}/manifest?summary=true`, { token });
 }
 
 export function getEvidenceSnapshots(token: string, runID: string) {
@@ -382,10 +387,6 @@ export function saveBookmark(token: string, runId: string, note = "") {
 
 export function deleteBookmark(token: string, runId: string) {
   return apiFetch<void>(`/runs/${encodeURIComponent(runId)}/bookmark`, { method: "DELETE", token });
-}
-
-export function getProjects(token: string) {
-  return apiFetch<ProjectView[]>("/projects?limit=500", { token });
 }
 
 export function getProjectDefinitions(token: string) {

@@ -1337,6 +1337,88 @@ func TestResearchOSIsTheOnlyWebEntrypoint(t *testing.T) {
 	}
 }
 
+func TestRunDetailSummaryEndpointsAvoidLargeInitialPayloads(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_detail", Name: "detail", Type: "local", Host: "127.0.0.1", RootDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, &store.Run{ID: "run_detail", ResourceID: "rsrc_detail", Status: store.RunStatusSucceeded, Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := db.SaveArtifacts(ctx, "run_detail", []store.Artifact{
+		{ID: "artifact_a", Path: "/tmp/a", Type: "file", Size: 1, CollectionState: store.ArtifactCollectionIndexed, DiscoveredAt: now, ModifiedAt: now},
+		{ID: "artifact_b", Path: "/tmp/b", Type: "file", Size: 2, CollectionState: store.ArtifactCollectionIndexed, DiscoveredAt: now, ModifiedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRunManifest(ctx, &store.RunManifest{RunID: "run_detail", SchemaVersion: 1, State: store.RunManifestFinal, ManifestJSON: strings.Repeat("x", 32_000), SHA256: "sha256:detail", Completeness: store.RunManifestCompletenessCurrent, FinalizedAt: &now}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(db, nil, nil, slog.Default(), "", true)
+	artifacts := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(artifacts, httptest.NewRequest(http.MethodGet, "/api/v1/runs/run_detail/artifacts?limit=1", nil))
+	if artifacts.Code != http.StatusOK {
+		t.Fatalf("artifacts status=%d body=%s", artifacts.Code, artifacts.Body.String())
+	}
+	var items []store.Artifact
+	if err := json.Unmarshal(artifacts.Body.Bytes(), &items); err != nil || len(items) != 1 {
+		t.Fatalf("limited artifacts=%#v err=%v", items, err)
+	}
+
+	manifest := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(manifest, httptest.NewRequest(http.MethodGet, "/api/v1/runs/run_detail/manifest?summary=true", nil))
+	if manifest.Code != http.StatusOK {
+		t.Fatalf("manifest status=%d body=%s", manifest.Code, manifest.Body.String())
+	}
+	if strings.Contains(manifest.Body.String(), "manifest_json") || !strings.Contains(manifest.Body.String(), "sha256:detail") {
+		t.Fatalf("unexpected manifest summary: %s", manifest.Body.String())
+	}
+}
+
+func TestStatsCountsRunsWithoutChangingVisibilitySemantics(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.CreateResource(ctx, &store.Resource{ID: "rsrc_stats", Name: "stats", Type: "local", Host: "127.0.0.1", RootDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []*store.Run{
+		{ID: "run_running", ResourceID: "rsrc_stats", Status: store.RunStatusRunning, Command: "sleep 1"},
+		{ID: "run_done", ResourceID: "rsrc_stats", Status: store.RunStatusSucceeded, Command: "true"},
+		{ID: "run_archived", ResourceID: "rsrc_stats", Status: store.RunStatusSucceeded, Command: "true"},
+	} {
+		if err := db.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.ArchiveRun(ctx, "run_archived"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	NewServer(db, nil, nil, slog.Default(), "", true).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]int
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["total_runs"] != 2 || payload["active_runs"] != 1 || payload["total_resources"] != 1 {
+		t.Fatalf("stats=%#v", payload)
+	}
+}
+
 func TestProjectViewsEnrichCardsWithRunsAndMarks(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.NewSQLite(filepath.Join(t.TempDir(), "aexp.db"))

@@ -6,6 +6,7 @@ import {
   Activity,
   Archive,
   BarChart3,
+  BookOpen,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -13,9 +14,9 @@ import {
   Cpu,
   Database,
   ExternalLink,
-  Grid3X3,
   Heart,
-	HardDrive,
+  HardDrive,
+  KeyRound,
   Languages,
   Network,
   PlayCircle,
@@ -23,13 +24,12 @@ import {
   RefreshCcw,
   Server,
   Settings,
-  Star,
   Terminal,
   Trash2
 } from "lucide-react";
 import { runDataFinalizationPresentation } from "./dataState";
 import { StatusCapsule } from "./StatusCapsule";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   assignRunProject,
@@ -44,6 +44,7 @@ import {
   getArtifactCollection,
   getBookmarks,
   getExecEvents,
+  getHealth,
   getLogs,
   getProjectDefinitions,
   getRunJournalEntries,
@@ -79,9 +80,7 @@ import type {
   ParamPoint,
   ParsedEvents,
   ProgressPoint,
-  ProjectRunCard,
   ProjectDefinition,
-  ProjectView,
   Resource,
   Run,
   RunBookmark,
@@ -107,29 +106,30 @@ import {
 } from "./utils";
 import { parseEventLines, summarizeMetricFamilies, summarizeProgress, type ProgressSummary } from "./events";
 import { logSnapshotError } from "./logs";
-import { EvidenceChainBoard } from "./EvidenceChainBoard";
-import { ExperimentMatrixPage } from "./ExperimentMatrixPage";
 import { replaceRunInPage } from "./runCache";
-import { ProjectLaunchpadPage } from "./ProjectLaunchpadPage";
-import { ProjectAssetsPage } from "./ProjectAssetsPage";
-import { ProjectJournalPage } from "./ProjectJournalPage";
-import { ProjectLiteraturePage } from "./ProjectLiteraturePage";
-import { useLiveLog } from "./useLiveLog";
+import { useLiveLog, type LiveLogState } from "./useLiveLog";
 import { Modal } from "./Modal";
 import { metricSeriesColor } from "./metricColors";
-import { DataCenterPage } from "./DataCenterPage";
-import { EvidenceFreezePanel } from "./EvidenceFreezePanel";
-import { SettingsPage } from "./SettingsPage";
 import { catchUpRunChanges, readRunChangeStream, seedRunChangeCheckpoint, type RunChangeCheckpoint } from "./runChanges";
 import { applyRunChange, invalidateRunQueriesOnReturn, runListEnabledForTab, runSummaryKeys } from "./runSync";
-import { projectEvidencePreview } from "./projectPreview";
 import { projectRunFilterOptions, projectScopeFromFilterValue } from "./projectFilters";
 import { parseProjectRoute } from "./projectRoute";
+import { useDebouncedValue } from "./useDebouncedValue";
+import { artifactPage, artifactRequestLimit, initialArtifactRows } from "./artifactPagination";
 
 type Tab = "dashboard" | "resources" | "dataCenter" | "launchpad" | "projects" | "journal" | "literature" | "projectAssets" | "matrices" | "evidence" | "runs" | "favorites" | "execs" | "settings";
 
 const MetricChart = lazy(() => import("./MetricChart").then((module) => ({ default: module.MetricChart })));
 const CompareModal = lazy(() => import("./CompareModal").then((module) => ({ default: module.CompareModal })));
+const EvidenceChainBoard = lazy(() => import("./EvidenceChainBoard").then((module) => ({ default: module.EvidenceChainBoard })));
+const ExperimentMatrixPage = lazy(() => import("./ExperimentMatrixPage").then((module) => ({ default: module.ExperimentMatrixPage })));
+const ProjectLaunchpadPage = lazy(() => import("./ProjectLaunchpadPage").then((module) => ({ default: module.ProjectLaunchpadPage })));
+const ProjectAssetsPage = lazy(() => import("./ProjectAssetsPage").then((module) => ({ default: module.ProjectAssetsPage })));
+const ProjectJournalPage = lazy(() => import("./ProjectJournalPage").then((module) => ({ default: module.ProjectJournalPage })));
+const ProjectLiteraturePage = lazy(() => import("./ProjectLiteraturePage").then((module) => ({ default: module.ProjectLiteraturePage })));
+const DataCenterPage = lazy(() => import("./DataCenterPage").then((module) => ({ default: module.DataCenterPage })));
+const EvidenceFreezePanel = lazy(() => import("./EvidenceFreezePanel").then((module) => ({ default: module.EvidenceFreezePanel })));
+const SettingsPage = lazy(() => import("./SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
 interface RunProjectMeta {
   projectId: string;
@@ -158,6 +158,8 @@ export function App() {
 
   const [tab, setTab] = useState<Tab>(readInitialTab());
   const [tokenDraft, setTokenDraft] = useState(token);
+  const [tokenEditorOpen, setTokenEditorOpen] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [runPage, setRunPage] = useState(0);
   const [execPage, setExecPage] = useState(0);
   const [runTrash, setRunTrash] = useState(false);
@@ -178,11 +180,13 @@ export function App() {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const runProjectScope = projectScopeFromFilterValue(runProject);
+	const debouncedRunQuery = useDebouncedValue(runQuery.trim(), 300);
 
 	const needsRuns = runListEnabledForTab(tab);
 	const needsProjects = tab === "projects" || tab === "journal" || tab === "literature" || tab === "projectAssets" || tab === "evidence" || tab === "runs" || tab === "favorites" || Boolean(detailRunId);
 	const needsResources = tab === "dashboard" || tab === "resources" || tab === "dataCenter" || tab === "launchpad" || Boolean(detailRunId);
 	const needsExecs = tab === "dashboard" || tab === "execs";
+  const health = useQuery({ queryKey: ["health"], queryFn: getHealth, refetchInterval: 30_000, retry: 1 });
   const stats = useQuery({ queryKey: ["stats", token], queryFn: () => getStats(token), enabled: tab === "dashboard", refetchInterval: 5000 });
   const resources = useQuery({ queryKey: ["resources", token], queryFn: () => getResources(token), enabled: needsResources, refetchInterval: 5000 });
   const bookmarks = useQuery({ queryKey: ["bookmarks", token], queryFn: () => getBookmarks(token), enabled: tab === "runs" || tab === "favorites", refetchInterval: 30000 });
@@ -194,7 +198,7 @@ export function App() {
 	refetchOnWindowFocus: "always"
   });
   const runs = useQuery({
-    queryKey: runSummaryKeys.list(token, runPage, runStatus, runResource, runTrash, runProjectScope, runKind, runQuery),
+    queryKey: runSummaryKeys.list(token, runPage, runStatus, runResource, runTrash, runProjectScope, runKind, debouncedRunQuery),
     queryFn: () =>
       getRunSummaries(token, {
         limit: runPageSize,
@@ -202,14 +206,15 @@ export function App() {
         status: runStatus,
         resource: runResource,
         projectScope: runProjectScope,
-        query: runQuery,
+        query: debouncedRunQuery,
         kindGroup: runKind,
         trash: runTrash,
         refresh: false
       }),
     enabled: needsRuns,
 	refetchInterval: 30_000,
-	refetchOnWindowFocus: "always"
+	refetchOnWindowFocus: "always",
+	placeholderData: keepPreviousData
   });
 	const runSyncCursor = needsRuns ? runs.data?.change_cursor : activeRunSummaries.data?.change_cursor;
 	const runChangeCatchup = useQuery({
@@ -223,8 +228,13 @@ export function App() {
 	refetchOnWindowFocus: "always"
 	});
   const execs = useQuery({
-    queryKey: ["execs", token, execPage, execResource, execActor],
-    queryFn: () => getExecEvents(token, { limit: execPageSize, offset: execPage * execPageSize, resource_id: execResource, actor: execActor }),
+    queryKey: ["execs", token, tab === "dashboard" ? "dashboard" : "page", execPage, execResource, execActor],
+    queryFn: () => getExecEvents(token, {
+      limit: tab === "dashboard" ? 3 : execPageSize,
+      offset: tab === "dashboard" ? 0 : execPage * execPageSize,
+      resource_id: execResource,
+      actor: execActor
+    }),
     enabled: needsExecs,
     refetchInterval: 15000
   });
@@ -243,6 +253,10 @@ export function App() {
     return runList;
   }, [runList, runKind, bookmarkList]);
   const activeRuns = activeRunSummaries.data?.items || [];
+  const detailRunPreview = useMemo(
+    () => detailRunId ? runList.find((run) => run.id === detailRunId) || activeRuns.find((run) => run.id === detailRunId) : undefined,
+    [activeRuns, detailRunId, runList]
+  );
   const visibleExecs = useMemo(() => filterExecs(execs.data?.items || [], execQuery), [execs.data, execQuery]);
   const favoriteRuns = useMemo(() => filterRuns(runList, { query: favoriteQuery, kind: "favorites", bookmarks: bookmarkList }), [runList, favoriteQuery, bookmarkList]);
   const visibleProjects = useMemo(() => filterProjects(projectList, projectQuery), [projectList, projectQuery]);
@@ -265,8 +279,14 @@ export function App() {
 		runChangeCheckpoint.current = runChangeCatchup.data.checkpoint;
 	}, [queryClient, runChangeCatchup.data, token]);
 
-  const refreshAll = () => {
-    void queryClient.invalidateQueries();
+  const refreshAll = async () => {
+    if (manualRefreshing) return;
+    setManualRefreshing(true);
+    try {
+      await queryClient.invalidateQueries({ type: "active" });
+    } finally {
+      setManualRefreshing(false);
+    }
   };
 
   const setActiveTab = (next: Tab) => {
@@ -385,7 +405,13 @@ export function App() {
 		};
 	}, [runSyncCursor, detailRunId, queryClient, token]);
 
-  const authError = [stats.error, resources.error, activeRunSummaries.error, runs.error].find((err) => err instanceof ApiError && err.status === 401);
+  const authError = [stats.error, resources.error, activeRunSummaries.error, runs.error, projects.error, bookmarks.error, execs.error].find(
+    (err) => err instanceof ApiError && err.status === 401
+  );
+
+  useEffect(() => {
+    if (authError) setTokenEditorOpen(true);
+  }, [authError]);
 
   function askConfirm(next: ConfirmState) {
     setConfirm(next);
@@ -430,20 +456,36 @@ export function App() {
         {!projectWorkspace ? <header className="topbar">
           <div>
             <h1>{labelForTab(tab, t)}</h1>
-            <p>{authError ? t("invalidToken") : t("tokenMissing")}</p>
+            <p className={authError || health.isError ? "connection-copy bad" : "connection-copy"}>
+              {authError
+                ? t("invalidToken")
+                : health.isError
+                  ? t("serviceOffline")
+                  : health.data
+                    ? `${t("serviceReady")} · ${health.data.hostname}`
+                    : t("loading")}
+            </p>
           </div>
           <div className="topbar-actions">
+            <ConnectionBadge
+              label={manualRefreshing ? t("refreshing") : health.data?.status === "ok" ? t("connected") : health.isError ? t("offline") : t("connecting")}
+              tone={health.isError ? "bad" : health.data?.status === "ok" ? "good" : "pending"}
+            />
+            <button className={tokenEditorOpen ? "icon-button active-soft" : "icon-button"} title={t("editToken")} aria-expanded={tokenEditorOpen} onClick={() => setTokenEditorOpen((open) => !open)}>
+              <KeyRound size={16} />
+            </button>
             <button className="icon-button" title="Language" onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
               <Languages size={17} />
             </button>
-            <button className="icon-button" title={t("refresh")} onClick={refreshAll}>
-              <RefreshCcw size={17} />
+            <button className="icon-button" title={t("refresh")} disabled={manualRefreshing} aria-busy={manualRefreshing} onClick={() => void refreshAll()}>
+              <RefreshCcw size={17} className={manualRefreshing ? "spin" : ""} />
             </button>
-            <form
+            {tokenEditorOpen ? <form
               className="token-form"
               onSubmit={(event) => {
                 event.preventDefault();
                 setToken(tokenDraft.trim());
+                setTokenEditorOpen(false);
               }}
             >
               <input value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} type="password" placeholder={t("apiToken")} />
@@ -454,12 +496,13 @@ export function App() {
                   onClick={() => {
                     clearToken();
                     setTokenDraft("");
+                    setTokenEditorOpen(false);
                   }}
                 >
                   {t("clear")}
                 </button>
               ) : null}
-            </form>
+            </form> : null}
           </div>
         </header> : null}
 
@@ -478,11 +521,16 @@ export function App() {
             <button className={tab === "evidence" ? "active" : ""} onClick={() => openProjectResearchGraph(projectDetailID)}>{t("evidenceChains")}</button>
             </nav>
             <div className="project-header-actions">
+              <ConnectionBadge
+                label={manualRefreshing ? t("refreshing") : health.data?.status === "ok" ? t("connected") : health.isError ? t("offline") : t("connecting")}
+                tone={health.isError ? "bad" : health.data?.status === "ok" ? "good" : "pending"}
+                compact
+              />
               <button className="icon-button" type="button" title="Language" onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
                 <Languages size={17} />
               </button>
-              <button className="icon-button" type="button" title={t("refresh")} onClick={refreshAll}>
-                <RefreshCcw size={17} />
+              <button className="icon-button" type="button" title={t("refresh")} disabled={manualRefreshing} aria-busy={manualRefreshing} onClick={() => void refreshAll()}>
+                <RefreshCcw size={17} className={manualRefreshing ? "spin" : ""} />
               </button>
             </div>
           </header>
@@ -511,6 +559,7 @@ export function App() {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.16 }}
           >
+            <Suspense fallback={<PageLoading locale={locale} />}>
             {tab === "dashboard" && (
               <Dashboard
                 t={t}
@@ -586,6 +635,7 @@ export function App() {
                   onOpenGraph={openProjectResearchGraph}
                   onOpenRuns={openProjectRuns}
                   onOpenAssets={openProjectAssets}
+                  onOpenLiterature={openProjectLiterature}
                   onManage={() => setActiveTab("launchpad")}
                 />
               )
@@ -741,6 +791,7 @@ export function App() {
                 resourceById={resourceById}
               />
             )}
+            </Suspense>
           </motion.section>
         </AnimatePresence>
       </main>
@@ -751,11 +802,15 @@ export function App() {
 		  locale={locale}
           token={token}
           runId={detailRunId}
+          preview={detailRunPreview}
           resourceById={resourceById}
           projects={projectList}
           onClose={() => {
             setDetailRunId(null);
-            history.replaceState(null, "", pathForTab(tab, evidenceProjectId, projectDetailID));
+            const returnPath = tab === "runs" && projectDetailID && runProject === projectDetailID
+              ? projectRunsPath(projectDetailID)
+              : pathForTab(tab, evidenceProjectId, projectDetailID);
+            history.replaceState(null, "", returnPath);
           }}
           onOpenProjectJournal={(run, compose) => {
             if (!run.project_id) return;
@@ -822,6 +877,27 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
   );
 }
 
+function ConnectionBadge({ label, tone, compact = false }: { label: string; tone: "good" | "bad" | "pending"; compact?: boolean }) {
+  return (
+    <span className={`connection-badge ${tone} ${compact ? "compact" : ""}`} role="status">
+      <i aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function PageLoading({ locale }: { locale: Locale }) {
+  return (
+    <div className="page-loading" role="status" aria-live="polite">
+      <RefreshCcw className="spin" size={18} />
+      <div>
+        <strong>{locale === "zh" ? "正在打开工作区" : "Opening workspace"}</strong>
+        <span>{locale === "zh" ? "仅加载当前页面需要的模块" : "Loading only the modules this page needs"}</span>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({
   t,
 	locale,
@@ -854,7 +930,7 @@ function Dashboard({
       </div>
       <Section title={t("resources")}>
         <div className="resource-grid">
-          {resources.length ? shownResources.map((r) => <ResourceCard key={r.id} resource={r} />) : <Empty t={t} />}
+          {resources.length ? shownResources.map((r) => <ResourceCard key={r.id} resource={r} t={t} />) : <Empty t={t} />}
           {moreResources.length ? (
             <button type="button" className="overview-more" onClick={onOpenResources}>
               <strong>+{moreResources.length}</strong>
@@ -929,6 +1005,7 @@ function ResourcesTab({
             <ResourceCard
               key={resource.id}
               resource={resource}
+              t={t}
               actions={
                 <>
 				  {busyByID[resource.id]?.error ? <span className="action-error">{busyByID[resource.id]?.error}</span> : null}
@@ -999,6 +1076,7 @@ function RunsTab(props: {
   const toggleSelectedRun = useAppStore((s) => s.toggleSelectedRun);
   const bookmarkByRun = useMemo(() => new Map(props.bookmarks.map((bookmark) => [bookmark.run_id, bookmark])), [props.bookmarks]);
   const selectedCount = props.runs.filter((run) => selectedRunIds.has(run.id)).length;
+  const hasFilters = Boolean(props.status || props.resource || (!props.lockedProject && props.project) || props.kind !== "experiments" || props.query);
   const renderRun = (run: Run) => {
     const bookmark = bookmarkByRun.get(run.id);
     return (
@@ -1026,8 +1104,7 @@ function RunsTab(props: {
     <div className="stack">
 	  {props.loading ? <AsyncState label={props.t("loading")} /> : null}
 	  {props.error ? <AsyncState label={props.error} tone="bad" /> : null}
-	  {props.refreshing && !props.loading ? <AsyncState label={props.t("refreshing")} compact /> : null}
-      <div className="toolbar dense">
+      <div className="toolbar dense run-filter-toolbar">
         <Segmented
           value={props.trash ? "trash" : "main"}
           options={[
@@ -1036,16 +1113,27 @@ function RunsTab(props: {
           ]}
           onChange={(value) => props.setTrash(value === "trash")}
         />
-        <Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["queued", "queued"], ["preflighting", "preflighting"], ["starting", "starting"], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"], ["ssh_unreachable", "ssh_unreachable"], ["container_expired", "container_expired"], ["run_lost_but_events_cached", "lost + cached"]]} />
-        <Select value={props.resource} onChange={props.setResource} options={[["", props.t("allResources")], ...props.resources.map((r) => [r.id, r.name] as [string, string])]} />
-        {props.lockedProject ? null : <Select value={props.project} onChange={props.setProject} options={props.projectOptions} />}
-        <Select value={props.kind} onChange={props.setKind} options={[["experiments", props.t("experiments")], ["tools", props.t("toolTasks")], ["all", props.t("allKinds")]]} />
-        <input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("search")} />
+        <label className="filter-field"><span>{props.t("status")}</span><Select value={props.status} onChange={props.setStatus} options={[["", props.t("allStatuses")], ["queued", "queued"], ["preflighting", "preflighting"], ["starting", "starting"], ["running", "running"], ["succeeded", "succeeded"], ["failed", "failed"], ["cancelled", "cancelled"], ["ssh_unreachable", "ssh_unreachable"], ["container_expired", "container_expired"], ["run_lost_but_events_cached", "lost + cached"]]} /></label>
+        <label className="filter-field"><span>{props.t("resource")}</span><Select value={props.resource} onChange={props.setResource} options={[["", props.t("allResources")], ...props.resources.map((r) => [r.id, r.name] as [string, string])]} /></label>
+        {props.lockedProject ? null : <label className="filter-field"><span>{props.t("projects")}</span><Select value={props.project} onChange={props.setProject} options={props.projectOptions} /></label>}
+        <label className="filter-field"><span>{props.t("kind")}</span><Select value={props.kind} onChange={props.setKind} options={[["experiments", props.t("experiments")], ["tools", props.t("toolTasks")], ["all", props.t("allKinds")]]} /></label>
+        <label className="filter-field filter-search"><span>{props.t("search")}</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={props.t("searchRuns")} /></label>
+        {hasFilters ? <button className="ghost-button clear-run-filters" type="button" onClick={() => {
+          props.setStatus("");
+          props.setResource("");
+          if (!props.lockedProject) props.setProject("");
+          props.setKind("experiments");
+          props.setQuery("");
+        }}>{props.t("clearFilters")}</button> : null}
         <button disabled={!selectedCount} onClick={props.onCompare}>
           <BarChart3 size={16} />
           {props.t("compare")} ({selectedCount})
         </button>
       </div>
+	  {!props.loading ? <div className="run-list-context" role="status" aria-live="polite">
+	    <span>{props.total} {props.t("results")}</span>
+	    {props.refreshing ? <span><RefreshCcw className="spin" size={13} />{props.t("updatingResults")}</span> : null}
+	  </div> : null}
 	  {!props.loading && props.runs.length ? (
         <div className="run-list">{props.runs.map(renderRun)}</div>
 	  ) : !props.loading ? (
@@ -1068,6 +1156,7 @@ function ProjectsTab({
   onOpenGraph,
   onOpenRuns,
   onOpenAssets,
+  onOpenLiterature,
   onManage
 }: {
   t: T;
@@ -1079,6 +1168,7 @@ function ProjectsTab({
   onOpenGraph: (projectID: string) => void;
   onOpenRuns: (projectID: string) => void;
   onOpenAssets: (projectID: string) => void;
+  onOpenLiterature: (projectID: string) => void;
   onManage: () => void;
 }) {
   if (selectedProject) {
@@ -1110,16 +1200,16 @@ function ProjectsTab({
                 <div className="project-index-identity">
                   <span className="project-index-mark" aria-hidden="true">{projectTitle.slice(0, 1).toUpperCase()}</span>
                   <div className="project-index-copy">
-                    <span className="panel-kicker">{t("projects")}</span>
                     <h2>{projectTitle}</h2>
-                    <p className="mono muted">{project.id}</p>
+                    {project.id !== projectTitle ? <p className="mono muted">{project.id}</p> : null}
                     <p>{project.description === "Imported from the legacy evidence-card project index."
                       ? t("projectScope")
                       : project.description || project.local_root || t("projectScope")}</p>
                   </div>
                 </div>
                 <button className="project-index-open primary" type="button" onClick={() => onOpenProject(project.id)}>
-                  {t("openProject")}
+                  <BookOpen size={15} />
+                  {t("journal")}
                   <ChevronRight size={16} />
                 </button>
                 <div className="project-index-meta">
@@ -1129,6 +1219,10 @@ function ProjectsTab({
                     {project.default_recipe ? <span>recipe · {project.default_recipe}</span> : null}
                   </div>
                   <nav className="project-index-tabs" aria-label={`${projectTitle} sections`}>
+                    <button className="project-destination literature" type="button" onClick={() => onOpenLiterature(project.id)}>
+                    <BookOpen size={15} />
+                    {t("literature")}
+                    </button>
                     <button className="project-destination runs" type="button" onClick={() => onOpenRuns(project.id)}>
                     <PlayCircle size={15} />
                     {t("runs")}
@@ -1151,103 +1245,6 @@ function ProjectsTab({
         )}
       </div>
     </div>
-  );
-}
-
-function ProjectSummary({ project, t, onOpenGraph }: { project: ProjectView; t: T; onOpenGraph: (projectID: string) => void }) {
-  const cards = project.cards || [];
-  const latest = cards.find((card) => card.verdict || card.question || card.key_metrics);
-  const projectTitle = projectDisplayName(project, t);
-  const counts = [
-    { label: t("projectCards"), value: project.total_cards ?? cards.length, tone: "neutral" as const },
-    { label: t("important"), value: project.important_runs || 0, tone: "accent" as const },
-    { label: t("formal"), value: project.formal_runs || 0, tone: "good" as const },
-    { label: t("running"), value: project.running_runs || 0, tone: "warn" as const },
-    { label: "Graph proposals", value: project.pending_graph_proposals || 0, tone: "warn" as const }
-  ];
-  return (
-    <div className="project-summary">
-      <div className="project-head">
-        <div>
-          <h2>{projectTitle}</h2>
-          <p className="muted mono">{project.project_id}</p>
-        </div>
-        <button type="button" onClick={() => onOpenGraph(project.project_id)}>
-          <Network size={15} />
-          Research Graph
-        </button>
-      </div>
-      <div className="project-signal-grid">
-        {counts.map((item) => (
-          <div className={`project-signal ${item.tone}`} key={item.label}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </div>
-      <div className="project-latest">
-        <span className="panel-kicker">{t("latestSignal")}</span>
-        <strong>{latest?.verdict || latest?.question || t("noEvidenceCard")}</strong>
-        <p>{latest?.key_metrics || latest?.next_action || latest?.run?.command || t("projectCardPrompt")}</p>
-      </div>
-    </div>
-  );
-}
-
-function ProjectEvidenceCard({ card, resourceById, onOpenRun, t }: { card: ProjectRunCard; resourceById: Map<string, Resource>; onOpenRun: (id: string) => void; t: T }) {
-  const firstMark = (card.marks || []).find((mark) => mark.title || mark.reason || mark.evidence);
-  const firstMarkText = firstMark ? [firstMark.title, firstMark.reason || firstMark.evidence].filter(Boolean).join(": ") : "";
-  const title = card.verdict || card.supports_claim || card.weakens_claim || card.question || card.key_metrics || card.run?.name || card.run_id;
-  const body =
-    [card.supports_claim, card.weakens_claim, card.question, firstMarkText, card.next_action, card.proposal_reason, card.run?.command]
-      .find((item) => item && item !== title && item !== card.key_metrics) || "";
-  const metrics = card.key_metrics && card.key_metrics !== title ? card.key_metrics : "";
-  const run = card.run;
-  const status = run?.status || "-";
-  const meta = [
-    run?.kind || "formal",
-    run?.resource_id ? resourceById.get(run.resource_id)?.name || run.resource_id : "",
-    run?.gpu_index != null ? `GPU ${runGPU(run.gpu_index)}` : "",
-    run?.project_env || run?.conda_env || "",
-    fmtShortTime(run?.created_at)
-  ].filter((item) => item && item !== "-");
-  const evidenceTags = [
-    card.important ? t("important") : "",
-    card.marks?.length ? `${card.marks.length} ${t("marks")}` : "",
-    card.artifact_paths ? t("artifacts") : "",
-    card.related_runs ? t("relatedRuns") : "",
-    card.graph_status === "pending" ? "待确认研究图建议" : card.graph_status && card.graph_status !== "none" ? `graph: ${card.graph_status}` : ""
-  ].filter(Boolean);
-  const markSnippets = (card.marks || [])
-    .map((mark) => [mark.title, mark.reason || mark.evidence].filter(Boolean).join(": "))
-    .filter(Boolean)
-    .slice(0, 2);
-  const cardClassName = card.should_promote ? "project-card prominent" : "project-card";
-  return (
-    <button className={cardClassName} onClick={() => card.run_id && onOpenRun(card.run_id)} type="button">
-      <div className="project-card-top">
-        <div className="project-card-main">
-          <span className="project-card-run">{card.run?.name || card.run_id}</span>
-          <strong>{title}</strong>
-        </div>
-        <div className="project-card-level">
-          <Pill tone={card.evidence_level === "A" || card.evidence_level === "B" ? "good" : "neutral"}>L{card.evidence_level || "C"}</Pill>
-          <Pill tone={statusTone(status)}>{status}</Pill>
-        </div>
-      </div>
-      {body ? <span className="project-card-body">{body}</span> : null}
-      {evidenceTags.length ? <div className="project-card-tags">{evidenceTags.map((item) => <span className="project-evidence-chip" key={item}>{item}</span>)}</div> : null}
-      {metrics ? <p className="project-card-metrics">{metrics}</p> : null}
-      {markSnippets.length ? (
-        <div className="project-card-marks">
-          {markSnippets.map((snippet) => <span key={snippet}>{snippet}</span>)}
-        </div>
-      ) : null}
-      <div className="project-card-meta">
-        <span className="mono">{card.run_id}</span>
-        {meta.map((item) => <span key={item}>{item}</span>)}
-      </div>
-    </button>
   );
 }
 
@@ -1297,6 +1294,7 @@ function RunDetail({
 	locale,
   token,
   runId,
+  preview,
   resourceById,
   projects,
   onClose,
@@ -1308,6 +1306,7 @@ function RunDetail({
 	locale: Locale;
   token: string;
   runId: string;
+  preview?: Run;
   resourceById: Map<string, Resource>;
   projects: ProjectDefinition[];
   onClose: () => void;
@@ -1321,22 +1320,42 @@ function RunDetail({
   const [projectBindingOpen, setProjectBindingOpen] = useState(false);
   const [projectDraft, setProjectDraft] = useState("");
   const [projectBindingNotice, setProjectBindingNotice] = useState<string | null>(null);
-  const run = useQuery({ queryKey: ["run", token, runId], queryFn: () => getRun(token, runId), refetchInterval: 30000, refetchOnWindowFocus: "always" });
+  const [showAllArtifacts, setShowAllArtifacts] = useState(false);
+  const run = useQuery({
+    queryKey: ["run", token, runId],
+    queryFn: () => getRun(token, runId),
+    refetchInterval: 30000,
+    refetchOnWindowFocus: "always",
+    placeholderData: preview
+  });
+  const fullRunReady = Boolean(run.data && !run.isPlaceholderData);
   const marks = useQuery({
     queryKey: ["run-marks", token, runId],
     queryFn: () => getRunMarks(token, runId),
-    enabled: detailTab === "raw" && legacyMarksOpen
+    enabled: fullRunReady && detailTab === "raw" && legacyMarksOpen
   });
   const journalEntries = useQuery({
     queryKey: ["run-journal", token, runId],
     queryFn: () => getRunJournalEntries(token, runId),
+    enabled: fullRunReady && detailTab === "overview",
     refetchInterval: 10_000,
     refetchOnWindowFocus: "always"
   });
-  const artifacts = useQuery({ queryKey: ["artifacts", token, runId], queryFn: () => getArtifacts(token, runId) });
-  const artifactCollection = useQuery({ queryKey: ["artifact-collection", token, runId], queryFn: () => getArtifactCollection(token, runId), refetchInterval: (query) => query.state.data?.state === "discovering" ? 1500 : 8000 });
-  const manifest = useQuery({ queryKey: ["run-manifest", token, runId], queryFn: () => getRunManifest(token, runId), retry: false });
-	const dataBindings = useQuery({ queryKey: ["run-data-bindings", token, runId], queryFn: () => getRunDataBindings(token, runId) });
+  const artifactLimit = artifactRequestLimit(showAllArtifacts);
+  const artifacts = useQuery({
+    queryKey: ["artifacts", token, runId, artifactLimit],
+    queryFn: () => getArtifacts(token, runId, artifactLimit),
+    enabled: fullRunReady && detailTab === "overview",
+    placeholderData: keepPreviousData
+  });
+  const artifactCollection = useQuery({
+    queryKey: ["artifact-collection", token, runId],
+    queryFn: () => getArtifactCollection(token, runId),
+    enabled: fullRunReady && detailTab === "overview",
+    refetchInterval: (query) => query.state.data?.state === "discovering" ? 1500 : 8000
+  });
+  const manifest = useQuery({ queryKey: ["run-manifest", token, runId], queryFn: () => getRunManifest(token, runId), enabled: fullRunReady && detailTab === "overview", retry: false });
+	const dataBindings = useQuery({ queryKey: ["run-data-bindings", token, runId], queryFn: () => getRunDataBindings(token, runId), enabled: fullRunReady && detailTab === "overview" });
   const queryClient = useQueryClient();
   const assignProject = useMutation({
     mutationFn: async ({ projectID, expectedProjectID }: { projectID: string; expectedProjectID: string }) =>
@@ -1371,12 +1390,12 @@ function RunDetail({
       ]);
     }
   });
-  const logsLive = run.data ? isActiveRun(run.data) : true;
+  const logsLive = fullRunReady && run.data ? isActiveRun(run.data) : false;
   const [selectedLogSource, setSelectedLogSource] = useState<"terminal" | "stdout" | "stderr" | null>(null);
   const terminal = useLiveLog(token, runId, selectedLogSource === "terminal" ? { source: "terminal" } : null, logsLive);
   const stdout = useLiveLog(token, runId, selectedLogSource === "stdout" ? { source: "stdout" } : null, logsLive);
   const stderr = useLiveLog(token, runId, selectedLogSource === "stderr" ? { source: "stderr" } : null, logsLive);
-  const eventsPath = run.data ? uiEventsPath(run.data) : "";
+  const eventsPath = fullRunReady && run.data ? uiEventsPath(run.data) : "";
   const eventLog = useLiveLog(token, runId, eventsPath ? { path: eventsPath } : null, logsLive);
   const eventLines = useMemo(() => eventLog.lines.map((line) => line.content), [eventLog.lines]);
   const parsedEvents = useParsedEvents(eventLines);
@@ -1409,17 +1428,32 @@ function RunDetail({
     setProjectBindingOpen(false);
     setProjectDraft("");
     setProjectBindingNotice(null);
+    setShowAllArtifacts(false);
   }, [runId]);
   const managedInputs = dataBindings.data?.inputs || [];
   const managedOutputs = dataBindings.data?.outputs || [];
   const artifactItems = artifacts.data || [];
+  const { visibleItems: visibleArtifactItems, hasMore: artifactHasMore } = artifactPage(artifactItems, showAllArtifacts);
+  const hasCollectionTotals = (artifactCollection.data?.file_count || 0) > 0;
+  const artifactCountLabel = hasCollectionTotals
+    ? String(artifactCollection.data?.file_count)
+    : showAllArtifacts
+      ? String(artifactItems.length)
+      : artifactHasMore
+        ? `${initialArtifactRows}+`
+        : String(visibleArtifactItems.length);
+  const artifactSummaryBytes = hasCollectionTotals
+    ? artifactCollection.data?.total_bytes
+    : artifactHasMore
+      ? null
+      : visibleArtifactItems.reduce((sum, artifact) => sum + artifact.size, 0);
 
   return (
     <Modal title={run.data ? runTitle(run.data) : runId} onClose={onClose} wide>
       {run.data ? (
         <div className="detail-shell">
-		  {run.isFetching && !run.isPending ? <AsyncState label={t("refreshing")} compact /> : null}
-		  {run.error ? <AsyncState label={displayError(run.error)} tone="bad" compact /> : null}
+		  {run.isFetching && !run.isPending && !run.isPlaceholderData ? <AsyncState label={t("refreshing")} compact /> : null}
+		  {run.error ? <AsyncState label={displayError(run.error)} tone="bad" compact actionLabel={t("retry")} onAction={() => void run.refetch()} /> : null}
 		  {statusCheckError ? <AsyncState label={statusCheckError} tone="bad" compact /> : null}
           <section className="run-overview">
             <div className="run-overview-main">
@@ -1445,7 +1479,7 @@ function RunDetail({
                 <strong>{run.data.project_id || t("unassigned")}</strong>
               </span>
 			  <span className={runDataFinalizationPresentation(run.data).archiveProblem ? "detail-failure-reason" : ""} title={runDataFinalizationPresentation(run.data).message}>
-				<em>data finalization</em>
+				<em>{t("dataFinalization")}</em>
 				<strong>{runDataFinalizationPresentation(run.data).state}</strong>
 			  </span>
 			  {run.data.data_finalization_error ? <span className="detail-failure-reason"><em>data error</em><strong>{run.data.data_finalization_error}</strong></span> : null}
@@ -1537,7 +1571,7 @@ function RunDetail({
               ) : (
                 <button
                   className="ghost-button"
-                  disabled={isActiveRun(run.data)}
+                  disabled={isActiveRun(run.data) || run.isPlaceholderData}
                   title={isActiveRun(run.data) ? (locale === "zh" ? "运行结束后才能改绑" : "Wait until the Run is terminal") : ""}
                   onClick={() => {
                     setProjectDraft(run.data?.project_id || "");
@@ -1550,7 +1584,7 @@ function RunDetail({
               )}
             </div>
             <div className="detail-side-actions">
-			  <button disabled={statusCheckBusy} aria-busy={statusCheckBusy} onClick={() => void refreshCurrentStatus()}>
+			  <button disabled={statusCheckBusy || run.isPlaceholderData} aria-busy={statusCheckBusy} onClick={() => void refreshCurrentStatus()}>
 				<RefreshCcw size={16} className={statusCheckBusy ? "spin" : ""} />
 				{statusCheckBusy ? t("refreshing") : t("refreshStatus")}
               </button>
@@ -1561,11 +1595,15 @@ function RunDetail({
               ) : null}
             </div>
           </section>
+          {run.isPlaceholderData ? (
+            <RunDetailLoading locale={locale} />
+          ) : (
+          <>
           <div className="detail-tabs" role="tablist" aria-label={t("runDetail")}>
             <button className={detailTab === "overview" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "overview"} onClick={() => setDetailTab("overview")}>
               {t("overview")}
             </button>
-			<button className={detailTab === "evidence" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "evidence"} onClick={() => setDetailTab("evidence")}>Evidence Freeze</button>
+			<button className={detailTab === "evidence" ? "active" : ""} type="button" role="tab" aria-selected={detailTab === "evidence"} onClick={() => setDetailTab("evidence")}>{t("evidenceFreeze")}</button>
             <button
               className={detailTab === "raw" ? "active" : ""}
               type="button"
@@ -1598,7 +1636,7 @@ function RunDetail({
                     <div className="run-data-counts" aria-label={t("dataAndArtifacts")}>
                       <span>{managedInputs.length} {t("managedInputs")}</span>
                       <span>{managedOutputs.length} {t("managedOutputs")}</span>
-                      <span>{artifactItems.length} {t("artifacts")}</span>
+                      <span>{artifactCountLabel} {t("artifacts")}</span>
                     </div>
                   </div>
 
@@ -1653,7 +1691,7 @@ function RunDetail({
                       <div>
                         <Archive size={16} />
                         <h3>{t("artifacts")}</h3>
-                        <span>{artifactCollection.data?.file_count || artifactItems.length} · {formatBytes(artifactCollection.data?.total_bytes || artifactItems.reduce((sum, artifact) => sum + artifact.size, 0))}</span>
+                        <span>{artifactCountLabel}{artifactSummaryBytes != null ? ` · ${formatBytes(artifactSummaryBytes)}` : ""}</span>
                       </div>
                       <button
                         className="artifact-refresh"
@@ -1665,7 +1703,13 @@ function RunDetail({
                         {artifactCollection.data?.state === "discovering" ? t("loading") : t("refresh")}
                       </button>
                     </div>
-                    <ArtifactList artifacts={artifactItems} collection={artifactCollection.data} t={t} />
+                    <ArtifactList
+                      artifacts={visibleArtifactItems}
+                      collection={artifactCollection.data}
+                      t={t}
+                      loadingAll={artifacts.isFetching && showAllArtifacts}
+                      onShowAll={artifactHasMore || (!showAllArtifacts && (artifactCollection.data?.file_count || 0) > visibleArtifactItems.length) ? () => setShowAllArtifacts(true) : undefined}
+                    />
                     {collectArtifactInventory.error ? <div className="action-error">{displayError(collectArtifactInventory.error)}</div> : null}
                   </div>
                 </section>
@@ -1712,12 +1756,12 @@ function RunDetail({
                       </div>
                     </section>
                   )}
-                  {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} run={run.data} /> : null}
+                  {eventsPath ? <EventDashboard t={t} parsed={parsedEvents} path={eventsPath} snapshotError={eventLog.error} liveState={eventLog.state} cursor={eventLog.cursor} run={run.data} /> : null}
                 </div>
               </div>
             </>
           ) : detailTab === "evidence" ? (
-			<EvidenceFreezePanel token={token} run={run.data} />
+			<Suspense fallback={<AsyncState label={t("loading")} />}><EvidenceFreezePanel token={token} run={run.data} /></Suspense>
 		  ) : (
             <div className="detail-grid raw-detail-grid">
               <div className="detail-main">
@@ -1774,6 +1818,8 @@ function RunDetail({
               </div>
             </div>
           )}
+          </>
+          )}
         </div>
 	  ) : run.isPending ? (
 		<AsyncState label={t("loading")} />
@@ -1787,7 +1833,20 @@ function RunDetail({
   );
 }
 
-function ArtifactList({ artifacts, collection, t }: { artifacts: Artifact[]; collection?: ArtifactCollection; t: T }) {
+function RunDetailLoading({ locale }: { locale: Locale }) {
+  return (
+    <section className="run-detail-loading" role="status" aria-live="polite">
+      <RefreshCcw className="spin" size={18} />
+      <div>
+        <strong>{locale === "zh" ? "正在读取完整运行记录" : "Loading the full Run record"}</strong>
+        <span>{locale === "zh" ? "摘要已可用；环境、产物和事件会分阶段出现。" : "The summary is ready; environment, artifacts, and events will appear in stages."}</span>
+      </div>
+      <div className="run-detail-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+    </section>
+  );
+}
+
+function ArtifactList({ artifacts, collection, t, onShowAll, loadingAll = false }: { artifacts: Artifact[]; collection?: ArtifactCollection; t: T; onShowAll?: () => void; loadingAll?: boolean }) {
   if (collection?.state === "discovering") return <div className="artifact-state"><RefreshCcw className="spin" size={14} /><span>{t("artifactDiscovering")}</span></div>;
   if (collection?.state === "failed") return <div className="artifact-state bad"><span>{t("artifactCollectionFailed")}: {collection.error || t("unknownError")}</span></div>;
   if (!artifacts.length) return <div className="artifact-state"><Archive size={17} /><span>{collection?.state === "indexed" ? t("noArtifactMatches") : t("artifactNotIndexed")}</span></div>;
@@ -1802,17 +1861,41 @@ function ArtifactList({ artifacts, collection, t }: { artifacts: Artifact[]; col
           </div>
         </div>
       ))}
+      {onShowAll ? (
+        <button className="artifact-show-all" type="button" onClick={onShowAll}>
+          {t("showAllArtifacts")}{collection?.file_count ? ` · ${collection.file_count}` : ""}
+        </button>
+      ) : null}
+      {loadingAll ? <div className="artifact-state"><RefreshCcw className="spin" size={14} /><span>{t("loading")}</span></div> : null}
     </div>
   );
 }
 
-function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null; run: Run }) {
+function EventDashboard({ t, parsed, path, snapshotError, liveState, cursor, run }: { t: T; parsed: ParsedEvents; path: string; snapshotError?: string | null; liveState: LiveLogState; cursor: number; run: Run }) {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const latest = parsed.latestMetrics.slice(0, 16);
   const progress = summarizeProgress(parsed.progress).slice(0, 8);
   const params = parsed.params.slice(0, 24);
   const notes = parsed.notes.slice(-3);
   const metricFamilies = summarizeMetricFamilies(parsed.metrics).slice(0, 12);
+  const initialSnapshotPending = liveState === "idle" || liveState === "loading";
+  const catchingUp = liveState === "reconnecting" || liveState === "catching_up";
+  const eventStateLabel = initialSnapshotPending
+    ? t("eventsLoading")
+    : catchingUp
+      ? t("eventsCatchingUp")
+      : liveState === "live"
+        ? t("live")
+        : liveState === "error"
+          ? t("eventsUnavailable")
+          : t("eventsSnapshot");
+  const emptyEventLabel = initialSnapshotPending
+    ? t("eventsLoading")
+    : catchingUp
+      ? t("eventsCatchingUp")
+      : liveState === "error"
+        ? t("eventsUnavailable")
+        : "";
   const summary = [
     { label: t("events"), value: parsed.events.length },
     { label: t("progress"), value: parsed.progress.length },
@@ -1833,8 +1916,9 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
       <div className="section-head event-head">
         <div>
           <h2>{t("events")}</h2>
-          <span className="muted mono event-path">{path} · {parsed.events.length} lines</span>
+          <span className="muted mono event-path">{path} · {cursor || parsed.events.length} lines</span>
         </div>
+        <span className={`event-transport-state ${liveState}`} role="status"><i aria-hidden="true" />{eventStateLabel}</span>
         <div className="event-summary-strip">
           {summary.map((item) => (
             <div className="event-summary-item" key={item.label}>
@@ -1852,7 +1936,7 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
       ) : null}
       <div className="event-layout">
         <EventFoldout className="progress-panel" title={t("progress")} count={progress.length} defaultOpen>
-          {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} run={run} t={t} />) : <span className="muted">{t("noProgressEvents")}</span>}
+          {progress.length ? progress.map((row) => <ProgressStatusRow key={row.key} row={row} run={run} t={t} />) : <span className="muted">{emptyEventLabel || t("noProgressEvents")}</span>}
         </EventFoldout>
         <EventFoldout className="param-panel" title={t("params")} count={params.length} defaultOpen>
           <div className="param-list">
@@ -1864,7 +1948,7 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
                 </div>
                 <strong>{param.value || "-"}</strong>
               </div>
-            )) : <span className="muted">{t("noParamsYet")}</span>}
+            )) : <span className="muted">{emptyEventLabel || t("noParamsYet")}</span>}
           </div>
         </EventFoldout>
         <EventFoldout className="metric-panel" title={t("latestMetricValues")} count={latest.length}>
@@ -1877,7 +1961,7 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
                 </div>
                 <strong>{formatMetricValue(metric)}</strong>
               </div>
-            )) : <span className="muted">{t("noMetricsYet")}</span>}
+            )) : <span className="muted">{emptyEventLabel || t("noMetricsYet")}</span>}
           </div>
         </EventFoldout>
         {(parsed.errors.length || notes.length) ? (
@@ -1936,7 +2020,7 @@ function EventDashboard({ t, parsed, path, snapshotError, run }: { t: T; parsed:
                 })}
               </motion.div>
             ) : null}
-            {!metricFamilies.length ? <span className="muted">{t("noMetricFamiliesYet")}</span> : null}
+            {!metricFamilies.length ? <span className="muted">{emptyEventLabel || t("noMetricFamiliesYet")}</span> : null}
           </section>
         </LayoutGroup>
       </EventFoldout>
@@ -2304,11 +2388,12 @@ function LogPanel({ title, state, hiddenWhenEmpty }: { title: string; state: Ret
   );
 }
 
-function ResourceCard({ resource, actions }: { resource: Resource; actions?: ReactNode }) {
+function ResourceCard({ resource, actions, t }: { resource: Resource; actions?: ReactNode; t: T }) {
   const snap = resource.latest_snapshot;
   const gpus = parseGPUs(snap?.gpu_json);
   const memPct = snap?.mem_total_mb ? ((snap.mem_used_mb || 0) / snap.mem_total_mb) * 100 : 0;
-  const gpuList = gpus.length ? gpus : [{ index: 0, util: 0 }];
+  const telemetryAge = snap?.timestamp ? Date.now() - new Date(snap.timestamp).getTime() : null;
+  const telemetryStale = telemetryAge != null && Number.isFinite(telemetryAge) && telemetryAge > 120_000;
   const hostLine = [resource.host, resource.os_type].filter(Boolean).join(" · ") || resource.type;
   const envLine = [resource.user ? `${resource.user}@${resource.host}` : resource.host, resource.conda_env].filter(Boolean).join(" · ");
   return (
@@ -2325,11 +2410,17 @@ function ResourceCard({ resource, actions }: { resource: Resource; actions?: Rea
         <Pill tone={statusTone(resource.ssh_status || "unknown")}>SSH {resource.ssh_status || "unknown"}</Pill>
       </div>
       <div className={resource.last_doctor_error ? "resource-alert-slot has-error" : "resource-alert-slot"}>{resource.last_doctor_error ? <p className="resource-error">{resource.last_doctor_error}</p> : null}</div>
-      <div className="resource-meters">
+      <div className={`resource-telemetry ${!snap ? "unknown" : telemetryStale ? "stale" : "fresh"}`}>
+        <Clock size={13} />
+        <span>{!snap ? t("telemetryUnavailable") : `${telemetryStale ? t("telemetryStale") : t("telemetryFresh")} · ${fmtShortTime(snap.timestamp)}`}</span>
+      </div>
+      {snap ? <div className="resource-meters">
         <ResourceMeter value={snap?.cpu_percent || 0} label="CPU" />
         <ResourceMeter value={memPct} label="RAM" detail={`${fmtMB(snap?.mem_used_mb)}/${fmtMB(snap?.mem_total_mb)}`} />
-        {gpuList.flatMap((gpu: GPUInfo, index) => gpuMeters(gpu, index))}
-      </div>
+        {gpus.length ? gpus.flatMap((gpu: GPUInfo, index) => gpuMeters(gpu, index)) : (
+          <div className="resource-meter-unavailable"><Cpu size={15} /><span>GPU</span><strong>{t("gpuUnavailable")}</strong></div>
+        )}
+      </div> : null}
       {actions ? <div className="resource-card-actions">{actions}</div> : null}
     </article>
   );
@@ -2786,8 +2877,14 @@ function Empty({ t }: { t: T }) {
   return <div className="empty">{t("noData")}</div>;
 }
 
-function AsyncState({ label, tone, compact }: { label: string; tone?: "bad"; compact?: boolean }) {
-	return <div className={`async-state${tone ? ` ${tone}` : ""}${compact ? " compact" : ""}`}>{label}</div>;
+function AsyncState({ label, tone, compact, actionLabel, onAction }: { label: string; tone?: "bad"; compact?: boolean; actionLabel?: string; onAction?: () => void }) {
+	return (
+    <div className={`async-state${tone ? ` ${tone}` : ""}${compact ? " compact" : ""}`} role={tone ? "alert" : "status"} aria-live="polite">
+      {!tone ? <RefreshCcw className="spin" size={compact ? 13 : 15} /> : null}
+      <span>{label}</span>
+      {actionLabel && onAction ? <button type="button" onClick={onAction}>{actionLabel}</button> : null}
+    </div>
+  );
 }
 
 function defaultResource(): Partial<Resource> {
@@ -2821,10 +2918,6 @@ function filterProjects(projects: ProjectDefinition[], query: string) {
       project.default_recipe
     ].some((part) => text(part).toLowerCase().includes(q))
   );
-}
-
-function projectDisplayName(project: ProjectView, t: T) {
-  return project.project_id === "__unassigned__" || project.project_name === "Unassigned runs" ? t("unassignedRuns") : project.project_name || project.project_id;
 }
 
 function projectCardFilterValue(id: string) {

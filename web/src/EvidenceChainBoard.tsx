@@ -457,7 +457,7 @@ function EvidenceChainWorkspace({ token, t, onOpenRun, projectId }: { token: str
   const candidates = useQuery({
     queryKey: ["evidence-run-candidates", token, projectId],
     queryFn: () => getEvidenceRunCandidates(token, projectId, 160),
-    enabled: Boolean(selectedChainId),
+    enabled: Boolean(selectedChainId && (runTrayOpen || previewRunID)),
     refetchInterval: 12000
   });
   const workspaceProposals = useQuery({

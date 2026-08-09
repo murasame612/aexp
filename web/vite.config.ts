@@ -15,7 +15,6 @@ export default defineConfig({
         assetFileNames: "assets/[name]-[hash][extname]",
         manualChunks: {
           tanstack: ["@tanstack/react-query", "@tanstack/react-table", "@tanstack/react-virtual"],
-          chart: ["echarts"],
           motion: ["framer-motion"]
         }
       }

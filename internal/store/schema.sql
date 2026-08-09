@@ -739,6 +739,7 @@ CREATE TABLE IF NOT EXISTS exec_events (
 
 CREATE INDEX IF NOT EXISTS idx_exec_events_resource ON exec_events(resource_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_exec_events_actor ON exec_events(actor, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exec_events_created ON exec_events(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS storage_targets (
     id              TEXT PRIMARY KEY,

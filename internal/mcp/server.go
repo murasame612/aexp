@@ -103,7 +103,20 @@ func (s *Server) handleRequest(ctx context.Context, req rpcRequest) rpcResponse 
 		}
 		result, err := s.callTool(ctx, params.Name, params.Arguments)
 		if err != nil {
-			return rpcResultResponse(req.ID, toolTextResult(err.Error(), true))
+			payload := map[string]interface{}{
+				"schema_version": "aexp-mcp-tool-error-v1",
+				"error":          map[string]string{"message": err.Error()},
+			}
+			if partial := strings.TrimSpace(result); partial != "" {
+				partialResult := map[string]interface{}{"stdout": partial}
+				if runID := firstRunID(partial); runID != "" {
+					partialResult["run_id"] = runID
+					payload["run_id"] = runID
+					payload["next_action"] = "Read the Run snapshot or status using the preserved run_id."
+				}
+				payload["partial_result"] = partialResult
+			}
+			return rpcResultResponse(req.ID, toolTextResult(jsonText(payload), true))
 		}
 		return rpcResultResponse(req.ID, toolTextResult(result, false))
 	default:

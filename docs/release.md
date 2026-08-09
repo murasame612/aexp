@@ -27,8 +27,8 @@ checksums.txt
 2. Tag and push:
 
    ```bash
-   git tag v0.3.1
-   git push origin v0.3.1
+   git tag v0.3.2
+   git push origin v0.3.2
    ```
 
 3. GitHub Actions runs `.github/workflows/release.yml`.
@@ -47,7 +47,7 @@ checksums.txt
 ## Installer Overrides
 
 ```bash
-AEXP_VERSION=v0.3.1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
+AEXP_VERSION=v0.3.2 sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 AEXP_REPO=owner/aexp sh -c "$(curl -fsSL https://raw.githubusercontent.com/owner/aexp/main/scripts/install.sh)"
 AEXP_INSTALL_DIR=/usr/local/bin sh -c "$(curl -fsSL https://raw.githubusercontent.com/murasame612/aexp/main/scripts/install.sh)"
 ```

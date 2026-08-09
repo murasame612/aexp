@@ -1,5 +1,11 @@
 export type Locale = "en" | "zh";
 
+export interface HealthStatus {
+  status: string;
+  os_type: string;
+  hostname: string;
+}
+
 export type NullableTime = string | null | { Time?: string; Valid?: boolean };
 
 export interface PrinterStatus {
@@ -366,7 +372,7 @@ export interface RunManifest {
   run_id: string;
   schema_version: number;
   state: "draft" | "final";
-  manifest_json: string;
+  manifest_json?: string;
   sha256: string;
   completeness: "current" | "legacy_partial" | string;
   created_at?: string;
@@ -567,17 +573,6 @@ export interface ProjectRunCard {
   graph_impact_reason?: string;
   run?: Run;
   marks?: RunMark[];
-}
-
-export interface ProjectView {
-  project_id: string;
-  project_name?: string;
-  total_cards?: number;
-  important_runs?: number;
-  formal_runs?: number;
-  running_runs?: number;
-  pending_graph_proposals?: number;
-  cards: ProjectRunCard[];
 }
 
 export interface ProjectDefinition {

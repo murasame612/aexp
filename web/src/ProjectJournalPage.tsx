@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -21,6 +21,7 @@ import {
 } from "./api";
 import { groupJournalByDate, journalPreview } from "./projectJournal";
 import type { Locale, ProjectDefinition, ProjectJournalEntry, Run } from "./types";
+import { useDebouncedValue } from "./useDebouncedValue";
 
 export function ProjectJournalPage({
   token,
@@ -46,17 +47,20 @@ export function ProjectJournalPage({
   const [nextAction, setNextAction] = useState("");
   const [relatedRunIDs, setRelatedRunIDs] = useState<string[]>(initialRunID ? [initialRunID] : []);
   const [runDraft, setRunDraft] = useState("");
+  const debouncedSearch = useDebouncedValue(search.trim(), 300);
+  const debouncedRunFilter = useDebouncedValue(runFilter.trim(), 250);
 
   const journal = useQuery({
-    queryKey: ["project-journal", token, project.id, search, runFilter, openNextOnly],
+    queryKey: ["project-journal", token, project.id, debouncedSearch, debouncedRunFilter, openNextOnly],
     queryFn: () => getProjectJournal(token, project.id, {
       limit: 100,
-      query: search.trim(),
-      runId: runFilter.trim(),
+      query: debouncedSearch,
+      runId: debouncedRunFilter,
       nextActionStatus: openNextOnly ? "open" : ""
     }),
     refetchInterval: 10_000,
-    refetchOnWindowFocus: "always"
+    refetchOnWindowFocus: "always",
+    placeholderData: keepPreviousData
   });
   const projectRuns = useQuery({
     queryKey: ["project-journal-runs", token, project.id],
@@ -158,6 +162,11 @@ export function ProjectJournalPage({
       <datalist id="project-journal-run-filter-options">
         {runOptions.map((run) => <option key={run.id} value={run.id}>{run.name || run.id}</option>)}
       </datalist>
+      {journal.isFetching && !journal.isPending ? (
+        <div className="journal-refresh-state" role="status" aria-live="polite">
+          {zh ? "正在更新日志，当前内容会保留" : "Updating journal while keeping the current entries visible"}
+        </div>
+      ) : null}
 
       {composerOpen ? (
         <form
